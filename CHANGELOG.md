@@ -1,5 +1,11 @@
 # @contextvm/sdk
 
+## 0.1.13
+
+### Patch Changes
+
+- fix: logger in browser env
+
 ## 0.1.12
 
 ### Patch Changes

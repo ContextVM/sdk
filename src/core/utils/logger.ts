@@ -74,7 +74,21 @@ export function createLogger(
 /**
  * Default logger instance for the application
  */
-export const logger = createLogger(
-  'ctxvm',
-  (process.env.LOG_LEVEL as LogLevel) || 'error',
-);
+export const logger = createLogger('ctxvm', getLogLevelFromEnv() || 'error');
+
+/**
+ * Get log level from environment variables, handling both Node.js and browser environments
+ */
+function getLogLevelFromEnv(): LogLevel | undefined {
+  if (typeof process !== 'undefined' && process.env && process.env.LOG_LEVEL) {
+    return process.env.LOG_LEVEL as LogLevel;
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  if (typeof window !== 'undefined' && (window as any).LOG_LEVEL) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return (window as any).LOG_LEVEL as LogLevel;
+  }
+
+  return undefined;
+}

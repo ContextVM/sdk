@@ -388,6 +388,7 @@ export class NostrServerTransport
     notification: JSONRPCMessage,
   ): Promise<void> {
     // Special handling for progress notifications
+    // TODO: Add handling for `notifications/resources/updated`, as they need to be associated with an id
     if (
       isJSONRPCNotification(notification) &&
       notification.method === 'notifications/progress' &&
