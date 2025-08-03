@@ -1,5 +1,11 @@
 # @contextvm/sdk
 
+## 0.1.14
+
+### Patch Changes
+
+- feat(nostr): add about tag support and store initialization event in client transport, refactor tag generation
+
 ## 0.1.13
 
 ### Patch Changes

@@ -65,6 +65,10 @@ export const NOSTR_TAGS = {
    */
   PICTURE: 'picture',
   /**
+   * About tag for server announcements.
+   */
+  ABOUT: 'about',
+  /**
    * Support encryption tag for server announcements.
    */
   SUPPORT_ENCRYPTION: 'support_encryption',

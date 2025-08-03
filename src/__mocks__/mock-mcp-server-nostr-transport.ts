@@ -49,7 +49,13 @@ server.registerResource(
 const transport = new NostrServerTransport({
   signer: new PrivateKeySigner(TEST_PRIVATE_KEY),
   relayHandler: new SimpleRelayPool(['ws://localhost:10547']),
-  isPublicServer: true,
+  isPublicServer: false,
+  serverInfo: {
+    name: 'demo-server',
+    website: 'https://model-context.org',
+    picture:
+      'https://www.contextvm.org/_astro/contextvm-logo.CHHzLZGt_A0IIg.svg',
+  },
 });
 
 await server.connect(transport);

@@ -1,4 +1,5 @@
 import {
+  InitializeResultSchema,
   NotificationSchema,
   type JSONRPCMessage,
 } from '@modelcontextprotocol/sdk/types.js';
@@ -41,6 +42,7 @@ export class NostrClientTransport
   // Private properties for managing the transport's state and dependencies.
   private readonly serverPubkey: string;
   private readonly pendingRequestIds: Set<string>;
+  private serverInitializeEvent: NostrEvent | undefined = undefined;
 
   constructor(options: NostrTransportOptions) {
     super(options);
@@ -106,6 +108,18 @@ export class NostrClientTransport
         nostrEvent = JSON.parse(decryptedContent) as NostrEvent;
       }
 
+      if (!this.serverInitializeEvent) {
+        try {
+          const content = JSON.parse(nostrEvent.content);
+          const parse = InitializeResultSchema.safeParse(content.result);
+          if (parse.success) {
+            this.serverInitializeEvent = nostrEvent;
+          }
+        } catch (error) {
+          logger.warn('Failed to parse server initialize event:', error);
+        }
+      }
+
       // Process the resulting event
       const mcpMessage = this.convertNostrEventToMcpMessage(nostrEvent);
 
@@ -131,6 +145,13 @@ export class NostrClientTransport
           : new Error('Failed to handle incoming Nostr event'),
       );
     }
+  }
+
+  /**
+   * Get the server initialize event
+   */
+  public getServerInitializeEvent(): NostrEvent | undefined {
+    return this.serverInitializeEvent;
   }
 
   /**

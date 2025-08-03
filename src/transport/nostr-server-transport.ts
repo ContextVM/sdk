@@ -68,6 +68,7 @@ export interface ServerInfo {
   name?: string;
   picture?: string;
   website?: string;
+  about?: string;
 }
 
 /**
@@ -106,6 +107,30 @@ export class NostrServerTransport
     this.isPublicServer = options.isPublicServer;
     this.allowedPublicKeys = options.allowedPublicKeys;
     this.capabilityPricing = options.capabilityPricing;
+  }
+
+  /**
+   * Generates common tags from server information for use in Nostr events.
+   * @returns Array of tag arrays for Nostr events.
+   */
+  private generateCommonTags(): string[][] {
+    const commonTags: string[][] = [];
+    if (this.serverInfo?.name) {
+      commonTags.push([NOSTR_TAGS.NAME, this.serverInfo.name]);
+    }
+    if (this.serverInfo?.about) {
+      commonTags.push([NOSTR_TAGS.ABOUT, this.serverInfo.about]);
+    }
+    if (this.serverInfo?.website) {
+      commonTags.push([NOSTR_TAGS.WEBSITE, this.serverInfo.website]);
+    }
+    if (this.serverInfo?.picture) {
+      commonTags.push([NOSTR_TAGS.PICTURE, this.serverInfo.picture]);
+    }
+    if (this.encryptionMode !== EncryptionMode.DISABLED) {
+      commonTags.push([NOSTR_TAGS.SUPPORT_ENCRYPTION]);
+    }
+    return commonTags;
   }
 
   /**
@@ -182,20 +207,7 @@ export class NostrServerTransport
    */
   private async announcer(message: JSONRPCResponse): Promise<void> {
     const recipientPubkey = await this.getPublicKey();
-    const commonTags = [
-      ...(this.serverInfo?.name
-        ? [[NOSTR_TAGS.NAME, this.serverInfo.name]]
-        : []),
-      ...(this.serverInfo?.website
-        ? [[NOSTR_TAGS.WEBSITE, this.serverInfo.website]]
-        : []),
-      ...(this.serverInfo?.picture
-        ? [[NOSTR_TAGS.PICTURE, this.serverInfo.picture]]
-        : []),
-      ...(this.encryptionMode !== EncryptionMode.DISABLED
-        ? [[NOSTR_TAGS.SUPPORT_ENCRYPTION]]
-        : []),
-    ];
+    const commonTags = this.generateCommonTags();
 
     const announcementMapping = [
       {
@@ -351,7 +363,10 @@ export class NostrServerTransport
       InitializeResultSchema.safeParse(response.result).success &&
       session.isEncrypted
     ) {
-      tags.push([NOSTR_TAGS.SUPPORT_ENCRYPTION]);
+      const commonTags = this.generateCommonTags();
+      commonTags.forEach((tag) => {
+        tags.push(tag);
+      });
     }
 
     await this.sendMcpMessage(
