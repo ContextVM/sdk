@@ -45,3 +45,7 @@ server.registerResource(
 // Start receiving messages on stdin and sending messages on stdout
 const transport = new StdioServerTransport();
 await server.connect(transport);
+
+setInterval(() => {
+  console.error('Mock server stderr output');
+}, 5000);
