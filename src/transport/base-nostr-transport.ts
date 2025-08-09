@@ -20,6 +20,8 @@ import {
 } from '../core/index.js';
 import { validateMessage, validateMessageSize } from '../core/utils/utils.js';
 
+// TODO: Add proper shutdown handling https://modelcontextprotocol.io/specification/2025-06-18/basic/lifecycle#shutdown
+
 /**
  * Base options for configuring Nostr-based transports.
  */

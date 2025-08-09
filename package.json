@@ -1,6 +1,6 @@
 {
   "name": "@contextvm/sdk",
-  "version": "0.1.14",
+  "version": "0.1.15",
   "description": "CtxVM SDK for JavaScript/TypeScript",
   "license": "LGPL-3.0-1",
   "author": "ContextVM",
@@ -47,18 +47,18 @@
   },
   "devDependencies": {
     "@changesets/cli": "^2.29.5",
-    "@eslint/js": "^9.31.0",
+    "@eslint/js": "^9.33.0",
     "@types/bun": "latest",
-    "eslint": "^9.31.0",
+    "eslint": "^9.33.0",
     "eslint-config-prettier": "^10.1.8",
     "prettier": "^3.6.2",
-    "typescript-eslint": "^8.38.0"
+    "typescript-eslint": "^8.39.0"
   },
   "peerDependencies": {
-    "typescript": "^5.8.3"
+    "typescript": "^5.9.2"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.16.0",
-    "nostr-tools": "^2.15.0"
+    "@modelcontextprotocol/sdk": "^1.17.2",
+    "nostr-tools": "^2.16.2"
   }
 }

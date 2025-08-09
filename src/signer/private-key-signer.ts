@@ -1,6 +1,7 @@
 import { hexToBytes } from '@noble/hashes/utils';
 import {
   finalizeEvent,
+  generateSecretKey,
   getPublicKey,
   type NostrEvent,
   type UnsignedEvent,
@@ -17,8 +18,8 @@ export class PrivateKeySigner implements NostrSigner {
   private readonly privateKey: Uint8Array;
   private readonly publicKey: string;
 
-  constructor(privateKey: string) {
-    this.privateKey = hexToBytes(privateKey);
+  constructor(privateKey?: string) {
+    this.privateKey = privateKey ? hexToBytes(privateKey) : generateSecretKey();
     this.publicKey = getPublicKey(this.privateKey);
   }
 

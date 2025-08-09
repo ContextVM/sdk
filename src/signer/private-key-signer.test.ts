@@ -1,5 +1,5 @@
 import { test, expect, beforeAll, describe } from 'bun:test';
-import { bytesToHex } from '@noble/hashes/utils';
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
 import {
   generateSecretKey,
   getPublicKey,
@@ -19,10 +19,13 @@ describe('PrivateKeySigner', () => {
   });
 
   test('constructor correctly initializes privateKey and publicKey', async () => {
-    expect(signer['privateKey']).toEqual(
-      Uint8Array.from(Buffer.from(privateKeyHex, 'hex')),
-    );
+    expect(signer['privateKey']).toEqual(hexToBytes(privateKeyHex));
     expect(await signer.getPublicKey()).toBe(publicKeyHex);
+  });
+
+  test('constructor correctly initializes privateKey and publicKey from undefined privateKey', async () => {
+    const undefinedSigner = new PrivateKeySigner();
+    expect(await undefinedSigner.getPublicKey()).toBeDefined();
   });
 
   test('nip44 encrypt and decrypt work correctly', async () => {

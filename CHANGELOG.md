@@ -1,5 +1,12 @@
 # @contextvm/sdk
 
+## 0.1.15
+
+### Patch Changes
+
+- chore: bump packages versions
+- feat(private-key-signer) Allow undefined to generate new secret key
+
 ## 0.1.14
 
 ### Patch Changes
