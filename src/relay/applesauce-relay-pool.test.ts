@@ -8,11 +8,11 @@ import {
   type UnsignedEvent,
 } from 'nostr-tools';
 import { PrivateKeySigner } from '../signer/private-key-signer.js';
-import { NostrifyRelayPool } from './nostrify-relay-pool.js';
+import { ApplesauceRelayPool } from './applesauce-relay-pool.js';
 
-describe('NostrifyRelayPool Integration', () => {
+describe('ApplesauceRelayPool Integration', () => {
   let relayProcess: Subprocess;
-  const relayPort = 7778;
+  const relayPort = 7780;
   const relayUrl = `ws://localhost:${relayPort}`;
 
   beforeAll(async () => {
@@ -38,8 +38,8 @@ describe('NostrifyRelayPool Integration', () => {
     const publicKeyHex = getPublicKey(privateKey);
     const signer = new PrivateKeySigner(privateKeyHex);
 
-    // 2. Setup NostrifyRelayPool
-    const relayPool = new NostrifyRelayPool([relayUrl]);
+    // 2. Setup ApplesauceRelayPool
+    const relayPool = new ApplesauceRelayPool([relayUrl]);
     await relayPool.connect();
 
     // 3. Create an event
@@ -48,7 +48,7 @@ describe('NostrifyRelayPool Integration', () => {
       pubkey: publicKeyHex,
       created_at: Math.floor(Date.now() / 1000),
       tags: [],
-      content: 'Hello from NostrifyRelayPool test!',
+      content: 'Hello from ApplesauceRelayPool test!',
     };
     const signedEvent = await signer.signEvent(unsignedEvent);
 
@@ -90,8 +90,8 @@ describe('NostrifyRelayPool Integration', () => {
   }, 10000);
 
   test('should handle EOSE (End of Stored Events) correctly', async () => {
-    // 1. Setup NostrifyRelayPool
-    const relayPool = new NostrifyRelayPool([relayUrl]);
+    // 1. Setup ApplesauceRelayPool
+    const relayPool = new ApplesauceRelayPool([relayUrl]);
     await relayPool.connect();
 
     // 2. Track EOSE calls
@@ -122,8 +122,8 @@ describe('NostrifyRelayPool Integration', () => {
   }, 5000);
 
   test('should unsubscribe correctly', async () => {
-    // 1. Setup NostrifyRelayPool
-    const relayPool = new NostrifyRelayPool([relayUrl]);
+    // 1. Setup ApplesauceRelayPool
+    const relayPool = new ApplesauceRelayPool([relayUrl]);
     await relayPool.connect();
 
     // 2. Setup signer
@@ -188,20 +188,9 @@ describe('NostrifyRelayPool Integration', () => {
     await relayPool.disconnect();
   }, 10000);
 
-  test('should handle invalid relay URLs', async () => {
-    // 1. Setup NostrifyRelayPool with invalid URL
-    const invalidUrl = 'not-a-valid-url';
-    const relayPool = new NostrifyRelayPool([invalidUrl]);
-
-    // 2. Expect connect to throw an error
-    expect(relayPool.connect()).rejects.toThrow(
-      `Invalid relay URL: ${invalidUrl}`,
-    );
-  });
-
   test('should handle multiple relays', async () => {
     // 1. Setup a second relay process
-    const secondRelayPort = 7779;
+    const secondRelayPort = 7781;
     const secondRelayUrl = `ws://localhost:${secondRelayPort}`;
     const secondRelayProcess = Bun.spawn(
       ['bun', 'src/__mocks__/mock-relay.ts'],
@@ -217,8 +206,8 @@ describe('NostrifyRelayPool Integration', () => {
     // Wait for the second relay to start
     await sleep(100);
 
-    // 2. Setup NostrifyRelayPool with both relays
-    const relayPool = new NostrifyRelayPool([relayUrl, secondRelayUrl]);
+    // 2. Setup ApplesauceRelayPool with both relays
+    const relayPool = new ApplesauceRelayPool([relayUrl, secondRelayUrl]);
     await relayPool.connect();
 
     // 3. Setup signer

@@ -19,7 +19,6 @@ export class SimpleRelayPool implements RelayHandler {
   private reconnectTimer?: ReturnType<typeof setTimeout>;
   private readonly maxRetries = 5;
 
-  // Use Map for more efficient relay state management
   private relayStates = new Map<
     string,
     {
@@ -65,7 +64,7 @@ export class SimpleRelayPool implements RelayHandler {
     // Check all relays every 5 seconds
     this.reconnectTimer = setTimeout(() => {
       const connectionStatus = this.pool.listConnectionStatus();
-      this.relayStates.forEach((state, url) => {
+      this.relayStates.forEach((_, url) => {
         if (!connectionStatus.get(url)) {
           this.handleDisconnectedRelay(url);
         }

@@ -13,10 +13,10 @@ import { StdioClientTransport as StdioClientTransportForGateway } from '@modelco
 import { TEST_PRIVATE_KEY } from '../__mocks__/fixtures.js';
 import { NostrMCPGateway } from '../gateway/index.js';
 import { PrivateKeySigner } from '../signer/private-key-signer.js';
-import { SimpleRelayPool } from '../relay/simple-relay-pool.js';
 import { generateSecretKey, getPublicKey } from 'nostr-tools';
 import { bytesToHex, hexToBytes } from 'nostr-tools/utils';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import { ApplesauceRelayPool } from '../relay/applesauce-relay-pool.js';
 
 const baseRelayPort = 7780;
 const relayUrl = `ws://localhost:${baseRelayPort}`;
@@ -55,7 +55,7 @@ describe('Proxy-Gateway E2E Test (Without Mock Responses)', () => {
     });
 
     const gatewaySigner = new PrivateKeySigner(gatewayPrivateKey);
-    const gatewayRelayHandler = new SimpleRelayPool([relayUrl]);
+    const gatewayRelayHandler = new ApplesauceRelayPool([relayUrl]);
 
     gateway = new NostrMCPGateway({
       mcpServerTransport,

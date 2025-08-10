@@ -1,5 +1,11 @@
 # @contextvm/sdk
 
+## 0.1.17
+
+### Patch Changes
+
+- feat(relay): remove nostrify library integration and added ApplesauceRelayPool implementation
+
 ## 0.1.16
 
 ### Patch Changes

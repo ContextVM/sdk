@@ -1,6 +1,6 @@
 {
   "name": "@contextvm/sdk",
-  "version": "0.1.16",
+  "version": "0.1.17",
   "description": "CtxVM SDK for JavaScript/TypeScript",
   "license": "LGPL-3.0-1",
   "author": "ContextVM",
@@ -42,7 +42,7 @@
     "build:esm": "mkdir -p dist/esm && echo '{\"type\": \"module\"}' > dist/esm/package.json && bun tsc -p tsconfig.prod.json",
     "lint": "eslint src/",
     "test": "bun tests",
-    "fmt": "bun prettier --write .",
+    "format": "bun prettier --write .",
     "release": "bun run build && bun changeset publish"
   },
   "devDependencies": {
@@ -59,7 +59,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.17.2",
-    "@nostrify/nostrify": "npm:@jsr/nostrify__nostrify",
+    "applesauce-relay": "^2.3.0",
     "nostr-tools": "^2.16.2"
   }
 }

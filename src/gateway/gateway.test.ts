@@ -6,10 +6,10 @@ import { TEST_PRIVATE_KEY } from '../__mocks__/fixtures.js';
 import { NostrMCPGateway } from './index.js';
 import { NostrClientTransport } from '../transport/nostr-client-transport.js';
 import { PrivateKeySigner } from '../signer/private-key-signer.js';
-import { SimpleRelayPool } from '../relay/simple-relay-pool.js';
 import { getPublicKey } from 'nostr-tools';
 import { hexToBytes } from 'nostr-tools/utils';
 import { createLogger } from '../core/utils/logger.js';
+import { ApplesauceRelayPool } from '../relay/applesauce-relay-pool.js';
 
 describe('NostrMCPGateway End-to-End Test', () => {
   let relayProcess: Subprocess;
@@ -56,7 +56,7 @@ describe('NostrMCPGateway End-to-End Test', () => {
     }
 
     const gatewaySigner = new PrivateKeySigner(gatewayPrivateKey);
-    const gatewayRelayHandler = new SimpleRelayPool([relayUrl]);
+    const gatewayRelayHandler = new ApplesauceRelayPool([relayUrl]);
 
     gateway = new NostrMCPGateway({
       mcpServerTransport,
@@ -101,7 +101,7 @@ describe('NostrMCPGateway End-to-End Test', () => {
 
   const createClientTransport = (): NostrClientTransport => {
     const clientSigner = new PrivateKeySigner(clientPrivateKey);
-    const clientRelayHandler = new SimpleRelayPool([relayUrl]);
+    const clientRelayHandler = new ApplesauceRelayPool([relayUrl]);
 
     return new NostrClientTransport({
       signer: clientSigner,
@@ -189,7 +189,7 @@ describe('NostrMCPGateway End-to-End Test', () => {
 
     // Replace the gateway's transport with our custom one
     const gatewaySigner = new PrivateKeySigner(gatewayPrivateKey);
-    const gatewayRelayHandler = new SimpleRelayPool([relayUrl]);
+    const gatewayRelayHandler = new ApplesauceRelayPool([relayUrl]);
 
     const testGateway = new NostrMCPGateway({
       mcpServerTransport: customTransport,

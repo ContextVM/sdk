@@ -15,7 +15,7 @@
     "skipLibCheck": true,
     "baseUrl": ".",
     "paths": {
-      "@ctxvm/sdk/*": ["./src/*"]
+      "@contextvm/sdk/*": ["./src/*"]
     }
   },
   "include": ["src/**/*"],

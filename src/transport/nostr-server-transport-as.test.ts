@@ -17,7 +17,7 @@ import { TEST_PRIVATE_KEY } from '../__mocks__/fixtures.js';
 import { SERVER_ANNOUNCEMENT_KIND } from '../core/constants.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { EncryptionMode } from '../core/interfaces.js';
-import { NostrifyRelayPool } from '../relay/nostrify-relay-pool.js';
+import { ApplesauceRelayPool } from '../relay/applesauce-relay-pool.js';
 
 const baseRelayPort = 7790; // Use a different port to avoid conflicts
 const relayUrl = `ws://localhost:${baseRelayPort}`;
@@ -63,7 +63,7 @@ describe('NostrServerTransport', () => {
     const client = new Client({ name, version: '1.0.0' });
     const clientNostrTransport = new NostrClientTransport({
       signer: new PrivateKeySigner(privateKey),
-      relayHandler: new NostrifyRelayPool([relayUrl]),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
       serverPubkey: serverPublicKey,
     });
     return { client, clientNostrTransport };
@@ -81,7 +81,7 @@ describe('NostrServerTransport', () => {
 
     const transport = new NostrServerTransport({
       signer: new PrivateKeySigner(serverPrivateKey),
-      relayHandler: new NostrifyRelayPool([relayUrl]),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
       serverInfo: {
         name: 'Test Server',
         website: 'http://localhost',
@@ -92,7 +92,7 @@ describe('NostrServerTransport', () => {
     await server.connect(transport);
 
     let announcementEvent: NostrEvent | null = null;
-    const relayPool = new NostrifyRelayPool([relayUrl]);
+    const relayPool = new ApplesauceRelayPool([relayUrl]);
     await relayPool.connect();
 
     await relayPool.subscribe(
@@ -133,7 +133,7 @@ describe('NostrServerTransport', () => {
     });
     const allowedTransport = new NostrServerTransport({
       signer: new PrivateKeySigner(serverPrivateKey),
-      relayHandler: new NostrifyRelayPool([relayUrl]),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
       allowedPublicKeys: [allowedClientPublicKey],
       serverInfo: {
         name: 'Allowed Server',
@@ -177,7 +177,7 @@ describe('NostrServerTransport', () => {
 
     const allowedTransport = new NostrServerTransport({
       signer: new PrivateKeySigner(serverPrivateKey),
-      relayHandler: new NostrifyRelayPool([relayUrl]),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
       allowedPublicKeys: [allowedClientPublicKey], // Only allow the dummy key
     });
 
@@ -218,7 +218,7 @@ describe('NostrServerTransport', () => {
 
     const transport = new NostrServerTransport({
       signer: new PrivateKeySigner(serverPrivateKey),
-      relayHandler: new NostrifyRelayPool([relayUrl]),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
       serverInfo: {
         name: 'Test Server',
         about: 'A test server for CTXVM',
@@ -232,7 +232,7 @@ describe('NostrServerTransport', () => {
 
     // Subscribe to announcement events
     let announcementEvent: NostrEvent | null = null;
-    const relayPool = new NostrifyRelayPool([relayUrl]);
+    const relayPool = new ApplesauceRelayPool([relayUrl]);
     await relayPool.connect();
 
     await relayPool.subscribe(
@@ -287,7 +287,7 @@ describe('NostrServerTransport', () => {
 
     const transport = new NostrServerTransport({
       signer: new PrivateKeySigner(serverPrivateKey),
-      relayHandler: new NostrifyRelayPool([relayUrl]),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
       serverInfo: {
         name: 'Minimal Server',
       },
@@ -299,7 +299,7 @@ describe('NostrServerTransport', () => {
 
     // Subscribe to announcement events
     let announcementEvent: NostrEvent | null = null;
-    const relayPool = new NostrifyRelayPool([relayUrl]);
+    const relayPool = new ApplesauceRelayPool([relayUrl]);
     await relayPool.connect();
 
     await relayPool.subscribe(
@@ -345,7 +345,7 @@ describe('NostrServerTransport', () => {
 
     const serverTransport = new NostrServerTransport({
       signer: new PrivateKeySigner(serverPrivateKey),
-      relayHandler: new NostrifyRelayPool([relayUrl]),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
       serverInfo: {
         name: 'Test Server',
         website: 'http://localhost',

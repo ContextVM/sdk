@@ -11,12 +11,12 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { NostrServerTransport } from './nostr-server-transport.js';
 import { NostrClientTransport } from './nostr-client-transport.js';
 import { PrivateKeySigner } from '../signer/private-key-signer.js';
-import { SimpleRelayPool } from '../relay/simple-relay-pool.js';
 import { generateSecretKey, getPublicKey, NostrEvent } from 'nostr-tools';
 import { bytesToHex, hexToBytes } from 'nostr-tools/utils';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { EncryptionMode } from '../core/interfaces.js';
 import { CTXVM_MESSAGES_KIND, GIFT_WRAP_KIND } from '../core/constants.js';
+import { ApplesauceRelayPool } from '../relay/applesauce-relay-pool.js';
 
 const baseRelayPort = 7791;
 const relayUrl = `ws://localhost:${baseRelayPort}`;
@@ -61,7 +61,7 @@ describe('NostrTransport Encryption', () => {
     const client = new Client({ name: 'TestClient', version: '1.0.0' });
     const clientNostrTransport = new NostrClientTransport({
       signer: new PrivateKeySigner(privateKey),
-      relayHandler: new SimpleRelayPool([relayUrl]),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
       serverPubkey: serverPublicKey,
       encryptionMode,
     });
@@ -76,7 +76,7 @@ describe('NostrTransport Encryption', () => {
     const server = new McpServer({ name: 'TestServer', version: '1.0.0' });
     const serverTransport = new NostrServerTransport({
       signer: new PrivateKeySigner(privateKey),
-      relayHandler: new SimpleRelayPool([relayUrl]),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
       encryptionMode,
       serverInfo: {},
     });
@@ -278,7 +278,7 @@ describe('NostrTransport Encryption', () => {
       EncryptionMode.DISABLED,
     );
 
-    const relayHandler = new SimpleRelayPool([relayUrl]);
+    const relayHandler = new ApplesauceRelayPool([relayUrl]);
     relayHandler.subscribe([{ kinds: [CTXVM_MESSAGES_KIND] }], (event) => {
       collectedEvents.push(event);
     });
@@ -307,7 +307,7 @@ describe('NostrTransport Encryption', () => {
       EncryptionMode.REQUIRED,
     );
 
-    const relayHandler = new SimpleRelayPool([relayUrl]);
+    const relayHandler = new ApplesauceRelayPool([relayUrl]);
     relayHandler.subscribe([{ kinds: [GIFT_WRAP_KIND] }], (event) => {
       collectedEvents.push(event);
     });
