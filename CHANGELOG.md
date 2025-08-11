@@ -1,5 +1,11 @@
 # @contextvm/sdk
 
+## 0.1.21
+
+### Patch Changes
+
+- refactor(transport): improve initialization process
+
 ## 0.1.20
 
 ### Patch Changes

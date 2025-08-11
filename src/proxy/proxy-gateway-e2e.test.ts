@@ -49,7 +49,7 @@ describe('Proxy-Gateway E2E Test (Without Mock Responses)', () => {
     await sleep(100);
 
     // Create the gateway with the mock MCP server transport
-    const mcpServerTransport = new StdioClientTransportForGateway({
+    const mcpClientTransport = new StdioClientTransportForGateway({
       command: 'bun',
       args: ['src/__mocks__/mock-mcp-server.ts'],
     });
@@ -58,7 +58,7 @@ describe('Proxy-Gateway E2E Test (Without Mock Responses)', () => {
     const gatewayRelayHandler = new ApplesauceRelayPool([relayUrl]);
 
     gateway = new NostrMCPGateway({
-      mcpServerTransport,
+      mcpClientTransport,
       nostrTransportOptions: {
         signer: gatewaySigner,
         relayHandler: gatewayRelayHandler,
