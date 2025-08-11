@@ -1,5 +1,11 @@
 # @contextvm/sdk
 
+## 0.1.18
+
+### Patch Changes
+
+- refactor: add complete initialization lifecycle for announcements, rename mcpServerTransport to mcpClientTransport in gateway
+
 ## 0.1.17
 
 ### Patch Changes
