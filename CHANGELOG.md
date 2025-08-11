@@ -1,5 +1,11 @@
 # @contextvm/sdk
 
+## 0.1.20
+
+### Patch Changes
+
+- refactor(server-transport): improve logging with logger.info
+
 ## 0.1.19
 
 ### Patch Changes
