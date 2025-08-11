@@ -75,7 +75,6 @@ export const NOSTR_TAGS = {
 } as const;
 
 export const announcementMethods: AnnouncementMethods = {
-  server: 'initialize',
   tools: 'tools/list',
   resources: 'resources/list',
   resourceTemplates: 'resources/templates/list',

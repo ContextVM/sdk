@@ -12,8 +12,8 @@ const logger = createLogger('gateway');
  * Options for configuring the NostrMCPGateway.
  */
 export interface NostrMCPGatewayOptions {
-  /** The MCP server transport (e.g., StdioServerTransport) to connect to the original MCP server */
-  mcpServerTransport: Transport;
+  /** The MCP client transport (e.g., StdioClientTransport) to connect to the original MCP server */
+  mcpClientTransport: Transport;
   /** Options for configuring the Nostr server transport */
   nostrTransportOptions: NostrServerTransportOptions;
 }
@@ -24,14 +24,18 @@ export interface NostrMCPGatewayOptions {
  * events and forwarding them to the local MCP server, then publishing the
  * responses back to Nostr. All request/response correlation is handled by the
  * NostrServerTransport, making this a simple message forwarder.
+ * @param options - Configuration options for the gateway
+ * @param options.mcpClientTransport - The MCP client transport (e.g., StdioServerTransport)
+ *   used to connect to and communicate with the original MCP server
+ * @param options.nostrTransportOptions - Configuration options for the Nostr server transport
  */
 export class NostrMCPGateway {
-  private readonly mcpServerTransport: Transport;
+  private readonly mcpClientTransport: Transport;
   private readonly nostrServerTransport: NostrServerTransport;
   private isRunning = false;
 
   constructor(options: NostrMCPGatewayOptions) {
-    this.mcpServerTransport = options.mcpServerTransport;
+    this.mcpClientTransport = options.mcpClientTransport;
     this.nostrServerTransport = new NostrServerTransport(
       options.nostrTransportOptions,
     );
@@ -46,7 +50,7 @@ export class NostrMCPGateway {
     // Forward messages from Nostr to the MCP server, handling any potential errors.
     this.nostrServerTransport.onmessage = (message: JSONRPCMessage) => {
       logger.debug('Received message from Nostr:', message);
-      this.mcpServerTransport
+      this.mcpClientTransport
         .send(message)
         .catch(this.handleServerError.bind(this));
     };
@@ -54,14 +58,14 @@ export class NostrMCPGateway {
     this.nostrServerTransport.onclose = this.handleNostrClose.bind(this);
 
     // Forward messages from the MCP server to the Nostr transport, handling any potential errors.
-    this.mcpServerTransport.onmessage = (message: JSONRPCMessage) => {
+    this.mcpClientTransport.onmessage = (message: JSONRPCMessage) => {
       logger.debug('Received message from MCP server:', message);
       this.nostrServerTransport
         .send(message)
         .catch(this.handleNostrError.bind(this));
     };
-    this.mcpServerTransport.onerror = this.handleServerError.bind(this);
-    this.mcpServerTransport.onclose = this.handleServerClose.bind(this);
+    this.mcpClientTransport.onerror = this.handleServerError.bind(this);
+    this.mcpClientTransport.onclose = this.handleServerClose.bind(this);
   }
 
   /**
@@ -74,7 +78,7 @@ export class NostrMCPGateway {
 
     try {
       // Start both transports
-      await this.mcpServerTransport.start();
+      await this.mcpClientTransport.start();
       await this.nostrServerTransport.start();
 
       this.isRunning = true;
@@ -97,7 +101,7 @@ export class NostrMCPGateway {
     try {
       // Stop both transports
       await this.nostrServerTransport.close();
-      await this.mcpServerTransport.close();
+      await this.mcpClientTransport.close();
 
       this.isRunning = false;
       logger.info('NostrMCPGateway stopped successfully');

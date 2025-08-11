@@ -46,7 +46,7 @@ describe('NostrMCPGateway End-to-End Test', () => {
     const gatewayRelayHandler = new ApplesauceRelayPool([relayUrl]);
 
     gateway = new NostrMCPGateway({
-      mcpServerTransport,
+      mcpClientTransport: mcpServerTransport,
       nostrTransportOptions: {
         signer: gatewaySigner,
         relayHandler: gatewayRelayHandler,

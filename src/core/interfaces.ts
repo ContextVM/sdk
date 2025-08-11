@@ -1,5 +1,4 @@
 import {
-  InitializeRequest,
   ListPromptsRequest,
   ListResourcesRequest,
   ListResourceTemplatesRequest,
@@ -55,7 +54,6 @@ export interface RelayHandler {
 }
 
 export interface AnnouncementMethods {
-  server: InitializeRequest['method'];
   tools: ListToolsRequest['method'];
   resources: ListResourcesRequest['method'];
   resourceTemplates: ListResourceTemplatesRequest['method'];
