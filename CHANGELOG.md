@@ -1,5 +1,11 @@
 # @contextvm/sdk
 
+## 0.1.19
+
+### Patch Changes
+
+- refactor(transport): replace bun import with internal utils
+
 ## 0.1.18
 
 ### Patch Changes
