@@ -1,5 +1,11 @@
 # @contextvm/sdk
 
+## 0.1.22
+
+### Patch Changes
+
+- refactor(transport): improve initialization timeout handling
+
 ## 0.1.21
 
 ### Patch Changes

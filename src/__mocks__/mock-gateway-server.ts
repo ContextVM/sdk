@@ -17,7 +17,7 @@ async function main(): Promise<void> {
     process.env.GATEWAY_PRIVATE_KEY || bytesToHex(generateSecretKey());
 
   // Set up stdio transport for the MCP server
-  const mcpServerTransport = new StdioClientTransport({
+  const mcpClientTransport = new StdioClientTransport({
     command: 'uvx',
     args: ['duckduckgo-mcp-server'],
   });
@@ -28,7 +28,7 @@ async function main(): Promise<void> {
 
   // Create and start the gateway
   const gateway = new NostrMCPGateway({
-    mcpServerTransport,
+    mcpClientTransport,
     nostrTransportOptions: {
       signer,
       relayHandler,
