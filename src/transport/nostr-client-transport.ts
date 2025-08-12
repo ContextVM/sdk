@@ -101,7 +101,12 @@ export class NostrClientTransport
    */
   private async processIncomingEvent(event: NostrEvent): Promise<void> {
     try {
+      if (getNostrEventTag(event.tags, 'p') !== (await this.getPublicKey())) {
+        logger.debug('Skipping event with unexpected pubkey:', event.pubkey);
+        return;
+      }
       let nostrEvent = event;
+
       // Handle encrypted messages
       if (event.kind === GIFT_WRAP_KIND) {
         const decryptedContent = await decryptMessage(event, this.signer);

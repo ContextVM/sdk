@@ -1,5 +1,11 @@
 # @contextvm/sdk
 
+## 0.1.23
+
+### Patch Changes
+
+- feat(transport): add announcement deletion capability and improve event filtering
+
 ## 0.1.22
 
 ### Patch Changes

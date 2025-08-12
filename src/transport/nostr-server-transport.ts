@@ -36,6 +36,7 @@ import {
 import { EncryptionMode } from '../core/interfaces.js';
 import { NostrEvent } from 'nostr-tools';
 import { createLogger } from '../core/utils/logger.js';
+import { EventDeletion } from 'nostr-tools/kinds';
 
 const logger = createLogger('nostr-server-transport');
 
@@ -173,6 +174,61 @@ export class NostrServerTransport
     } else {
       this.onerror?.(new Error('Unknown message type in send()'));
     }
+  }
+
+  /**
+   * Deletes server announcements and capability listings by publishing deletion events.
+   * This method queries for existing announcement events and publishes deletion events (kind 5)
+   * to remove them from the relay network.
+   * @param reason Optional reason for deletion (default: 'Service offline').
+   * @returns Promise that resolves to an array of deletion events that were published.
+   */
+  public async deleteAnnouncement(
+    reason: string = 'Service offline',
+  ): Promise<NostrEvent[]> {
+    const publicKey = await this.getPublicKey();
+    const events: NostrEvent[] = [];
+
+    const kinds = [
+      SERVER_ANNOUNCEMENT_KIND,
+      TOOLS_LIST_KIND,
+      RESOURCES_LIST_KIND,
+      RESOURCETEMPLATES_LIST_KIND,
+      PROMPTS_LIST_KIND,
+    ];
+
+    for (const kind of kinds) {
+      const filter = {
+        kinds: [kind],
+        authors: [publicKey],
+      };
+
+      // Collect events using the subscribe method with onEvent hook
+      await this.relayHandler.subscribe([filter], (event: NostrEvent) => {
+        events.push(event);
+      });
+
+      if (!events.length) {
+        logger.info(`No events found for kind ${kind} to delete`);
+        continue;
+      }
+
+      const deletionEventTemplate = {
+        kind: EventDeletion,
+        pubkey: publicKey,
+        content: reason,
+        tags: events.map((ev) => ['e', ev.id]),
+        created_at: Math.floor(Date.now() / 1000),
+      };
+
+      const deletionEvent = await this.signer.signEvent(deletionEventTemplate);
+
+      await this.relayHandler.publish(deletionEvent);
+      logger.info(
+        `Published deletion event for kind ${kind} (${events.length} events)`,
+      );
+    }
+    return events;
   }
 
   /**
