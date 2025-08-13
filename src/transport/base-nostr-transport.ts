@@ -67,7 +67,6 @@ export abstract class BaseNostrTransport {
       return;
     }
 
-    this.relayHandler.unsubscribe();
     await this.relayHandler.disconnect();
     this.isConnected = false;
   }

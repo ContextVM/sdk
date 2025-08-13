@@ -101,16 +101,21 @@ export class NostrClientTransport
    */
   private async processIncomingEvent(event: NostrEvent): Promise<void> {
     try {
-      if (getNostrEventTag(event.tags, 'p') !== (await this.getPublicKey())) {
-        logger.debug('Skipping event with unexpected pubkey:', event.pubkey);
-        return;
-      }
       let nostrEvent = event;
 
       // Handle encrypted messages
       if (event.kind === GIFT_WRAP_KIND) {
         const decryptedContent = await decryptMessage(event, this.signer);
         nostrEvent = JSON.parse(decryptedContent) as NostrEvent;
+      }
+
+      // Check if the event is from the expected server
+      if (nostrEvent.pubkey !== this.serverPubkey) {
+        logger.debug('Skipping event from unexpected server pubkey:', {
+          receivedPubkey: nostrEvent.pubkey,
+          expectedPubkey: this.serverPubkey,
+        });
+        return;
       }
 
       if (!this.serverInitializeEvent) {
@@ -124,6 +129,12 @@ export class NostrClientTransport
           logger.warn('Failed to parse server initialize event:', error);
         }
       }
+      const eTag = getNostrEventTag(nostrEvent.tags, 'e');
+
+      if (eTag && !this.pendingRequestIds.has(eTag)) {
+        logger.error(`Received Nostr event with unexpected 'e' tag: ${eTag}.`);
+        return;
+      }
 
       // Process the resulting event
       const mcpMessage = this.convertNostrEventToMcpMessage(nostrEvent);
@@ -134,8 +145,6 @@ export class NostrClientTransport
         );
         return;
       }
-
-      const eTag = getNostrEventTag(nostrEvent.tags, 'e');
 
       if (eTag) {
         this.handleResponse(eTag, mcpMessage);
@@ -168,14 +177,8 @@ export class NostrClientTransport
     correlatedEventId: string,
     mcpMessage: JSONRPCMessage,
   ): void {
-    if (this.pendingRequestIds.has(correlatedEventId)) {
-      this.onmessage?.(mcpMessage);
-      this.pendingRequestIds.delete(correlatedEventId);
-    } else {
-      logger.error(
-        `Received Nostr event with unexpected 'e' tag: ${correlatedEventId}.`,
-      );
-    }
+    this.onmessage?.(mcpMessage);
+    this.pendingRequestIds.delete(correlatedEventId);
   }
 
   /**

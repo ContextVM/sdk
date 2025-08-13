@@ -141,6 +141,7 @@ export class NostrServerTransport
   public async start(): Promise<void> {
     await this.connect();
     const pubkey = await this.getPublicKey();
+    logger.info('Server pubkey:', pubkey);
     // Subscribe to events targeting this server's public key
     const filters = this.createSubscriptionFilters(pubkey);
 

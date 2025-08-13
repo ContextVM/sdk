@@ -1,5 +1,11 @@
 # @contextvm/sdk
 
+## 0.1.24
+
+### Patch Changes
+
+- fix(transport): enhance event validation and disconnect handling
+
 ## 0.1.23
 
 ### Patch Changes

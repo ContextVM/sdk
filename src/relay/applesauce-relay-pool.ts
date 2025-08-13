@@ -69,18 +69,6 @@ export class ApplesauceRelayPool implements RelayHandler {
     logger.info('Relay pool initialized', { relayUrls: this.relayUrls });
   }
 
-  async disconnect(): Promise<void> {
-    logger.info('Disconnecting from relays');
-
-    // Close all active subscriptions
-    this.unsubscribe();
-
-    // Close the relay pool
-    // Note: RelayPool doesn't have a close method, connections are managed automatically
-    // We just need to clear our subscriptions
-    logger.info('Disconnected from all relays');
-  }
-
   async publish(event: NostrEvent): Promise<void> {
     logger.debug('Publishing event', { eventId: event.id, kind: event.kind });
 
@@ -200,6 +188,18 @@ export class ApplesauceRelayPool implements RelayHandler {
       logger.error('Failed to create subscription', { filters, error });
       throw error;
     }
+  }
+
+  async disconnect(): Promise<void> {
+    logger.info('Disconnecting from relays');
+
+    // Close all active subscriptions
+    this.unsubscribe();
+
+    // Close the relay pool
+    // Note: RelayPool doesn't have a close method, connections are managed automatically
+    // We just need to clear our subscriptions
+    logger.info('Disconnected from all relays');
   }
 
   unsubscribe(): void {
