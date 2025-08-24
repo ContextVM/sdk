@@ -46,20 +46,20 @@
     "release": "bun run build && bun changeset publish"
   },
   "devDependencies": {
-    "@changesets/cli": "^2.29.5",
-    "@eslint/js": "^9.33.0",
-    "@types/bun": "latest",
-    "eslint": "^9.33.0",
+    "@changesets/cli": "^2.29.6",
+    "@eslint/js": "^9.34.0",
+    "@types/bun": "^1.2.20",
+    "eslint": "^9.34.0",
     "eslint-config-prettier": "^10.1.8",
     "prettier": "^3.6.2",
-    "typescript-eslint": "^8.39.0"
+    "typescript-eslint": "^8.40.0"
   },
   "peerDependencies": {
     "typescript": "^5.9.2"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.17.2",
-    "applesauce-relay": "^2.3.0",
+    "@modelcontextprotocol/sdk": "^1.17.4",
+    "applesauce-relay": "^3.0.0",
     "nostr-tools": "^2.16.2"
   }
 }
