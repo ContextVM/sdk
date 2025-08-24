@@ -1,4 +1,4 @@
-import { PublishResponse, RelayGroup, RelayPool } from 'applesauce-relay';
+import { RelayGroup, RelayPool } from 'applesauce-relay';
 import type { NostrEvent, Filter } from 'nostr-tools';
 import { RelayHandler } from '../core/interfaces.js';
 import { createLogger } from '../core/utils/logger.js';
