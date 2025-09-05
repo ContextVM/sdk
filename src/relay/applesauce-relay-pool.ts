@@ -94,8 +94,7 @@ export class ApplesauceRelayPool implements RelayHandler {
     onEose?: () => void,
   ): { unsubscribe: () => void } {
     const subscription = this.relayGroup.subscription(filters, {
-      reconnect: true,
-      retries: { count: 3, delay: 1000, resetOnSuccess: true },
+      reconnect: { count: undefined, delay: 1000, resetOnSuccess: true },
     });
 
     const sub = subscription.subscribe({
