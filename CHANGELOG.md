@@ -1,5 +1,11 @@
 # @contextvm/sdk
 
+## 0.1.25
+
+### Patch Changes
+
+- chore: bump applesauce-relay to latest
+
 ## 0.1.24
 
 ### Patch Changes
