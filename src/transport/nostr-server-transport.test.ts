@@ -18,6 +18,7 @@ import { SERVER_ANNOUNCEMENT_KIND } from '../core/constants.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { EncryptionMode } from '../core/interfaces.js';
 import { ApplesauceRelayPool } from '../relay/applesauce-relay-pool.js';
+import { z } from 'zod';
 
 const baseRelayPort = 7790; // Use a different port to avoid conflicts
 const relayUrl = `ws://localhost:${baseRelayPort}`;
@@ -161,7 +162,7 @@ describe('NostrServerTransport', () => {
     await server.close();
   }, 10000);
 
-  test('should not allow connection for disallowed public keys and timeout', async () => {
+  test('should allow connection for disallowed public keys', async () => {
     const serverPrivateKey = TEST_PRIVATE_KEY;
     const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
 
@@ -203,7 +204,97 @@ describe('NostrServerTransport', () => {
       .then(() => 'connected');
 
     const result = await Promise.race([connectPromise, timeoutPromise]);
+    expect(result).toBe('connected');
+    await server.close();
+  }, 10000);
+
+  test('should allow call excluded capabilities for disallowed public keys', async () => {
+    const serverPrivateKey = TEST_PRIVATE_KEY;
+    const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
+
+    const allowedClientPublicKey = getPublicKey(
+      hexToBytes(bytesToHex(generateSecretKey())), // Generate a dummy key for the allowed list
+    );
+    const disallowedClientPrivateKey = bytesToHex(generateSecretKey());
+
+    const server = new McpServer({
+      name: 'Disallowed Server',
+      version: '1.0.0',
+    });
+
+    // Add an addition tool
+    server.registerTool(
+      'add',
+      {
+        title: 'Addition Tool',
+        description: 'Add two numbers',
+        inputSchema: { a: z.number(), b: z.number() },
+      },
+      async ({ a, b }) => ({
+        content: [{ type: 'text', text: String(a + b) }],
+      }),
+    );
+
+    server.registerTool(
+      'dummy',
+      {
+        title: 'Dummy Tool',
+        description: 'Dummy description',
+        inputSchema: {},
+      },
+      async () => ({
+        content: [{ type: 'text', text: 'Dummy response' }],
+      }),
+    );
+
+    const allowedTransport = new NostrServerTransport({
+      signer: new PrivateKeySigner(serverPrivateKey),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      allowedPublicKeys: [allowedClientPublicKey], // Only allow the dummy key
+      excludedCapabilities: [
+        { method: 'tools/list' }, // Exclude specific capability
+        { method: 'tools/call', name: 'dummy' }, // Exclude specific capability
+      ],
+    });
+
+    await server.connect(allowedTransport);
+
+    const {
+      client: disallowedClient,
+      clientNostrTransport: disallowedClientNostrTransport,
+    } = createClientAndTransport(
+      disallowedClientPrivateKey,
+      'Disallowed Client',
+      serverPublicKey,
+    );
+
+    await disallowedClient.connect(disallowedClientNostrTransport);
+
+    const listToolsResult = await disallowedClient.listTools();
+
+    const timeoutPromise = new Promise<string>((resolve) => {
+      sleep(1000).then(() => {
+        resolve('timeout');
+      });
+    });
+
+    const callRestrictedToolResult = disallowedClient.callTool({
+      name: 'add',
+      arguments: { a: 1, b: 2 },
+    });
+
+    const callExcludedToolResult = disallowedClient.callTool({
+      name: 'dummy',
+      arguments: {},
+    });
+
+    const result = await Promise.race([
+      callRestrictedToolResult,
+      timeoutPromise,
+    ]);
     expect(result).toBe('timeout');
+    expect(listToolsResult).toBeDefined();
+    expect(callExcludedToolResult).toBeDefined();
     await server.close();
   }, 10000);
 
