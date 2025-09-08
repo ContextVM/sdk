@@ -40,12 +40,25 @@ import { EventDeletion } from 'nostr-tools/kinds';
 const logger = createLogger('nostr-server-transport');
 
 /**
+ * Represents a capability exclusion pattern that can bypass whitelisting.
+ * Can be either a method-only pattern (e.g., 'tools/list') or a method + name pattern (e.g., 'tools/call, get_weather').
+ */
+export interface CapabilityExclusion {
+  /** The JSON-RPC method to exclude from whitelisting (e.g., 'tools/call', 'tools/list') */
+  method: string;
+  /** Optional capability name to specifically exclude (e.g., 'get_weather') */
+  name?: string;
+}
+
+/**
  * Options for configuring the NostrServerTransport.
  */
 export interface NostrServerTransportOptions extends BaseNostrTransportOptions {
   serverInfo?: ServerInfo;
   isPublicServer?: boolean;
   allowedPublicKeys?: string[];
+  /** List of capabilities that are excluded from public key whitelisting requirements */
+  excludedCapabilities?: CapabilityExclusion[];
 }
 
 /**
@@ -85,6 +98,7 @@ export class NostrServerTransport
   private readonly clientSessions = new Map<string, ClientSession>();
   private readonly isPublicServer?: boolean;
   private readonly allowedPublicKeys?: string[];
+  private readonly excludedCapabilities?: CapabilityExclusion[];
   private readonly serverInfo?: ServerInfo;
   private isInitialized = false;
 
@@ -93,6 +107,7 @@ export class NostrServerTransport
     this.serverInfo = options.serverInfo;
     this.isPublicServer = options.isPublicServer;
     this.allowedPublicKeys = options.allowedPublicKeys;
+    this.excludedCapabilities = options.excludedCapabilities;
   }
 
   /**
@@ -618,6 +633,38 @@ export class NostrServerTransport
   }
 
   /**
+   * Checks if a capability is excluded from whitelisting requirements.
+   * @param method The JSON-RPC method (e.g., 'tools/call', 'tools/list')
+   * @param name Optional capability name for method-specific exclusions (e.g., 'get_weather')
+   * @returns true if the capability should bypass whitelisting, false otherwise
+   */
+  private isCapabilityExcluded(method: string, name?: string): boolean {
+    // Always allow fundamental MCP methods for connection establishment
+    if (method === 'initialize' || method === 'notifications/initialized') {
+      return true;
+    }
+
+    if (!this.excludedCapabilities?.length) {
+      return false;
+    }
+
+    return this.excludedCapabilities.some((exclusion) => {
+      // Check if method matches
+      if (exclusion.method !== method) {
+        return false;
+      }
+
+      // If exclusion has no name requirement, method match is sufficient
+      if (!exclusion.name) {
+        return true;
+      }
+
+      // If exclusion has a name requirement, check if it matches the provided name
+      return exclusion.name === name;
+    });
+  }
+
+  /**
    * Common logic for authorizing and processing an event.
    * @param event The event to process.
    * @param isEncrypted Whether the original event was encrypted.
@@ -626,19 +673,26 @@ export class NostrServerTransport
     event: NostrEvent,
     isEncrypted: boolean,
   ): void {
-    if (
-      this.allowedPublicKeys?.length &&
-      !this.allowedPublicKeys.includes(event.pubkey)
-    ) {
-      logger.error(`Unauthorized message from ${event.pubkey}. Ignoring.`);
-      return;
-    }
-
     const mcpMessage = this.convertNostrEventToMcpMessage(event);
 
     if (!mcpMessage) {
       logger.error('Skipping invalid Nostr event with malformed JSON content');
       return;
+    }
+
+    if (this.allowedPublicKeys?.length) {
+      let isExcluded = false;
+      if (isJSONRPCRequest(mcpMessage)) {
+        isExcluded = this.isCapabilityExcluded(
+          mcpMessage.method,
+          mcpMessage.params?.name as string | undefined,
+        );
+      }
+
+      if (!this.allowedPublicKeys.includes(event.pubkey) && !isExcluded) {
+        logger.error(`Unauthorized message from ${event.pubkey}. Ignoring.`);
+        return;
+      }
     }
 
     const now = Date.now();
