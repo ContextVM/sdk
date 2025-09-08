@@ -1,5 +1,21 @@
 # @contextvm/sdk
 
+## 0.1.26
+
+### Patch Changes
+
+- feat(transport): feat(transport): add capability exclusion for whitelisting
+
+  Add support for excluding specific capabilities from public key whitelisting
+  requirements, allowing certain operations from disallowed public keys. This
+  enhances security policy flexibility while maintaining backward compatibility.
+
+  The implementation includes:
+  - CapabilityExclusion interface and excludedCapabilities option
+  - isCapabilityExcluded method for exclusion checks
+  - Updated authorization logic
+  - New test to verify exclusion behavior
+
 ## 0.1.25
 
 ### Patch Changes
