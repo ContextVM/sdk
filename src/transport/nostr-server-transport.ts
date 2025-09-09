@@ -669,6 +669,7 @@ export class NostrServerTransport
    * @param event The event to process.
    * @param isEncrypted Whether the original event was encrypted.
    */
+
   private authorizeAndProcessEvent(
     event: NostrEvent,
     isEncrypted: boolean,
@@ -682,7 +683,7 @@ export class NostrServerTransport
 
     if (this.allowedPublicKeys?.length) {
       let isExcluded = false;
-      if (isJSONRPCRequest(mcpMessage)) {
+      if (isJSONRPCRequest(mcpMessage) || isJSONRPCNotification(mcpMessage)) {
         isExcluded = this.isCapabilityExcluded(
           mcpMessage.method,
           mcpMessage.params?.name as string | undefined,
@@ -690,7 +691,9 @@ export class NostrServerTransport
       }
 
       if (!this.allowedPublicKeys.includes(event.pubkey) && !isExcluded) {
-        logger.error(`Unauthorized message from ${event.pubkey}. Ignoring.`);
+        logger.error(
+          `Unauthorized message from ${event.pubkey}, message: ${JSON.stringify(mcpMessage)}. Ignoring.`,
+        );
         return;
       }
     }
@@ -702,7 +705,7 @@ export class NostrServerTransport
       isEncrypted,
     );
     session.lastActivity = now;
-
+    logger.info(`Session created for ${event.pubkey}`);
     if (isJSONRPCRequest(mcpMessage)) {
       this.handleIncomingRequest(session, event.id, mcpMessage);
     } else if (isJSONRPCNotification(mcpMessage)) {
