@@ -1,5 +1,11 @@
 # @contextvm/sdk
 
+## 0.1.27
+
+### Patch Changes
+
+- fix(nostr-server-transport): unauthorized errors due to not validating notifications
+
 ## 0.1.26
 
 ### Patch Changes

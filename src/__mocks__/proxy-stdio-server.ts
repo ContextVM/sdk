@@ -2,7 +2,10 @@
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { NostrMCPProxy } from '../proxy/index.js';
 import { PrivateKeySigner } from '../signer/private-key-signer.js';
-import { SimpleRelayPool } from '../relay/simple-relay-pool.js';
+import { bytesToHex } from 'nostr-tools/utils';
+import { generateSecretKey } from 'nostr-tools';
+import { ApplesauceRelayPool } from '../relay/applesauce-relay-pool.js';
+import { EncryptionMode } from '../core/interfaces.js';
 
 /**
  * Proxy server that exposes a remote Nostr MCP server via stdio.
@@ -10,10 +13,10 @@ import { SimpleRelayPool } from '../relay/simple-relay-pool.js';
  */
 async function main(): Promise<void> {
   // Get configuration from environment variables
-  const relayUrl = process.env.RELAY_URL || 'ws://localhost:7777';
-  const clientPrivateKey = process.env.CLIENT_PRIVATE_KEY;
+  const relayUrl = process.env.RELAY_URL || 'ws://localhost:10547';
+  const clientPrivateKey =
+    process.env.CLIENT_PRIVATE_KEY || bytesToHex(generateSecretKey());
   const serverPubkey = process.env.SERVER_PUBKEY;
-
   if (!clientPrivateKey) {
     console.error('CLIENT_PRIVATE_KEY environment variable is required');
     process.exit(1);
@@ -29,7 +32,7 @@ async function main(): Promise<void> {
 
   // Create Nostr components
   const signer = new PrivateKeySigner(clientPrivateKey);
-  const relayPool = new SimpleRelayPool([relayUrl]);
+  const relayPool = new ApplesauceRelayPool([relayUrl]);
 
   // Create and start the proxy
   const proxy = new NostrMCPProxy({
@@ -38,6 +41,7 @@ async function main(): Promise<void> {
       signer,
       relayHandler: relayPool,
       serverPubkey,
+      encryptionMode: EncryptionMode.DISABLED,
     },
   });
 
