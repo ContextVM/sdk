@@ -1,5 +1,12 @@
 # @contextvm/sdk
 
+## 0.1.28
+
+### Patch Changes
+
+- refactor(nostr-server-transport): check if excluded capabilities have length to proceed with the validation
+- f127712: chore: log new sessions just when they are created
+
 ## 0.1.27
 
 ### Patch Changes
