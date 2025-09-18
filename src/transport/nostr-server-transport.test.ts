@@ -180,6 +180,7 @@ describe('NostrServerTransport', () => {
       signer: new PrivateKeySigner(serverPrivateKey),
       relayHandler: new ApplesauceRelayPool([relayUrl]),
       allowedPublicKeys: [allowedClientPublicKey], // Only allow the dummy key
+      excludedCapabilities: [{ method: 'initialize' }],
     });
 
     await server.connect(allowedTransport);
