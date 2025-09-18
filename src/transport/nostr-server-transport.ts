@@ -360,6 +360,7 @@ export class NostrServerTransport
   ): ClientSession {
     const session = this.clientSessions.get(clientPubkey);
     if (!session) {
+      logger.info(`Session created for ${clientPubkey}`);
       const newSession: ClientSession = {
         isInitialized: false,
         isEncrypted,
@@ -682,15 +683,19 @@ export class NostrServerTransport
     }
 
     if (this.allowedPublicKeys?.length) {
-      let isExcluded = false;
-      if (isJSONRPCRequest(mcpMessage) || isJSONRPCNotification(mcpMessage)) {
-        isExcluded = this.isCapabilityExcluded(
+      // Check if the message should bypass whitelisting due to excluded capabilities
+      const shouldBypassWhitelisting =
+        this.excludedCapabilities?.length &&
+        (isJSONRPCRequest(mcpMessage) || isJSONRPCNotification(mcpMessage)) &&
+        this.isCapabilityExcluded(
           mcpMessage.method,
           mcpMessage.params?.name as string | undefined,
         );
-      }
 
-      if (!this.allowedPublicKeys.includes(event.pubkey) && !isExcluded) {
+      if (
+        !this.allowedPublicKeys.includes(event.pubkey) &&
+        !shouldBypassWhitelisting
+      ) {
         logger.error(
           `Unauthorized message from ${event.pubkey}, message: ${JSON.stringify(mcpMessage)}. Ignoring.`,
         );
@@ -705,7 +710,6 @@ export class NostrServerTransport
       isEncrypted,
     );
     session.lastActivity = now;
-    logger.info(`Session created for ${event.pubkey}`);
     if (isJSONRPCRequest(mcpMessage)) {
       this.handleIncomingRequest(session, event.id, mcpMessage);
     } else if (isJSONRPCNotification(mcpMessage)) {
