@@ -148,7 +148,7 @@ export class SimpleRelayPool implements RelayHandler {
       if (sub.closer) sub.closer.close();
       sub.closer = this.pool.subscribeMany(
         this.normalizedRelayUrls,
-        sub.filters,
+        sub.filters[0],
         {
           onevent: sub.onEvent,
           oneose: sub.onEose,
@@ -199,7 +199,7 @@ export class SimpleRelayPool implements RelayHandler {
     onEvent: (event: NostrEvent) => void,
     onEose?: () => void,
   ): Promise<void> {
-    const closer = this.pool.subscribeMany(this.normalizedRelayUrls, filters, {
+    const closer = this.pool.subscribeMany(this.normalizedRelayUrls, filters[0], {
       onevent: onEvent,
       oneose: onEose,
     });
