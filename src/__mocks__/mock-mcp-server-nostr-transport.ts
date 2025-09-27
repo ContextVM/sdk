@@ -49,7 +49,6 @@ server.registerResource(
 const transport = new NostrServerTransport({
   signer: new PrivateKeySigner(TEST_PRIVATE_KEY),
   relayHandler: new ApplesauceRelayPool(['ws://localhost:10547']),
-  isPublicServer: true,
   serverInfo: {
     name: 'demo-server',
     website: 'https://model-context.org',
