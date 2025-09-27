@@ -18,6 +18,7 @@ const transport = new NostrClientTransport({
   serverPubkey:
     'ada13b4dbc773890a5e8e468b72418b9fffb51c40b78236819a721971b14fed1',
   encryptionMode: EncryptionMode.DISABLED,
+  isStateless: true,
 });
 
 await client.connect(transport);
@@ -31,5 +32,3 @@ const callTool = await client.callTool({
   },
 });
 console.log(callTool);
-await sleep(1000);
-await client.ping();
