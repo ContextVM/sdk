@@ -1,5 +1,13 @@
 # @contextvm/sdk
 
+## 0.1.29
+
+### Patch Changes
+
+- 08be76f: feat(transport): add stateless mode support for nostr client transport
+- fc91d44: chore: bump versions
+- 34058d4: fix(auth): handle unauthorized requests in public server
+
 ## 0.1.28
 
 ### Patch Changes
