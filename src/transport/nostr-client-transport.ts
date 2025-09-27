@@ -2,6 +2,10 @@ import {
   InitializeResultSchema,
   NotificationSchema,
   type JSONRPCMessage,
+  isJSONRPCRequest,
+  isJSONRPCNotification,
+  LATEST_PROTOCOL_VERSION,
+  type JSONRPCResponse,
 } from '@modelcontextprotocol/sdk/types.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import {
@@ -24,6 +28,7 @@ const logger = createLogger('nostr-client-transport');
  */
 export interface NostrTransportOptions extends BaseNostrTransportOptions {
   serverPubkey: string;
+  isStateless?: boolean;
 }
 
 /**
@@ -43,11 +48,13 @@ export class NostrClientTransport
   private readonly serverPubkey: string;
   private readonly pendingRequestIds: Set<string>;
   private serverInitializeEvent: NostrEvent | undefined = undefined;
+  private readonly isStateless: boolean;
 
   constructor(options: NostrTransportOptions) {
     super(options);
     this.serverPubkey = options.serverPubkey;
     this.pendingRequestIds = new Set();
+    this.isStateless = options.isStateless ?? false;
   }
 
   /**
@@ -74,10 +81,68 @@ export class NostrClientTransport
    * @param message The JSON-RPC request or response to send.
    */
   public async send(message: JSONRPCMessage): Promise<void> {
+    if (this.isStateless) {
+      if (isJSONRPCRequest(message) && message.method === 'initialize') {
+        logger.info('Stateless mode: Emulating initialize response.');
+        this.emulateInitializeResponse(message.id as string | number);
+        return;
+      }
+      if (
+        isJSONRPCNotification(message) &&
+        message.method === 'notifications/initialized'
+      ) {
+        logger.info(
+          'Stateless mode: Catching notifications/initialized.',
+          message,
+        );
+        return;
+      }
+    }
+
     const eventId = await this._sendInternal(message);
     if (eventId) {
       this.pendingRequestIds.add(eventId);
     }
+  }
+
+  /**
+   * Emulates the server's initialize response for stateless clients.
+   * This method constructs a generic server response and injects it back into the client,
+   * allowing the client to self-initialize without a network roundtrip.
+   * @param requestId The ID of the original initialize request.
+   */
+  private emulateInitializeResponse(requestId: string | number): void {
+    const emulatedResult = {
+      protocolVersion: LATEST_PROTOCOL_VERSION,
+      serverInfo: {
+        name: 'Emulated-Stateless-Server',
+        version: '1.0.0',
+      },
+      capabilities: {
+        tools: {
+          listChanged: true,
+        },
+        prompts: {
+          listChanged: true,
+        },
+        resources: {
+          subscribe: true,
+          listChanged: true,
+        },
+      },
+    };
+
+    const response: JSONRPCResponse = {
+      jsonrpc: '2.0',
+      id: requestId,
+      result: emulatedResult,
+    };
+
+    // Feed the emulated response back to the MCP client.
+    // Use a setTimeout to avoid re-entrancy issues and mimic a slight network delay.
+    setTimeout(() => {
+      this.onmessage?.(response);
+    }, 50);
   }
 
   /**
