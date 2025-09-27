@@ -699,6 +699,30 @@ export class NostrServerTransport
         logger.error(
           `Unauthorized message from ${event.pubkey}, message: ${JSON.stringify(mcpMessage)}. Ignoring.`,
         );
+
+        if (this.isPublicServer && isJSONRPCRequest(mcpMessage)) {
+          const errorResponse: JSONRPCError = {
+            jsonrpc: '2.0',
+            id: mcpMessage.id,
+            error: {
+              code: -32000,
+              message: 'Unauthorized',
+            },
+          };
+
+          const tags = this.createResponseTags(event.pubkey, event.id);
+          this.sendMcpMessage(
+            errorResponse,
+            event.pubkey,
+            CTXVM_MESSAGES_KIND,
+            tags,
+            isEncrypted,
+          ).catch((err) => {
+            this.onerror?.(
+              new Error(`Failed to send unauthorized response: ${err}`),
+            );
+          });
+        }
         return;
       }
     }
