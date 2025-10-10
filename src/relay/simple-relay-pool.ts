@@ -199,10 +199,14 @@ export class SimpleRelayPool implements RelayHandler {
     onEvent: (event: NostrEvent) => void,
     onEose?: () => void,
   ): Promise<void> {
-    const closer = this.pool.subscribeMany(this.normalizedRelayUrls, filters[0], {
-      onevent: onEvent,
-      oneose: onEose,
-    });
+    const closer = this.pool.subscribeMany(
+      this.normalizedRelayUrls,
+      filters[0],
+      {
+        onevent: onEvent,
+        oneose: onEose,
+      },
+    );
     this.subscriptions.push({ filters, onEvent, onEose, closer });
   }
 
