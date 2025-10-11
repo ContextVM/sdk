@@ -107,7 +107,10 @@ function createPinoLogger(config: LoggerConfig = {}): PinoLogger {
     if (!existsSync(dir)) {
       mkdirSync(dir, { recursive: true });
     }
-    pinoDestination = pino.destination({ dest: filePath });
+    pinoDestination = pino.destination({
+      dest: filePath,
+      minLength: 1,
+    });
   } else if (destination === 'stdout') {
     // Use stdout
     pinoDestination = pino.destination({ dest: 1 }); // 1 is stdout
