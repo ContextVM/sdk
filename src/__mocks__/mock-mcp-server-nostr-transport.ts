@@ -48,7 +48,7 @@ server.registerResource(
 // Start receiving messages on stdin and sending messages on stdout
 const transport = new NostrServerTransport({
   signer: new PrivateKeySigner(TEST_PRIVATE_KEY),
-  relayHandler: new ApplesauceRelayPool(['ws://localhost:10547']),
+  relayHandler: new ApplesauceRelayPool(['wss://relay.contextvm.org']),
   serverInfo: {
     name: 'demo-server',
     website: 'https://model-context.org',

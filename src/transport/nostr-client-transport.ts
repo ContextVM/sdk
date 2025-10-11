@@ -61,19 +61,51 @@ export class NostrClientTransport
    * Starts the transport, connecting to the relay and setting up event listeners.
    */
   public async start(): Promise<void> {
-    await this.connect();
-    const pubkey = await this.getPublicKey();
-    const filters = this.createSubscriptionFilters(pubkey);
+    try {
+      await this.connect();
+      const pubkey = await this.getPublicKey();
+      logger.info('Client pubkey:', pubkey);
+      const filters = this.createSubscriptionFilters(pubkey);
 
-    await this.subscribe(filters, this.processIncomingEvent.bind(this));
+      await this.subscribe(filters, async (event) => {
+        try {
+          await this.processIncomingEvent(event);
+        } catch (error) {
+          logger.error('Error processing incoming event', {
+            error: error instanceof Error ? error.message : String(error),
+            stack: error instanceof Error ? error.stack : undefined,
+            eventId: event.id,
+          });
+          this.onerror?.(
+            error instanceof Error ? error : new Error(String(error)),
+          );
+        }
+      });
+    } catch (error) {
+      logger.error('Error starting NostrClientTransport', {
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+      });
+      this.onerror?.(error instanceof Error ? error : new Error(String(error)));
+      throw error;
+    }
   }
 
   /**
    * Closes the transport, disconnecting from the relay.
    */
   public async close(): Promise<void> {
-    await this.disconnect();
-    this.onclose?.();
+    try {
+      await this.disconnect();
+      this.onclose?.();
+    } catch (error) {
+      logger.error('Error closing NostrClientTransport', {
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+      });
+      this.onerror?.(error instanceof Error ? error : new Error(String(error)));
+      throw error;
+    }
   }
 
   /**
@@ -81,27 +113,45 @@ export class NostrClientTransport
    * @param message The JSON-RPC request or response to send.
    */
   public async send(message: JSONRPCMessage): Promise<void> {
-    if (this.isStateless) {
-      if (isJSONRPCRequest(message) && message.method === 'initialize') {
-        logger.info('Stateless mode: Emulating initialize response.');
-        this.emulateInitializeResponse(message.id as string | number);
-        return;
+    try {
+      if (this.isStateless) {
+        if (isJSONRPCRequest(message) && message.method === 'initialize') {
+          logger.info('Stateless mode: Emulating initialize response.');
+          this.emulateInitializeResponse(message.id as string | number);
+          return;
+        }
+        if (
+          isJSONRPCNotification(message) &&
+          message.method === 'notifications/initialized'
+        ) {
+          logger.info(
+            'Stateless mode: Catching notifications/initialized.',
+            message,
+          );
+          return;
+        }
       }
-      if (
-        isJSONRPCNotification(message) &&
-        message.method === 'notifications/initialized'
-      ) {
-        logger.info(
-          'Stateless mode: Catching notifications/initialized.',
-          message,
-        );
-        return;
-      }
-    }
 
-    const eventId = await this._sendInternal(message);
-    if (eventId) {
-      this.pendingRequestIds.add(eventId);
+      const eventId = await this._sendInternal(message);
+      if (eventId) {
+        this.pendingRequestIds.add(eventId);
+      }
+    } catch (error) {
+      logger.error('Error sending message', {
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+        messageType: isJSONRPCRequest(message)
+          ? 'request'
+          : isJSONRPCNotification(message)
+            ? 'notification'
+            : 'unknown',
+        method:
+          isJSONRPCRequest(message) || isJSONRPCNotification(message)
+            ? message.method
+            : undefined,
+      });
+      this.onerror?.(error instanceof Error ? error : new Error(String(error)));
+      throw error;
     }
   }
 
@@ -112,37 +162,57 @@ export class NostrClientTransport
    * @param requestId The ID of the original initialize request.
    */
   private emulateInitializeResponse(requestId: string | number): void {
-    const emulatedResult = {
-      protocolVersion: LATEST_PROTOCOL_VERSION,
-      serverInfo: {
-        name: 'Emulated-Stateless-Server',
-        version: '1.0.0',
-      },
-      capabilities: {
-        tools: {
-          listChanged: true,
+    try {
+      const emulatedResult = {
+        protocolVersion: LATEST_PROTOCOL_VERSION,
+        serverInfo: {
+          name: 'Emulated-Stateless-Server',
+          version: '1.0.0',
         },
-        prompts: {
-          listChanged: true,
+        capabilities: {
+          tools: {
+            listChanged: true,
+          },
+          prompts: {
+            listChanged: true,
+          },
+          resources: {
+            subscribe: true,
+            listChanged: true,
+          },
         },
-        resources: {
-          subscribe: true,
-          listChanged: true,
-        },
-      },
-    };
+      };
 
-    const response: JSONRPCResponse = {
-      jsonrpc: '2.0',
-      id: requestId,
-      result: emulatedResult,
-    };
+      const response: JSONRPCResponse = {
+        jsonrpc: '2.0',
+        id: requestId,
+        result: emulatedResult,
+      };
 
-    // Feed the emulated response back to the MCP client.
-    // Use a setTimeout to avoid re-entrancy issues and mimic a slight network delay.
-    setTimeout(() => {
-      this.onmessage?.(response);
-    }, 50);
+      // Feed the emulated response back to the MCP client.
+      // Use a setTimeout to avoid re-entrancy issues and mimic a slight network delay.
+      setTimeout(() => {
+        try {
+          this.onmessage?.(response);
+        } catch (error) {
+          logger.error('Error in emulated initialize response callback', {
+            error: error instanceof Error ? error.message : String(error),
+            stack: error instanceof Error ? error.stack : undefined,
+            requestId,
+          });
+          this.onerror?.(
+            error instanceof Error ? error : new Error(String(error)),
+          );
+        }
+      }, 50);
+    } catch (error) {
+      logger.error('Error emulating initialize response', {
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+        requestId,
+      });
+      this.onerror?.(error instanceof Error ? error : new Error(String(error)));
+    }
   }
 
   /**
@@ -151,14 +221,23 @@ export class NostrClientTransport
    * @returns The ID of the published Nostr event.
    */
   private async _sendInternal(message: JSONRPCMessage): Promise<string> {
-    const tags = this.createRecipientTags(this.serverPubkey);
+    try {
+      const tags = this.createRecipientTags(this.serverPubkey);
 
-    return this.sendMcpMessage(
-      message,
-      this.serverPubkey,
-      CTXVM_MESSAGES_KIND,
-      tags,
-    );
+      return this.sendMcpMessage(
+        message,
+        this.serverPubkey,
+        CTXVM_MESSAGES_KIND,
+        tags,
+      );
+    } catch (error) {
+      logger.error('Error in _sendInternal', {
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+        serverPubkey: this.serverPubkey,
+      });
+      throw error;
+    }
   }
 
   /**
@@ -170,8 +249,27 @@ export class NostrClientTransport
 
       // Handle encrypted messages
       if (event.kind === GIFT_WRAP_KIND) {
-        const decryptedContent = await decryptMessage(event, this.signer);
-        nostrEvent = JSON.parse(decryptedContent) as NostrEvent;
+        try {
+          const decryptedContent = await decryptMessage(event, this.signer);
+          nostrEvent = JSON.parse(decryptedContent) as NostrEvent;
+        } catch (decryptError) {
+          logger.error('Failed to decrypt gift-wrapped event', {
+            error:
+              decryptError instanceof Error
+                ? decryptError.message
+                : String(decryptError),
+            stack:
+              decryptError instanceof Error ? decryptError.stack : undefined,
+            eventId: event.id,
+            pubkey: event.pubkey,
+          });
+          this.onerror?.(
+            decryptError instanceof Error
+              ? decryptError
+              : new Error('Failed to decrypt gift-wrapped event'),
+          );
+          return;
+        }
       }
 
       // Check if the event is from the expected server
@@ -179,6 +277,7 @@ export class NostrClientTransport
         logger.debug('Skipping event from unexpected server pubkey:', {
           receivedPubkey: nostrEvent.pubkey,
           expectedPubkey: this.serverPubkey,
+          eventId: nostrEvent.id,
         });
         return;
       }
@@ -189,15 +288,24 @@ export class NostrClientTransport
           const parse = InitializeResultSchema.safeParse(content.result);
           if (parse.success) {
             this.serverInitializeEvent = nostrEvent;
+            logger.info('Received server initialize event', {
+              eventId: nostrEvent.id,
+            });
           }
         } catch (error) {
-          logger.warn('Failed to parse server initialize event:', error);
+          logger.warn('Failed to parse server initialize event:', {
+            error: error instanceof Error ? error.message : String(error),
+            eventId: nostrEvent.id,
+          });
         }
       }
       const eTag = getNostrEventTag(nostrEvent.tags, 'e');
 
       if (eTag && !this.pendingRequestIds.has(eTag)) {
-        logger.error(`Received Nostr event with unexpected 'e' tag: ${eTag}.`);
+        logger.error(`Received Nostr event with unexpected 'e' tag: ${eTag}.`, {
+          eventId: nostrEvent.id,
+          eTag,
+        });
         return;
       }
 
@@ -207,6 +315,7 @@ export class NostrClientTransport
       if (!mcpMessage) {
         logger.error(
           'Skipping invalid Nostr event with malformed JSON content',
+          { eventId: nostrEvent.id, pubkey: nostrEvent.pubkey },
         );
         return;
       }
@@ -217,7 +326,13 @@ export class NostrClientTransport
         this.handleNotification(mcpMessage);
       }
     } catch (error) {
-      logger.error('Error handling incoming Nostr event:', error);
+      logger.error('Error handling incoming Nostr event', {
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+        eventId: event.id,
+        pubkey: event.pubkey,
+        kind: event.kind,
+      });
       this.onerror?.(
         error instanceof Error
           ? error
@@ -242,8 +357,17 @@ export class NostrClientTransport
     correlatedEventId: string,
     mcpMessage: JSONRPCMessage,
   ): void {
-    this.onmessage?.(mcpMessage);
-    this.pendingRequestIds.delete(correlatedEventId);
+    try {
+      this.onmessage?.(mcpMessage);
+      this.pendingRequestIds.delete(correlatedEventId);
+    } catch (error) {
+      logger.error('Error handling response', {
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+        correlatedEventId,
+      });
+      this.onerror?.(error instanceof Error ? error : new Error(String(error)));
+    }
   }
 
   /**
@@ -255,6 +379,10 @@ export class NostrClientTransport
       NotificationSchema.parse(mcpMessage);
       this.onmessage?.(mcpMessage);
     } catch (error) {
+      logger.error('Failed to handle incoming notification', {
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+      });
       this.onerror?.(
         error instanceof Error
           ? error
