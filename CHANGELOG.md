@@ -1,5 +1,11 @@
 # @contextvm/sdk
 
+## 0.1.30-rc.2
+
+### Patch Changes
+
+- fix(transport): improve session management and error handling
+
 ## 0.1.30-rc.1
 
 ### Patch Changes
@@ -12,7 +18,7 @@
   - Enhance error context logging with stack traces and relevant identifiers
   - Apply consistent error handling patterns across all transport layers
 
-## 0.1.30
+## 0.1.30-rc.0
 
 ### Patch Changes
 

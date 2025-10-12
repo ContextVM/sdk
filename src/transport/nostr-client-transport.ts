@@ -47,11 +47,17 @@ export class NostrClientTransport
   // Private properties for managing the transport's state and dependencies.
   private readonly serverPubkey: string;
   private readonly pendingRequestIds: Set<string>;
-  private serverInitializeEvent: NostrEvent | undefined = undefined;
+  private serverInitializeEvent: NostrEvent | undefined;
   private readonly isStateless: boolean;
 
   constructor(options: NostrTransportOptions) {
     super(options);
+
+    // Validate serverPubkey is valid hex
+    if (!/^[0-9a-f]{64}$/i.test(options.serverPubkey)) {
+      throw new Error(`Invalid serverPubkey format: ${options.serverPubkey}`);
+    }
+
     this.serverPubkey = options.serverPubkey;
     this.pendingRequestIds = new Set();
     this.isStateless = options.isStateless ?? false;
@@ -190,8 +196,8 @@ export class NostrClientTransport
       };
 
       // Feed the emulated response back to the MCP client.
-      // Use a setTimeout to avoid re-entrancy issues and mimic a slight network delay.
-      setTimeout(() => {
+      // Use queueMicrotask to avoid re-entrancy issues without artificial delay.
+      queueMicrotask(() => {
         try {
           this.onmessage?.(response);
         } catch (error) {
@@ -204,7 +210,7 @@ export class NostrClientTransport
             error instanceof Error ? error : new Error(String(error)),
           );
         }
-      }, 50);
+      });
     } catch (error) {
       logger.error('Error emulating initialize response', {
         error: error instanceof Error ? error.message : String(error),
@@ -282,7 +288,11 @@ export class NostrClientTransport
         return;
       }
 
-      if (!this.serverInitializeEvent) {
+      const eTag = getNostrEventTag(nostrEvent.tags, 'e');
+
+      // Only check if we haven't initialized AND this looks like an initialize response
+      if (!this.serverInitializeEvent && eTag) {
+        // Only check responses (have eTag), not notifications
         try {
           const content = JSON.parse(nostrEvent.content);
           const parse = InitializeResultSchema.safeParse(content.result);
@@ -293,18 +303,19 @@ export class NostrClientTransport
             });
           }
         } catch (error) {
-          logger.warn('Failed to parse server initialize event:', {
-            error: error instanceof Error ? error.message : String(error),
+          // Ignore parse errors - not every response is an initialize response
+          logger.debug('Event is not a valid initialize response', {
             eventId: nostrEvent.id,
           });
         }
       }
-      const eTag = getNostrEventTag(nostrEvent.tags, 'e');
 
       if (eTag && !this.pendingRequestIds.has(eTag)) {
-        logger.error(`Received Nostr event with unexpected 'e' tag: ${eTag}.`, {
+        logger.warn(`Received response for unknown/expired request`, {
           eventId: nostrEvent.id,
           eTag,
+          reason:
+            'Request not found in pending set - may be duplicate or late response',
         });
         return;
       }
@@ -376,7 +387,14 @@ export class NostrClientTransport
    */
   private handleNotification(mcpMessage: JSONRPCMessage): void {
     try {
-      NotificationSchema.parse(mcpMessage);
+      const result = NotificationSchema.safeParse(mcpMessage);
+      if (!result.success) {
+        logger.warn('Invalid notification schema', {
+          errors: result.error.errors,
+          message: mcpMessage,
+        });
+        return;
+      }
       this.onmessage?.(mcpMessage);
     } catch (error) {
       logger.error('Failed to handle incoming notification', {
