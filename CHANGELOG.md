@@ -1,5 +1,11 @@
 # @contextvm/sdk
 
+## 0.1.31
+
+### Patch Changes
+
+- chore: bump version
+
 ## 0.1.30
 
 ### Patch Changes
