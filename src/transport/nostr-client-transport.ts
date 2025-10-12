@@ -306,6 +306,7 @@ export class NostrClientTransport
           // Ignore parse errors - not every response is an initialize response
           logger.debug('Event is not a valid initialize response', {
             eventId: nostrEvent.id,
+            error,
           });
         }
       }
