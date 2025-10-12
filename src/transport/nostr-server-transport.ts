@@ -59,6 +59,10 @@ export interface NostrServerTransportOptions extends BaseNostrTransportOptions {
   allowedPublicKeys?: string[];
   /** List of capabilities that are excluded from public key whitelisting requirements */
   excludedCapabilities?: CapabilityExclusion[];
+  /** Interval in milliseconds for cleaning up inactive sessions (default: 60000) */
+  cleanupIntervalMs?: number;
+  /** Timeout in milliseconds for considering a session inactive (default: 300000) */
+  sessionTimeoutMs?: number;
 }
 
 /**
@@ -79,6 +83,7 @@ interface ClientSession {
   isEncrypted: boolean;
   lastActivity: number;
   pendingRequests: Map<string, string | number>;
+  eventToProgressToken: Map<string, string>; // eventId -> progressToken
 }
 
 /**
@@ -96,12 +101,18 @@ export class NostrServerTransport
   public onerror?: (error: Error) => void;
 
   private readonly clientSessions = new Map<string, ClientSession>();
+  private readonly eventIdToClient = new Map<string, string>(); // eventId -> clientPubkey
   private readonly isPublicServer?: boolean;
   private readonly allowedPublicKeys?: string[];
   private readonly excludedCapabilities?: CapabilityExclusion[];
   private readonly serverInfo?: ServerInfo;
+  private readonly cleanupIntervalMs: number;
+  private readonly sessionTimeoutMs: number;
   private isInitialized = false;
   private cleanupInterval?: NodeJS.Timeout;
+  private initializationPromise?: Promise<void>;
+  private initializationResolver?: () => void;
+  private cachedCommonTags?: string[][];
 
   constructor(options: NostrServerTransportOptions) {
     super(options);
@@ -109,6 +120,8 @@ export class NostrServerTransport
     this.isPublicServer = options.isPublicServer;
     this.allowedPublicKeys = options.allowedPublicKeys;
     this.excludedCapabilities = options.excludedCapabilities;
+    this.cleanupIntervalMs = options.cleanupIntervalMs ?? 60000;
+    this.sessionTimeoutMs = options.sessionTimeoutMs ?? 300000;
   }
 
   /**
@@ -116,6 +129,10 @@ export class NostrServerTransport
    * @returns Array of tag arrays for Nostr events.
    */
   private generateCommonTags(): string[][] {
+    if (this.cachedCommonTags) {
+      return this.cachedCommonTags;
+    }
+
     const commonTags: string[][] = [];
     if (this.serverInfo?.name) {
       commonTags.push([NOSTR_TAGS.NAME, this.serverInfo.name]);
@@ -132,6 +149,8 @@ export class NostrServerTransport
     if (this.encryptionMode !== EncryptionMode.DISABLED) {
       commonTags.push([NOSTR_TAGS.SUPPORT_ENCRYPTION]);
     }
+
+    this.cachedCommonTags = commonTags;
     return commonTags;
   }
 
@@ -166,13 +185,13 @@ export class NostrServerTransport
         await this.getAnnouncementData();
       }
 
-      // Start periodic cleanup of inactive sessions (every 60 seconds)
+      // Start periodic cleanup of inactive sessions
       this.cleanupInterval = setInterval(() => {
         const cleaned = this.cleanupInactiveSessions();
         if (cleaned > 0) {
           logger.info(`Cleaned up ${cleaned} inactive sessions`);
         }
-      }, 60000);
+      }, this.cleanupIntervalMs);
     } catch (error) {
       logger.error('Error starting NostrServerTransport', {
         error: error instanceof Error ? error.message : String(error),
@@ -216,7 +235,6 @@ export class NostrServerTransport
     if (isJSONRPCResponse(message) || isJSONRPCError(message)) {
       await this.handleResponse(message);
     } else if (isJSONRPCNotification(message)) {
-      this.cleanupInactiveSessions();
       await this.handleNotification(message);
     } else {
       this.onerror?.(new Error('Unknown message type in send()'));
@@ -354,15 +372,21 @@ export class NostrServerTransport
    * The method will always resolve, allowing announcements to proceed.
    */
   private async waitForInitialization(): Promise<void> {
-    const startTime = Date.now();
-    const timeoutMs = 10000; // 10 seconds timeout
+    if (this.isInitialized) return;
 
-    while (!this.isInitialized && Date.now() - startTime < timeoutMs) {
-      await new Promise((resolve) => setTimeout(resolve, 100));
+    if (!this.initializationPromise) {
+      this.initializationPromise = new Promise((resolve) => {
+        this.initializationResolver = resolve;
+      });
     }
 
-    // Log warning if not initialized but don't throw error
-    if (!this.isInitialized) {
+    const timeout = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('Initialization timeout')), 10000),
+    );
+
+    try {
+      await Promise.race([this.initializationPromise, timeout]);
+    } catch {
       logger.warn(
         'Server initialization not completed within timeout, proceeding with announcements',
       );
@@ -438,6 +462,7 @@ export class NostrServerTransport
         isEncrypted,
         lastActivity: now,
         pendingRequests: new Map(),
+        eventToProgressToken: new Map(),
       };
       this.clientSessions.set(clientPubkey, newSession);
       return newSession;
@@ -456,6 +481,7 @@ export class NostrServerTransport
     session: ClientSession,
     eventId: string,
     request: JSONRPCRequest,
+    clientPubkey: string,
   ): void {
     // Store the original request ID for later restoration
     const originalRequestId = request.id;
@@ -463,11 +489,14 @@ export class NostrServerTransport
     request.id = eventId;
     // Store in client session
     session.pendingRequests.set(eventId, originalRequestId);
+    this.eventIdToClient.set(eventId, clientPubkey);
 
     // Track progress tokens if provided
     const progressToken = request.params?._meta?.progressToken;
     if (progressToken) {
-      session.pendingRequests.set(String(progressToken), eventId);
+      const tokenStr = String(progressToken);
+      session.pendingRequests.set(tokenStr, eventId);
+      session.eventToProgressToken.set(eventId, tokenStr);
     }
   }
 
@@ -500,6 +529,7 @@ export class NostrServerTransport
       if (isJSONRPCResponse(response)) {
         if (InitializeResultSchema.safeParse(response.result).success) {
           this.isInitialized = true;
+          this.initializationResolver?.(); // Resolve waiting promise
 
           // Send the initialized notification
           const initializedNotification: JSONRPCMessage = {
@@ -514,23 +544,31 @@ export class NostrServerTransport
       return;
     }
 
-    // Find the client session with this pending request
+    // Find the client session with this pending request using O(1) lookup
     const nostrEventId = response.id as string;
-    let targetClientPubkey: string | undefined;
-    let originalRequestId: string | number | undefined;
+    const targetClientPubkey = this.eventIdToClient.get(nostrEventId);
 
-    for (const [clientPubkey, session] of this.clientSessions.entries()) {
-      const originalId = session.pendingRequests.get(nostrEventId);
-      if (originalId !== undefined) {
-        targetClientPubkey = clientPubkey;
-        originalRequestId = originalId;
-        break;
-      }
-    }
-
-    if (!targetClientPubkey || originalRequestId === undefined) {
+    if (!targetClientPubkey) {
       this.onerror?.(
         new Error(`No pending request found for response ID: ${response.id}`),
+      );
+      return;
+    }
+
+    const session = this.clientSessions.get(targetClientPubkey);
+    if (!session) {
+      this.onerror?.(
+        new Error(`No session found for client: ${targetClientPubkey}`),
+      );
+      return;
+    }
+
+    const originalRequestId = session.pendingRequests.get(nostrEventId);
+    if (originalRequestId === undefined) {
+      this.onerror?.(
+        new Error(
+          `No original request ID found for response ID: ${response.id}`,
+        ),
       );
       return;
     }
@@ -539,13 +577,6 @@ export class NostrServerTransport
     response.id = originalRequestId;
 
     // Send the response back to the original requester
-    const session = this.clientSessions.get(targetClientPubkey);
-    if (!session) {
-      this.onerror?.(
-        new Error(`No session found for client: ${targetClientPubkey}`),
-      );
-      return;
-    }
     const tags = this.createResponseTags(targetClientPubkey, nostrEventId);
     if (
       isJSONRPCResponse(response) &&
@@ -567,20 +598,14 @@ export class NostrServerTransport
     );
 
     // Clean up the pending request and any associated progress token
-    if (session) {
-      session.pendingRequests.delete(nostrEventId);
+    session.pendingRequests.delete(nostrEventId);
+    this.eventIdToClient.delete(nostrEventId);
 
-      // Find and delete the corresponding progress token if it exists
-      let progressTokenToDelete: string | number | undefined;
-      for (const [key, value] of session.pendingRequests.entries()) {
-        if (value === nostrEventId) {
-          progressTokenToDelete = key;
-          break;
-        }
-      }
-      if (progressTokenToDelete !== undefined) {
-        session.pendingRequests.delete(String(progressTokenToDelete));
-      }
+    // Clean up progress token if it exists
+    const progressToken = session.eventToProgressToken.get(nostrEventId);
+    if (progressToken) {
+      session.pendingRequests.delete(progressToken);
+      session.eventToProgressToken.delete(nostrEventId);
     }
   }
 
@@ -601,16 +626,26 @@ export class NostrServerTransport
       ) {
         const token = String(notification.params._meta.progressToken);
 
+        // Use reverse lookup map for O(1) progress token routing
+        // First find the session that has this progress token
+        let targetClientPubkey: string | undefined;
+        let nostrEventId: string | undefined;
+
         for (const [clientPubkey, session] of this.clientSessions.entries()) {
           if (session.pendingRequests.has(token)) {
-            const nostrEventId = session.pendingRequests.get(token) as string;
-            await this.sendNotification(
-              clientPubkey,
-              notification,
-              nostrEventId,
-            );
-            return;
+            nostrEventId = session.pendingRequests.get(token) as string;
+            targetClientPubkey = clientPubkey;
+            break;
           }
+        }
+
+        if (targetClientPubkey && nostrEventId) {
+          await this.sendNotification(
+            targetClientPubkey,
+            notification,
+            nostrEventId,
+          );
+          return;
         }
 
         const error = new Error(`No client found for progress token: ${token}`);
@@ -862,7 +897,7 @@ export class NostrServerTransport
       );
       session.lastActivity = now;
       if (isJSONRPCRequest(mcpMessage)) {
-        this.handleIncomingRequest(session, event.id, mcpMessage);
+        this.handleIncomingRequest(session, event.id, mcpMessage, event.pubkey);
       } else if (isJSONRPCNotification(mcpMessage)) {
         this.handleIncomingNotification(session, mcpMessage);
       }
@@ -884,20 +919,27 @@ export class NostrServerTransport
    * @param timeoutMs Timeout in milliseconds for considering a session inactive (default: 5 minutes).
    * @returns The number of sessions that were cleaned up.
    */
-  public cleanupInactiveSessions(timeoutMs: number = 300000): number {
+  public cleanupInactiveSessions(timeoutMs?: number): number {
     const now = Date.now();
-    const keysToDelete: string[] = [];
+    const timeout = timeoutMs ?? this.sessionTimeoutMs;
+    let cleaned = 0;
 
     for (const [clientPubkey, session] of this.clientSessions.entries()) {
-      if (now - session.lastActivity > timeoutMs) {
-        keysToDelete.push(clientPubkey);
+      if (now - session.lastActivity > timeout) {
+        // Clean up reverse lookup mappings for this session
+        for (const eventId of session.pendingRequests.keys()) {
+          this.eventIdToClient.delete(eventId);
+        }
+        // Clean up progress token mappings
+        for (const eventId of session.eventToProgressToken.keys()) {
+          this.eventIdToClient.delete(eventId);
+        }
+
+        this.clientSessions.delete(clientPubkey);
+        cleaned++;
       }
     }
 
-    for (const key of keysToDelete) {
-      this.clientSessions.delete(key);
-    }
-
-    return keysToDelete.length;
+    return cleaned;
   }
 }
