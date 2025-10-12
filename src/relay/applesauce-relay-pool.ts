@@ -1,4 +1,4 @@
-import { RelayGroup, RelayPool } from 'applesauce-relay';
+import { Relay, RelayGroup } from 'applesauce-relay';
 import type { NostrEvent, Filter } from 'nostr-tools';
 import { RelayHandler } from '../core/interfaces.js';
 import { createLogger } from '../core/utils/logger.js';
@@ -29,7 +29,9 @@ export class ApplesauceRelayPool implements RelayHandler {
    */
   constructor(relayUrls: string[]) {
     this.relayUrls = relayUrls;
-    const relays = relayUrls.map((url) => new RelayPool().relay(url));
+    const relays = relayUrls.map(
+      (url) => new Relay(url, { publishTimeout: 1000 }),
+    );
     this.relayGroup = new RelayGroup(relays);
   }
 
@@ -60,13 +62,25 @@ export class ApplesauceRelayPool implements RelayHandler {
     logger.debug('Publishing event', { eventId: event.id, kind: event.kind });
 
     try {
+      logger.debug('Attempting to publish to relay group', {
+        relayUrls: this.relayUrls,
+      });
       const responses = await this.relayGroup.publish(event);
+      logger.debug('Received publish responses', {
+        totalResponses: responses.length,
+        responses: responses.map((r) => ({
+          ok: r.ok,
+          message: r.message || 'No message',
+        })),
+      });
+
       const failedResponses = responses.filter((response) => !response.ok);
 
       if (failedResponses.length > 0) {
         logger.warn('Failed to publish event to some relays', {
           eventId: event.id,
           failedCount: failedResponses.length,
+          successCount: responses.length - failedResponses.length,
           responses: failedResponses.map((r) => ({
             ok: r.ok,
             message: r.message || 'No message',
@@ -93,6 +107,11 @@ export class ApplesauceRelayPool implements RelayHandler {
     onEvent: (event: NostrEvent) => void,
     onEose?: () => void,
   ): { unsubscribe: () => void } {
+    logger.debug('Creating subscription with filters', {
+      filters,
+      relayUrls: this.relayUrls,
+    });
+
     const subscription = this.relayGroup.subscription(filters, {
       reconnect: { count: undefined, delay: 1000, resetOnSuccess: true },
     });
@@ -100,8 +119,13 @@ export class ApplesauceRelayPool implements RelayHandler {
     const sub = subscription.subscribe({
       next: (response) => {
         if (response === 'EOSE') {
+          logger.debug('Received EOSE signal');
           onEose?.();
         } else {
+          logger.debug('Received event', {
+            eventId: response.id,
+            kind: response.kind,
+          });
           onEvent(response);
         }
       },
@@ -109,12 +133,18 @@ export class ApplesauceRelayPool implements RelayHandler {
         logger.debug('Subscription complete');
       },
       error: (error) => {
-        logger.error('Subscription error', { error });
+        logger.error('Subscription error', {
+          error,
+          relayUrls: this.relayUrls,
+        });
       },
     });
 
     return {
-      unsubscribe: () => sub.unsubscribe(),
+      unsubscribe: () => {
+        logger.debug('Unsubscribing from subscription');
+        sub.unsubscribe();
+      },
     };
   }
 

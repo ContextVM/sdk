@@ -29,6 +29,77 @@ npm install @contextvm/sdk
 
 Visit the [ContextVM documentation](https://contextvm.org) for information on how to use ContextVM.
 
+### Logging
+
+The SDK uses Pino for high-performance logging with structured JSON output. By default, logs are written to stderr to comply with the MCP protocol expectations.
+
+#### Basic Usage
+
+```typescript
+import { createLogger } from '@contextvm/sdk/core';
+
+// Create a logger for your module
+const logger = createLogger('my-module');
+
+logger.info('Application started');
+logger.error('An error occurred', { error: 'details' });
+```
+
+#### Configuration Options
+
+You can configure the logger with various options:
+
+```typescript
+import { createLogger, LoggerConfig } from '@contextvm/sdk/core';
+
+const config: LoggerConfig = {
+  level: 'debug', // Minimum log level (debug, info, warn, error)
+  file: 'app.log', // Optional: log to a file instead of stderr
+};
+
+const logger = createLogger('my-module', 'info', config);
+```
+
+**Note:** Pretty printing is automatically enabled when logs are written to stderr/stdout (not to a file) for better readability during development.
+
+#### Environment Variables
+
+The logger respects the following environment variables:
+
+- `LOG_LEVEL`: Sets the minimum log level (default: 'info')
+- `LOG_DESTINATION`: Sets where logs are written - 'stderr' (default), 'stdout', or 'file'
+- `LOG_FILE`: File path when `LOG_DESTINATION` is set to 'file'
+- `LOG_ENABLED`: Enable/disable logging entirely - 'true' (default) or 'false'
+
+#### Environment-based Configuration Examples
+
+```bash
+# Log to stderr with pretty printing (default)
+LOG_LEVEL=info node app.js
+
+# Log to stdout with pretty printing
+LOG_DESTINATION=stdout node app.js
+
+# Log to a file (pretty printing automatically disabled for file output)
+LOG_DESTINATION=file LOG_FILE=./logs/app.log node app.js
+
+# Completely disable logging
+LOG_ENABLED=false node app.js
+```
+
+#### Module-specific Loggers
+
+Create child loggers for different modules to add context:
+
+```typescript
+const baseLogger = createLogger('my-app');
+const authLogger = baseLogger.withModule('auth');
+const dbLogger = baseLogger.withModule('database');
+
+authLogger.info('User login attempt');
+dbLogger.debug('Query executed', { query: 'SELECT * FROM users' });
+```
+
 ## Development
 
 This project requires [Bun](https://bun.sh/) (version 1.2.0 or higher).

@@ -1,5 +1,45 @@
 # @contextvm/sdk
 
+## 0.1.31
+
+### Patch Changes
+
+- chore: bump version
+
+## 0.1.30
+
+### Patch Changes
+
+- 2f8d260: fix(relay): update applesauce-relay to v4 and adapt API usage
+  - Update applesauce-relay dependency from v3.1.0 to v4.0.0
+  - Adapt RelayPool constructor to use new Relay API with publishTimeout
+  - Add detailed logging for better debugging of relay operations
+  - Add test case for handling offline relays in the pool
+
+## 0.1.30-rc.2
+
+### Patch Changes
+
+- fix(transport): improve session management and error handling
+
+## 0.1.30-rc.1
+
+### Patch Changes
+
+- Fix crash handling and improve error logging in Nostr transports:
+  - Fix Pino buffered writes to prevent log loss during crashes
+  - Add comprehensive error handlers to all async operations
+  - Wrap major async flows in try-catch blocks with detailed logging
+  - Add periodic cleanup of inactive client sessions to prevent memory leaks
+  - Enhance error context logging with stack traces and relevant identifiers
+  - Apply consistent error handling patterns across all transport layers
+
+## 0.1.30-rc.0
+
+### Patch Changes
+
+- Release candidate for testing - next
+
 ## 0.1.29
 
 ### Patch Changes

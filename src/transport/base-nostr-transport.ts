@@ -19,6 +19,9 @@ import {
   PROMPTS_LIST_KIND,
 } from '../core/index.js';
 import { validateMessage, validateMessageSize } from '../core/utils/utils.js';
+import { createLogger } from '../core/utils/logger.js';
+
+const logger = createLogger('base-nostr-transport');
 
 /**
  * Base options for configuring Nostr-based transports.
@@ -34,6 +37,14 @@ export interface BaseNostrTransportOptions {
  * for managing Nostr connections, event conversion, and message handling.
  */
 export abstract class BaseNostrTransport {
+  private static readonly UNENCRYPTED_KINDS = new Set([
+    SERVER_ANNOUNCEMENT_KIND,
+    TOOLS_LIST_KIND,
+    RESOURCES_LIST_KIND,
+    RESOURCETEMPLATES_LIST_KIND,
+    PROMPTS_LIST_KIND,
+  ]);
+
   protected readonly signer: NostrSigner;
   protected readonly relayHandler: RelayHandler;
   protected readonly encryptionMode: EncryptionMode;
@@ -53,8 +64,16 @@ export abstract class BaseNostrTransport {
       return;
     }
 
-    await this.relayHandler.connect();
-    this.isConnected = true;
+    try {
+      await this.relayHandler.connect();
+      this.isConnected = true;
+      logger.info('Connected to Nostr relay network');
+    } catch (error) {
+      this.logAndRethrowError(
+        'Failed to connect to Nostr relay network',
+        error,
+      );
+    }
   }
 
   /**
@@ -65,15 +84,27 @@ export abstract class BaseNostrTransport {
       return;
     }
 
-    await this.relayHandler.disconnect();
-    this.isConnected = false;
+    try {
+      await this.relayHandler.disconnect();
+      this.isConnected = false;
+      logger.info('Disconnected from Nostr relay network');
+    } catch (error) {
+      this.logAndRethrowError(
+        'Failed to disconnect from Nostr relay network',
+        error,
+      );
+    }
   }
 
   /**
    * Gets the public key from the signer.
    */
   protected async getPublicKey(): Promise<string> {
-    return await this.signer.getPublicKey();
+    try {
+      return await this.signer.getPublicKey();
+    } catch (error) {
+      this.logAndRethrowError('Failed to get public key from signer', error);
+    }
   }
 
   /**
@@ -83,7 +114,27 @@ export abstract class BaseNostrTransport {
     filters: Filter[],
     onEvent: (event: NostrEvent) => void | Promise<void>,
   ): Promise<void> {
-    await this.relayHandler.subscribe(filters, onEvent);
+    try {
+      await this.relayHandler.subscribe(filters, async (event) => {
+        try {
+          await onEvent(event);
+        } catch (error) {
+          logger.error('Error in subscription event handler', {
+            error: error instanceof Error ? error.message : String(error),
+            stack: error instanceof Error ? error.stack : undefined,
+            eventId: event.id,
+            eventKind: event.kind,
+          });
+          // Re-throw to allow the relay handler to handle it
+          throw error;
+        }
+      });
+      logger.debug('Subscribed to Nostr events', { filters });
+    } catch (error) {
+      this.logAndRethrowError('Failed to subscribe to Nostr events', error, {
+        filters,
+      });
+    }
   }
 
   /**
@@ -93,24 +144,47 @@ export abstract class BaseNostrTransport {
     event: NostrEvent,
   ): JSONRPCMessage | null {
     try {
+      // Early size validation (cheapest check first)
+      if (!validateMessageSize(event.content)) {
+        logger.warn('MCP message size validation failed', {
+          eventId: event.id,
+          pubkey: event.pubkey,
+          contentSize: event.content.length,
+        });
+        return null;
+      }
+
+      // Convert and validate structure in one pass
       const message = nostrEventToMcpMessage(event);
       if (!message) {
+        logger.debug(
+          'Failed to convert Nostr event to MCP message - null result',
+          {
+            eventId: event.id,
+            pubkey: event.pubkey,
+          },
+        );
         return null;
       }
 
-      // Validate message structure
+      // Structural validation
       const validatedMessage = validateMessage(message);
       if (!validatedMessage) {
-        return null;
-      }
-
-      // Validate message size
-      if (!validateMessageSize(event.content)) {
+        logger.warn('Failed to validate MCP message structure', {
+          eventId: event.id,
+          pubkey: event.pubkey,
+        });
         return null;
       }
 
       return validatedMessage;
-    } catch {
+    } catch (error) {
+      logger.error('Error converting Nostr event to MCP message', {
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+        eventId: event.id,
+        pubkey: event.pubkey,
+      });
       return null;
     }
   }
@@ -123,16 +197,34 @@ export abstract class BaseNostrTransport {
     kind: number,
     tags?: NostrEvent['tags'],
   ): Promise<NostrEvent> {
-    const pubkey = await this.getPublicKey();
-    const unsignedEvent = mcpToNostrEvent(message, pubkey, kind, tags);
-    return await this.signer.signEvent(unsignedEvent);
+    try {
+      const pubkey = await this.getPublicKey();
+      const unsignedEvent = mcpToNostrEvent(message, pubkey, kind, tags);
+      return await this.signer.signEvent(unsignedEvent);
+    } catch (error) {
+      this.logAndRethrowError('Failed to create signed Nostr event', error, {
+        kind,
+        hasTags: !!tags,
+      });
+    }
   }
 
   /**
    * Publishes a signed Nostr event to the relay network.
    */
   protected async publishEvent(event: NostrEvent): Promise<void> {
-    await this.relayHandler.publish(event);
+    try {
+      await this.relayHandler.publish(event);
+      logger.debug('Published Nostr event', {
+        eventId: event.id,
+        kind: event.kind,
+      });
+    } catch (error) {
+      this.logAndRethrowError('Failed to publish Nostr event', error, {
+        eventId: event.id,
+        kind: event.kind,
+      });
+    }
   }
 
   /**
@@ -145,39 +237,60 @@ export abstract class BaseNostrTransport {
     tags?: NostrEvent['tags'],
     isEncrypted?: boolean,
   ): Promise<string> {
-    const unencryptedKinds = [
-      SERVER_ANNOUNCEMENT_KIND,
-      TOOLS_LIST_KIND,
-      RESOURCES_LIST_KIND,
-      RESOURCETEMPLATES_LIST_KIND,
-      PROMPTS_LIST_KIND,
-    ];
+    try {
+      const shouldEncrypt = this.shouldEncryptMessage(kind, isEncrypted);
 
-    let shouldEncrypt: boolean = true;
-    if (unencryptedKinds.includes(kind)) {
-      shouldEncrypt = false;
-    } else {
-      if (this.encryptionMode === EncryptionMode.OPTIONAL) {
-        shouldEncrypt = isEncrypted ?? true;
-      } else if (this.encryptionMode === EncryptionMode.DISABLED) {
-        shouldEncrypt = false;
-      } else if (this.encryptionMode === EncryptionMode.REQUIRED) {
-        shouldEncrypt = true;
+      const event = await this.createSignedNostrEvent(message, kind, tags);
+
+      if (shouldEncrypt) {
+        const encryptedEvent = encryptMessage(
+          JSON.stringify(event),
+          recipientPublicKey,
+        );
+        await this.publishEvent(encryptedEvent);
+        logger.debug('Sent encrypted MCP message', {
+          eventId: event.id,
+          kind,
+          recipient: recipientPublicKey,
+        });
+      } else {
+        await this.publishEvent(event);
+        logger.debug('Sent unencrypted MCP message', {
+          eventId: event.id,
+          kind,
+          recipient: recipientPublicKey,
+        });
       }
+      return event.id;
+    } catch (error) {
+      this.logAndRethrowError('Failed to send MCP message', error, {
+        kind,
+        recipient: recipientPublicKey,
+        encryptionMode: this.encryptionMode,
+      });
+    }
+  }
+
+  /**
+   * Determines whether a message should be encrypted based on kind and encryption mode.
+   */
+  private shouldEncryptMessage(kind: number, isEncrypted?: boolean): boolean {
+    // Check if kind should never be encrypted
+    if (BaseNostrTransport.UNENCRYPTED_KINDS.has(kind)) {
+      return false;
     }
 
-    const event = await this.createSignedNostrEvent(message, kind, tags);
-
-    if (shouldEncrypt) {
-      const encryptedEvent = encryptMessage(
-        JSON.stringify(event),
-        recipientPublicKey,
-      );
-      await this.publishEvent(encryptedEvent);
-    } else {
-      await this.publishEvent(event);
+    // Apply encryption mode rules
+    switch (this.encryptionMode) {
+      case EncryptionMode.DISABLED:
+        return false;
+      case EncryptionMode.REQUIRED:
+        return true;
+      case EncryptionMode.OPTIONAL:
+        return isEncrypted ?? true;
+      default:
+        return true; // Safe default
     }
-    return event.id;
   }
 
   /**
@@ -217,5 +330,21 @@ export abstract class BaseNostrTransport {
       [NOSTR_TAGS.EVENT_ID, originalEventId],
     ];
     return tags;
+  }
+
+  /**
+   * Logs an error and re-throws it for consistent error handling.
+   */
+  private logAndRethrowError(
+    context: string,
+    error: unknown,
+    metadata?: Record<string, unknown>,
+  ): never {
+    logger.error(context, {
+      error: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined,
+      ...metadata,
+    });
+    throw error instanceof Error ? error : new Error(String(error));
   }
 }
