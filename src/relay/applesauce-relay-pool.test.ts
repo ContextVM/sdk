@@ -263,4 +263,64 @@ describe('ApplesauceRelayPool Integration', () => {
     await relayPool.disconnect();
     secondRelayProcess.kill();
   }, 15000);
+
+  test('should handle offline relays in the pool', async () => {
+    // 1. Setup ApplesauceRelayPool with one working relay and one offline relay
+    const offlineRelayUrl = 'ws://localhost:1212'; // Non-existent relay
+    const relayPool = new ApplesauceRelayPool([relayUrl, offlineRelayUrl]);
+
+    // 2. Connect should succeed even with one offline relay
+    await relayPool.connect();
+
+    // 3. Setup signer
+    const privateKey = generateSecretKey();
+    const privateKeyHex = bytesToHex(privateKey);
+    const publicKeyHex = getPublicKey(privateKey);
+    const signer = new PrivateKeySigner(privateKeyHex);
+
+    // 4. Create an event
+    const unsignedEvent: UnsignedEvent = {
+      kind: 1,
+      pubkey: publicKeyHex,
+      created_at: Math.floor(Date.now() / 1000),
+      tags: [],
+      content: 'Hello from mixed relay pool test!',
+    };
+    const signedEvent = await signer.signEvent(unsignedEvent);
+    // 5. Subscribe to receive the event
+    const receivedEvents: NostrEvent[] = [];
+    const receivedPromise = new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(
+        () => reject(new Error('Subscription timed out')),
+        5000,
+      );
+
+      relayPool.subscribe(
+        [{ authors: [publicKeyHex], kinds: [1] }],
+        (event) => {
+          receivedEvents.push(event);
+          if (event.id === signedEvent.id) {
+            clearTimeout(timeout);
+            resolve();
+          }
+        },
+      );
+    });
+
+    // 6. Publish the event
+    await relayPool.publish(signedEvent);
+
+    // 7. Wait for the event to be received
+    await receivedPromise;
+
+    // 8. Assertions - should still work with one offline relay
+    expect(receivedEvents.length).toBeGreaterThan(0);
+    const receivedEvent = receivedEvents.find((e) => e.id === signedEvent.id);
+    expect(receivedEvent).toBeDefined();
+    expect(receivedEvent?.content).toBe(signedEvent.content);
+
+    // 9. Cleanup
+    relayPool.unsubscribe();
+    await relayPool.disconnect();
+  }, 10000);
 });
