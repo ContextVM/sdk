@@ -1,5 +1,11 @@
 # @contextvm/sdk
 
+## 0.1.32
+
+### Patch Changes
+
+- fix: pino logger in browser enviroments
+
 ## 0.1.31
 
 ### Patch Changes
