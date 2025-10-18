@@ -90,6 +90,32 @@ function createPinoLogger(config: LoggerConfig = {}): PinoLogger {
   const destination = config.file ? 'file' : envConfig.destination;
   const filePath = config.file || envConfig.filePath;
 
+  // Detect if we're in a Node.js environment
+  const isNode = typeof process !== 'undefined';
+
+  // Base pino options
+  const pinoOptions = {
+    level: logLevel,
+    base: {
+      env:
+        typeof process !== 'undefined' && process.env
+          ? process.env.NODE_ENV || 'unknown'
+          : 'unknown',
+      version:
+        typeof process !== 'undefined' && process.env
+          ? process.env.npm_package_version || '0.0.0'
+          : '0.0.0',
+    },
+    timestamp: pino.stdTimeFunctions.isoTime,
+  };
+
+  // In browser environments, pino automatically uses console methods
+  // No need for pino.destination() or transport configuration
+  if (!isNode) {
+    return pino(pinoOptions);
+  }
+
+  // Node.js-specific configuration
   // Use pretty printing when NOT logging to a file
   const usePrettyPrint = !filePath;
 
@@ -105,28 +131,22 @@ function createPinoLogger(config: LoggerConfig = {}): PinoLogger {
       }
     : undefined;
 
-  // Determine destination based on configuration
+  // Determine destination based on configuration (Node.js only)
   let pinoDestination;
   if (destination === 'file' && filePath) {
     // If file logging is enabled, ensure directory exists and use file destination
-    // Only works in Node.js environments
-    if (typeof process !== 'undefined' && process.versions?.node) {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { existsSync, mkdirSync } = require('fs');
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { dirname } = require('path');
-      const dir = dirname(filePath);
-      if (!existsSync(dir)) {
-        mkdirSync(dir, { recursive: true });
-      }
-      pinoDestination = pino.destination({
-        dest: filePath,
-        minLength: 1,
-      });
-    } else {
-      // In browser environments, fall back to stderr
-      pinoDestination = pino.destination({ dest: 2 });
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { existsSync, mkdirSync } = require('fs');
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { dirname } = require('path');
+    const dir = dirname(filePath);
+    if (!existsSync(dir)) {
+      mkdirSync(dir, { recursive: true });
     }
+    pinoDestination = pino.destination({
+      dest: filePath,
+      minLength: 1,
+    });
   } else if (destination === 'stdout') {
     // Use stdout
     pinoDestination = pino.destination({ dest: 1 }); // 1 is stdout
@@ -137,19 +157,8 @@ function createPinoLogger(config: LoggerConfig = {}): PinoLogger {
 
   return pino(
     {
-      level: logLevel,
+      ...pinoOptions,
       transport,
-      base: {
-        env:
-          typeof process !== 'undefined' && process.env
-            ? process.env.NODE_ENV || 'unknown'
-            : 'unknown',
-        version:
-          typeof process !== 'undefined' && process.env
-            ? process.env.npm_package_version || '0.0.0'
-            : '0.0.0',
-      },
-      timestamp: pino.stdTimeFunctions.isoTime,
     },
     pinoDestination,
   );
