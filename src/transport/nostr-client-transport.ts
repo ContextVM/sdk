@@ -19,9 +19,7 @@ import {
 } from './base-nostr-transport.js';
 import { getNostrEventTag } from '../core/utils/serializers.js';
 import { NostrEvent } from 'nostr-tools';
-import { createLogger } from '../core/utils/logger.js';
-
-const logger = createLogger('nostr-client-transport');
+import { LogLevel } from '../core/utils/logger.js';
 
 /**
  * Options for configuring the NostrClientTransport.
@@ -29,6 +27,7 @@ const logger = createLogger('nostr-client-transport');
 export interface NostrTransportOptions extends BaseNostrTransportOptions {
   serverPubkey: string;
   isStateless?: boolean;
+  logLevel?: LogLevel;
 }
 
 /**
@@ -51,7 +50,7 @@ export class NostrClientTransport
   private readonly isStateless: boolean;
 
   constructor(options: NostrTransportOptions) {
-    super(options);
+    super('nostr-client-transport', options);
 
     // Validate serverPubkey is valid hex
     if (!/^[0-9a-f]{64}$/i.test(options.serverPubkey)) {
@@ -70,14 +69,14 @@ export class NostrClientTransport
     try {
       await this.connect();
       const pubkey = await this.getPublicKey();
-      logger.info('Client pubkey:', pubkey);
+      this.logger.info('Client pubkey:', pubkey);
       const filters = this.createSubscriptionFilters(pubkey);
 
       await this.subscribe(filters, async (event) => {
         try {
           await this.processIncomingEvent(event);
         } catch (error) {
-          logger.error('Error processing incoming event', {
+          this.logger.error('Error processing incoming event', {
             error: error instanceof Error ? error.message : String(error),
             stack: error instanceof Error ? error.stack : undefined,
             eventId: event.id,
@@ -88,7 +87,7 @@ export class NostrClientTransport
         }
       });
     } catch (error) {
-      logger.error('Error starting NostrClientTransport', {
+      this.logger.error('Error starting NostrClientTransport', {
         error: error instanceof Error ? error.message : String(error),
         stack: error instanceof Error ? error.stack : undefined,
       });
@@ -105,7 +104,7 @@ export class NostrClientTransport
       await this.disconnect();
       this.onclose?.();
     } catch (error) {
-      logger.error('Error closing NostrClientTransport', {
+      this.logger.error('Error closing NostrClientTransport', {
         error: error instanceof Error ? error.message : String(error),
         stack: error instanceof Error ? error.stack : undefined,
       });
@@ -122,7 +121,7 @@ export class NostrClientTransport
     try {
       if (this.isStateless) {
         if (isJSONRPCRequest(message) && message.method === 'initialize') {
-          logger.info('Stateless mode: Emulating initialize response.');
+          this.logger.info('Stateless mode: Emulating initialize response.');
           this.emulateInitializeResponse(message.id as string | number);
           return;
         }
@@ -130,7 +129,7 @@ export class NostrClientTransport
           isJSONRPCNotification(message) &&
           message.method === 'notifications/initialized'
         ) {
-          logger.info(
+          this.logger.info(
             'Stateless mode: Catching notifications/initialized.',
             message,
           );
@@ -143,7 +142,7 @@ export class NostrClientTransport
         this.pendingRequestIds.add(eventId);
       }
     } catch (error) {
-      logger.error('Error sending message', {
+      this.logger.error('Error sending message', {
         error: error instanceof Error ? error.message : String(error),
         stack: error instanceof Error ? error.stack : undefined,
         messageType: isJSONRPCRequest(message)
@@ -201,7 +200,7 @@ export class NostrClientTransport
         try {
           this.onmessage?.(response);
         } catch (error) {
-          logger.error('Error in emulated initialize response callback', {
+          this.logger.error('Error in emulated initialize response callback', {
             error: error instanceof Error ? error.message : String(error),
             stack: error instanceof Error ? error.stack : undefined,
             requestId,
@@ -212,7 +211,7 @@ export class NostrClientTransport
         }
       });
     } catch (error) {
-      logger.error('Error emulating initialize response', {
+      this.logger.error('Error emulating initialize response', {
         error: error instanceof Error ? error.message : String(error),
         stack: error instanceof Error ? error.stack : undefined,
         requestId,
@@ -237,7 +236,7 @@ export class NostrClientTransport
         tags,
       );
     } catch (error) {
-      logger.error('Error in _sendInternal', {
+      this.logger.error('Error in _sendInternal', {
         error: error instanceof Error ? error.message : String(error),
         stack: error instanceof Error ? error.stack : undefined,
         serverPubkey: this.serverPubkey,
@@ -259,7 +258,7 @@ export class NostrClientTransport
           const decryptedContent = await decryptMessage(event, this.signer);
           nostrEvent = JSON.parse(decryptedContent) as NostrEvent;
         } catch (decryptError) {
-          logger.error('Failed to decrypt gift-wrapped event', {
+          this.logger.error('Failed to decrypt gift-wrapped event', {
             error:
               decryptError instanceof Error
                 ? decryptError.message
@@ -280,7 +279,7 @@ export class NostrClientTransport
 
       // Check if the event is from the expected server
       if (nostrEvent.pubkey !== this.serverPubkey) {
-        logger.debug('Skipping event from unexpected server pubkey:', {
+        this.logger.debug('Skipping event from unexpected server pubkey:', {
           receivedPubkey: nostrEvent.pubkey,
           expectedPubkey: this.serverPubkey,
           eventId: nostrEvent.id,
@@ -298,13 +297,13 @@ export class NostrClientTransport
           const parse = InitializeResultSchema.safeParse(content.result);
           if (parse.success) {
             this.serverInitializeEvent = nostrEvent;
-            logger.info('Received server initialize event', {
+            this.logger.info('Received server initialize event', {
               eventId: nostrEvent.id,
             });
           }
         } catch (error) {
           // Ignore parse errors - not every response is an initialize response
-          logger.debug('Event is not a valid initialize response', {
+          this.logger.debug('Event is not a valid initialize response', {
             eventId: nostrEvent.id,
             error,
           });
@@ -312,7 +311,7 @@ export class NostrClientTransport
       }
 
       if (eTag && !this.pendingRequestIds.has(eTag)) {
-        logger.warn(`Received response for unknown/expired request`, {
+        this.logger.warn(`Received response for unknown/expired request`, {
           eventId: nostrEvent.id,
           eTag,
           reason:
@@ -325,7 +324,7 @@ export class NostrClientTransport
       const mcpMessage = this.convertNostrEventToMcpMessage(nostrEvent);
 
       if (!mcpMessage) {
-        logger.error(
+        this.logger.error(
           'Skipping invalid Nostr event with malformed JSON content',
           { eventId: nostrEvent.id, pubkey: nostrEvent.pubkey },
         );
@@ -338,7 +337,7 @@ export class NostrClientTransport
         this.handleNotification(mcpMessage);
       }
     } catch (error) {
-      logger.error('Error handling incoming Nostr event', {
+      this.logger.error('Error handling incoming Nostr event', {
         error: error instanceof Error ? error.message : String(error),
         stack: error instanceof Error ? error.stack : undefined,
         eventId: event.id,
@@ -373,7 +372,7 @@ export class NostrClientTransport
       this.onmessage?.(mcpMessage);
       this.pendingRequestIds.delete(correlatedEventId);
     } catch (error) {
-      logger.error('Error handling response', {
+      this.logger.error('Error handling response', {
         error: error instanceof Error ? error.message : String(error),
         stack: error instanceof Error ? error.stack : undefined,
         correlatedEventId,
@@ -390,7 +389,7 @@ export class NostrClientTransport
     try {
       const result = NotificationSchema.safeParse(mcpMessage);
       if (!result.success) {
-        logger.warn('Invalid notification schema', {
+        this.logger.warn('Invalid notification schema', {
           errors: result.error.errors,
           message: mcpMessage,
         });
@@ -398,7 +397,7 @@ export class NostrClientTransport
       }
       this.onmessage?.(mcpMessage);
     } catch (error) {
-      logger.error('Failed to handle incoming notification', {
+      this.logger.error('Failed to handle incoming notification', {
         error: error instanceof Error ? error.message : String(error),
         stack: error instanceof Error ? error.stack : undefined,
       });

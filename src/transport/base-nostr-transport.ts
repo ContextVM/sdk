@@ -19,9 +19,11 @@ import {
   PROMPTS_LIST_KIND,
 } from '../core/index.js';
 import { validateMessage, validateMessageSize } from '../core/utils/utils.js';
-import { createLogger } from '../core/utils/logger.js';
-
-const logger = createLogger('base-nostr-transport');
+import {
+  createLogger,
+  type LogLevel,
+  type Logger,
+} from '../core/utils/logger.js';
 
 /**
  * Base options for configuring Nostr-based transports.
@@ -30,6 +32,7 @@ export interface BaseNostrTransportOptions {
   signer: NostrSigner;
   relayHandler: RelayHandler;
   encryptionMode?: EncryptionMode;
+  logLevel?: LogLevel;
 }
 
 /**
@@ -48,12 +51,14 @@ export abstract class BaseNostrTransport {
   protected readonly signer: NostrSigner;
   protected readonly relayHandler: RelayHandler;
   protected readonly encryptionMode: EncryptionMode;
+  protected logger: Logger;
   protected isConnected = false;
 
-  constructor(options: BaseNostrTransportOptions) {
+  constructor(module: string, options: BaseNostrTransportOptions) {
     this.signer = options.signer;
     this.relayHandler = options.relayHandler;
     this.encryptionMode = options.encryptionMode ?? EncryptionMode.OPTIONAL;
+    this.logger = createLogger(module, { level: options.logLevel });
   }
 
   /**
@@ -67,7 +72,7 @@ export abstract class BaseNostrTransport {
     try {
       await this.relayHandler.connect();
       this.isConnected = true;
-      logger.info('Connected to Nostr relay network');
+      this.logger.info('Connected to Nostr relay network');
     } catch (error) {
       this.logAndRethrowError(
         'Failed to connect to Nostr relay network',
@@ -87,7 +92,7 @@ export abstract class BaseNostrTransport {
     try {
       await this.relayHandler.disconnect();
       this.isConnected = false;
-      logger.info('Disconnected from Nostr relay network');
+      this.logger.info('Disconnected from Nostr relay network');
     } catch (error) {
       this.logAndRethrowError(
         'Failed to disconnect from Nostr relay network',
@@ -119,7 +124,7 @@ export abstract class BaseNostrTransport {
         try {
           await onEvent(event);
         } catch (error) {
-          logger.error('Error in subscription event handler', {
+          this.logger.error('Error in subscription event handler', {
             error: error instanceof Error ? error.message : String(error),
             stack: error instanceof Error ? error.stack : undefined,
             eventId: event.id,
@@ -129,7 +134,7 @@ export abstract class BaseNostrTransport {
           throw error;
         }
       });
-      logger.debug('Subscribed to Nostr events', { filters });
+      this.logger.debug('Subscribed to Nostr events', { filters });
     } catch (error) {
       this.logAndRethrowError('Failed to subscribe to Nostr events', error, {
         filters,
@@ -146,7 +151,7 @@ export abstract class BaseNostrTransport {
     try {
       // Early size validation (cheapest check first)
       if (!validateMessageSize(event.content)) {
-        logger.warn('MCP message size validation failed', {
+        this.logger.warn('MCP message size validation failed', {
           eventId: event.id,
           pubkey: event.pubkey,
           contentSize: event.content.length,
@@ -157,7 +162,7 @@ export abstract class BaseNostrTransport {
       // Convert and validate structure in one pass
       const message = nostrEventToMcpMessage(event);
       if (!message) {
-        logger.debug(
+        this.logger.debug(
           'Failed to convert Nostr event to MCP message - null result',
           {
             eventId: event.id,
@@ -170,7 +175,7 @@ export abstract class BaseNostrTransport {
       // Structural validation
       const validatedMessage = validateMessage(message);
       if (!validatedMessage) {
-        logger.warn('Failed to validate MCP message structure', {
+        this.logger.warn('Failed to validate MCP message structure', {
           eventId: event.id,
           pubkey: event.pubkey,
         });
@@ -179,7 +184,7 @@ export abstract class BaseNostrTransport {
 
       return validatedMessage;
     } catch (error) {
-      logger.error('Error converting Nostr event to MCP message', {
+      this.logger.error('Error converting Nostr event to MCP message', {
         error: error instanceof Error ? error.message : String(error),
         stack: error instanceof Error ? error.stack : undefined,
         eventId: event.id,
@@ -215,7 +220,7 @@ export abstract class BaseNostrTransport {
   protected async publishEvent(event: NostrEvent): Promise<void> {
     try {
       await this.relayHandler.publish(event);
-      logger.debug('Published Nostr event', {
+      this.logger.debug('Published Nostr event', {
         eventId: event.id,
         kind: event.kind,
       });
@@ -248,14 +253,14 @@ export abstract class BaseNostrTransport {
           recipientPublicKey,
         );
         await this.publishEvent(encryptedEvent);
-        logger.debug('Sent encrypted MCP message', {
+        this.logger.debug('Sent encrypted MCP message', {
           eventId: event.id,
           kind,
           recipient: recipientPublicKey,
         });
       } else {
         await this.publishEvent(event);
-        logger.debug('Sent unencrypted MCP message', {
+        this.logger.debug('Sent unencrypted MCP message', {
           eventId: event.id,
           kind,
           recipient: recipientPublicKey,
@@ -340,7 +345,7 @@ export abstract class BaseNostrTransport {
     error: unknown,
     metadata?: Record<string, unknown>,
   ): never {
-    logger.error(context, {
+    this.logger.error(context, {
       error: error instanceof Error ? error.message : String(error),
       stack: error instanceof Error ? error.stack : undefined,
       ...metadata,
