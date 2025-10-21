@@ -57,34 +57,50 @@ const config: LoggerConfig = {
   file: 'app.log', // Optional: log to a file instead of stderr
 };
 
-const logger = createLogger('my-module', 'info', config);
+const logger = createLogger('my-module', config);
 ```
 
 **Note:** Pretty printing is automatically enabled when logs are written to stderr/stdout (not to a file) for better readability during development.
 
-#### Environment Variables
+#### Configuring with Environment Variables
 
-The logger respects the following environment variables:
+The logger can be configured using environment variables, which is useful for adjusting log output without changing the code.
 
-- `LOG_LEVEL`: Sets the minimum log level (default: 'info')
-- `LOG_DESTINATION`: Sets where logs are written - 'stderr' (default), 'stdout', or 'file'
-- `LOG_FILE`: File path when `LOG_DESTINATION` is set to 'file'
-- `LOG_ENABLED`: Enable/disable logging entirely - 'true' (default) or 'false'
+- **`LOG_LEVEL`**: Sets the minimum log level.
+  - **Values**: `debug`, `info`, `warn`, `error`.
+  - **Default**: `info`.
+- **`LOG_DESTINATION`**: Sets the log output destination.
+  - **Values**: `stderr` (default), `stdout`, or `file`.
+- **`LOG_FILE`**: Specifies the file path when `LOG_DESTINATION` is `file`.
+- **`LOG_ENABLED`**: Enables or disables logging.
+  - **Values**: `true` (default) or `false`.
 
-#### Environment-based Configuration Examples
+##### Configuration in Node.js
+
+Set the variables in your shell before running the application:
 
 ```bash
-# Log to stderr with pretty printing (default)
-LOG_LEVEL=info node app.js
+# Set log level to debug
+LOG_LEVEL=debug node app.js
 
-# Log to stdout with pretty printing
-LOG_DESTINATION=stdout node app.js
+# Log to a file instead of the console
+LOG_DESTINATION=file LOG_FILE=./app.log node app.js
 
-# Log to a file (pretty printing automatically disabled for file output)
-LOG_DESTINATION=file LOG_FILE=./logs/app.log node app.js
-
-# Completely disable logging
+# Disable logging entirely
 LOG_ENABLED=false node app.js
+```
+
+##### Configuration in Browsers
+
+In a browser environment, you can configure the log level by setting a global `LOG_LEVEL` variable on the `window` object **before** the SDK is imported or used.
+
+```javascript
+// Set this in a <script> tag in your HTML or at the top of your entry point
+window.LOG_LEVEL = 'debug';
+
+// Now, when you import and use the SDK, it will use the 'debug' log level.
+import { logger } from '@contextvm/sdk';
+logger.debug('This is a debug message.');
 ```
 
 #### Module-specific Loggers

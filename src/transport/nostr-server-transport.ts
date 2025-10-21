@@ -34,10 +34,8 @@ import {
 } from '../core/index.js';
 import { EncryptionMode } from '../core/interfaces.js';
 import { NostrEvent } from 'nostr-tools';
-import { createLogger } from '../core/utils/logger.js';
+import { LogLevel } from '../core/utils/logger.js';
 import { EventDeletion } from 'nostr-tools/kinds';
-
-const logger = createLogger('nostr-server-transport');
 
 /**
  * Represents a capability exclusion pattern that can bypass whitelisting.
@@ -63,6 +61,7 @@ export interface NostrServerTransportOptions extends BaseNostrTransportOptions {
   cleanupIntervalMs?: number;
   /** Timeout in milliseconds for considering a session inactive (default: 300000) */
   sessionTimeoutMs?: number;
+  logLevel?: LogLevel;
 }
 
 /**
@@ -115,7 +114,7 @@ export class NostrServerTransport
   private cachedCommonTags?: string[][];
 
   constructor(options: NostrServerTransportOptions) {
-    super(options);
+    super('nostr-server-transport', options);
     this.serverInfo = options.serverInfo;
     this.isPublicServer = options.isPublicServer;
     this.allowedPublicKeys = options.allowedPublicKeys;
@@ -162,7 +161,7 @@ export class NostrServerTransport
     try {
       await this.connect();
       const pubkey = await this.getPublicKey();
-      logger.info('Server pubkey:', pubkey);
+      this.logger.info('Server pubkey:', pubkey);
       // Subscribe to events targeting this server's public key
       const filters = this.createSubscriptionFilters(pubkey);
 
@@ -170,7 +169,7 @@ export class NostrServerTransport
         try {
           await this.processIncomingEvent(event);
         } catch (error) {
-          logger.error('Error processing incoming event', {
+          this.logger.error('Error processing incoming event', {
             error: error instanceof Error ? error.message : String(error),
             stack: error instanceof Error ? error.stack : undefined,
             eventId: event.id,
@@ -189,11 +188,11 @@ export class NostrServerTransport
       this.cleanupInterval = setInterval(() => {
         const cleaned = this.cleanupInactiveSessions();
         if (cleaned > 0) {
-          logger.info(`Cleaned up ${cleaned} inactive sessions`);
+          this.logger.info(`Cleaned up ${cleaned} inactive sessions`);
         }
       }, this.cleanupIntervalMs);
     } catch (error) {
-      logger.error('Error starting NostrServerTransport', {
+      this.logger.error('Error starting NostrServerTransport', {
         error: error instanceof Error ? error.message : String(error),
         stack: error instanceof Error ? error.stack : undefined,
       });
@@ -217,7 +216,7 @@ export class NostrServerTransport
       this.clientSessions.clear();
       this.onclose?.();
     } catch (error) {
-      logger.error('Error closing NostrServerTransport', {
+      this.logger.error('Error closing NostrServerTransport', {
         error: error instanceof Error ? error.message : String(error),
         stack: error instanceof Error ? error.stack : undefined,
       });
@@ -273,7 +272,7 @@ export class NostrServerTransport
         try {
           events.push(event);
         } catch (error) {
-          logger.error('Error in relay subscription event collection', {
+          this.logger.error('Error in relay subscription event collection', {
             error: error instanceof Error ? error.message : String(error),
             eventId: event.id,
           });
@@ -284,7 +283,7 @@ export class NostrServerTransport
       });
 
       if (!events.length) {
-        logger.info(`No events found for kind ${kind} to delete`);
+        this.logger.info(`No events found for kind ${kind} to delete`);
         continue;
       }
 
@@ -299,7 +298,7 @@ export class NostrServerTransport
       const deletionEvent = await this.signer.signEvent(deletionEventTemplate);
 
       await this.relayHandler.publish(deletionEvent);
-      logger.info(
+      this.logger.info(
         `Published deletion event for kind ${kind} (${events.length} events)`,
       );
     }
@@ -332,7 +331,7 @@ export class NostrServerTransport
           params: initializeParams,
         };
 
-        logger.info('Sending initialize request for announcement');
+        this.logger.info('Sending initialize request for announcement');
         this.onmessage?.(initializeMessage);
       }
 
@@ -342,7 +341,7 @@ export class NostrServerTransport
 
         // Send all announcements now that we're initialized
         for (const [key, methodValue] of Object.entries(announcementMethods)) {
-          logger.info('Sending announcement', { key, methodValue });
+          this.logger.info('Sending announcement', { key, methodValue });
           const message: JSONRPCMessage = {
             jsonrpc: '2.0',
             id: 'announcement',
@@ -352,13 +351,13 @@ export class NostrServerTransport
           this.onmessage?.(message);
         }
       } catch (error) {
-        logger.warn(
+        this.logger.warn(
           'Server not initialized after waiting, skipping announcements',
           { error: error instanceof Error ? error.message : error },
         );
       }
     } catch (error) {
-      logger.error('Error in getAnnouncementData', {
+      this.logger.error('Error in getAnnouncementData', {
         error: error instanceof Error ? error.message : String(error),
         stack: error instanceof Error ? error.stack : undefined,
       });
@@ -387,7 +386,7 @@ export class NostrServerTransport
     try {
       await Promise.race([this.initializationPromise, timeout]);
     } catch {
-      logger.warn(
+      this.logger.warn(
         'Server initialization not completed within timeout, proceeding with announcements',
       );
     }
@@ -435,7 +434,7 @@ export class NostrServerTransport
         }
       }
     } catch (error) {
-      logger.error('Error in announcer', {
+      this.logger.error('Error in announcer', {
         error: error instanceof Error ? error.message : String(error),
         stack: error instanceof Error ? error.stack : undefined,
       });
@@ -456,7 +455,7 @@ export class NostrServerTransport
   ): ClientSession {
     const session = this.clientSessions.get(clientPubkey);
     if (!session) {
-      logger.info(`Session created for ${clientPubkey}`);
+      this.logger.info(`Session created for ${clientPubkey}`);
       const newSession: ClientSession = {
         isInitialized: false,
         isEncrypted,
@@ -537,7 +536,7 @@ export class NostrServerTransport
             method: 'notifications/initialized',
           };
           this.onmessage?.(initializedNotification);
-          logger.info('Initialized');
+          this.logger.info('Initialized');
         }
         await this.announcer(response);
       }
@@ -649,7 +648,7 @@ export class NostrServerTransport
         }
 
         const error = new Error(`No client found for progress token: ${token}`);
-        logger.error('Progress token not found', { token });
+        this.logger.error('Progress token not found', { token });
         this.onerror?.(error);
         return;
       }
@@ -664,7 +663,7 @@ export class NostrServerTransport
       try {
         await Promise.all(promises);
       } catch (error) {
-        logger.error('Error broadcasting notification', {
+        this.logger.error('Error broadcasting notification', {
           error: error instanceof Error ? error.message : String(error),
           method: isJSONRPCNotification(notification)
             ? notification.method
@@ -675,7 +674,7 @@ export class NostrServerTransport
         );
       }
     } catch (error) {
-      logger.error('Error in handleNotification', {
+      this.logger.error('Error in handleNotification', {
         error: error instanceof Error ? error.message : String(error),
         stack: error instanceof Error ? error.stack : undefined,
       });
@@ -728,7 +727,7 @@ export class NostrServerTransport
         this.handleUnencryptedEvent(event);
       }
     } catch (error) {
-      logger.error('Error in processIncomingEvent', {
+      this.logger.error('Error in processIncomingEvent', {
         error: error instanceof Error ? error.message : String(error),
         stack: error instanceof Error ? error.stack : undefined,
         eventId: event.id,
@@ -744,7 +743,7 @@ export class NostrServerTransport
    */
   private async handleEncryptedEvent(event: NostrEvent): Promise<void> {
     if (this.encryptionMode === EncryptionMode.DISABLED) {
-      logger.error(
+      this.logger.error(
         `Received encrypted message from ${event.pubkey} but encryption is disabled. Ignoring.`,
       );
       return;
@@ -754,7 +753,7 @@ export class NostrServerTransport
       const currentEvent = JSON.parse(decryptedJson) as NostrEvent;
       this.authorizeAndProcessEvent(currentEvent, true);
     } catch (error) {
-      logger.error('Failed to handle encrypted Nostr event', {
+      this.logger.error('Failed to handle encrypted Nostr event', {
         error: error instanceof Error ? error.message : String(error),
         stack: error instanceof Error ? error.stack : undefined,
         eventId: event.id,
@@ -774,7 +773,7 @@ export class NostrServerTransport
    */
   private handleUnencryptedEvent(event: NostrEvent): void {
     if (this.encryptionMode === EncryptionMode.REQUIRED) {
-      logger.error(
+      this.logger.error(
         `Received unencrypted message from ${event.pubkey} but encryption is required. Ignoring.`,
       );
       return;
@@ -828,7 +827,7 @@ export class NostrServerTransport
       const mcpMessage = this.convertNostrEventToMcpMessage(event);
 
       if (!mcpMessage) {
-        logger.error(
+        this.logger.error(
           'Skipping invalid Nostr event with malformed JSON content',
           {
             eventId: event.id,
@@ -853,7 +852,7 @@ export class NostrServerTransport
           !this.allowedPublicKeys.includes(event.pubkey) &&
           !shouldBypassWhitelisting
         ) {
-          logger.error(
+          this.logger.error(
             `Unauthorized message from ${event.pubkey}, message: ${JSON.stringify(mcpMessage)}. Ignoring.`,
           );
 
@@ -875,7 +874,7 @@ export class NostrServerTransport
               tags,
               isEncrypted,
             ).catch((err) => {
-              logger.error('Failed to send unauthorized response', {
+              this.logger.error('Failed to send unauthorized response', {
                 error: err instanceof Error ? err.message : String(err),
                 pubkey: event.pubkey,
                 eventId: event.id,
@@ -904,7 +903,7 @@ export class NostrServerTransport
 
       this.onmessage?.(mcpMessage);
     } catch (error) {
-      logger.error('Error in authorizeAndProcessEvent', {
+      this.logger.error('Error in authorizeAndProcessEvent', {
         error: error instanceof Error ? error.message : String(error),
         stack: error instanceof Error ? error.stack : undefined,
         eventId: event.id,

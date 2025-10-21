@@ -1,5 +1,17 @@
 # @contextvm/sdk
 
+## 0.1.34
+
+### Patch Changes
+
+- refactor(logger): Improve logger configuration and instance-based logging
+  - Refactor logger configuration to use singleton pattern for better performance
+  - Add 'silent' log level option for complete log suppression
+  - Change transport classes to use instance-specific loggers with configurable levels
+  - Remove redundant environment variable handling functions
+  - Simplify logger creation process and improve configuration management
+  - Update all transport classes to pass module names and log levels to logger instances
+
 ## 0.1.33
 
 ### Patch Changes

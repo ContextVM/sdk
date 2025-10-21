@@ -1,6 +1,6 @@
 import pino, { Logger as PinoLogger } from 'pino';
 
-export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
+export type LogLevel = 'debug' | 'info' | 'warn' | 'error' | 'silent';
 
 export interface LogEntry {
   level: LogLevel;
@@ -29,48 +29,47 @@ export interface LoggerConfig {
 }
 
 /**
- * Logger configuration from environment variables
+ * Get log level from environment variables, handling both Node.js and browser environments
+ * @returns The log level from environment or undefined
  */
-interface EnvLoggerConfig {
-  level: LogLevel;
-  destination: 'stderr' | 'stdout' | 'file';
-  filePath?: string;
-  enabled: boolean;
+function getLogLevelFromEnv(): LogLevel | undefined {
+  if (typeof process !== 'undefined' && process.env && process.env.LOG_LEVEL) {
+    return process.env.LOG_LEVEL as LogLevel;
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  if (typeof window !== 'undefined' && (window as any).LOG_LEVEL) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return (window as any).LOG_LEVEL as LogLevel;
+  }
+
+  return undefined;
 }
 
 /**
- * Get logger configuration from environment variables
- * @returns Environment-based logger configuration
+ * Singleton logger configuration instance
  */
-function getEnvLoggerConfig(): EnvLoggerConfig {
-  // Log level from LOG_LEVEL env var
+const loggerConfig = (() => {
   const level = getLogLevelFromEnv() || 'info';
-
-  // Destination from LOG_DESTINATION env var (stderr, stdout, file)
   const destination =
     (typeof process !== 'undefined' && process.env
       ? (process.env.LOG_DESTINATION as 'stderr' | 'stdout' | 'file')
       : undefined) || 'stderr';
-
-  // File path from LOG_FILE env var when destination is 'file'
   const filePath =
     typeof process !== 'undefined' && process.env
       ? process.env.LOG_FILE
       : undefined;
-
-  // Enable/disable logging from LOG_ENABLED env var (default: true)
   const enabled =
     typeof process !== 'undefined' && process.env
       ? process.env.LOG_ENABLED !== 'false'
       : true;
 
   return {
-    level,
+    level: enabled ? level : 'silent',
     destination,
     filePath,
-    enabled,
   };
-}
+})();
 
 /**
  * Creates a Pino logger instance with the specified configuration
@@ -78,17 +77,10 @@ function getEnvLoggerConfig(): EnvLoggerConfig {
  * @returns Configured Pino logger instance
  */
 function createPinoLogger(config: LoggerConfig = {}): PinoLogger {
-  const envConfig = getEnvLoggerConfig();
-
-  // If logging is disabled, return a silent logger
-  if (!envConfig.enabled) {
-    return pino({ level: 'silent' });
-  }
-
   // Use explicit config or fall back to environment config
-  const logLevel = config.level || envConfig.level;
-  const destination = config.file ? 'file' : envConfig.destination;
-  const filePath = config.file || envConfig.filePath;
+  const logLevel = config.level || loggerConfig.level;
+  const destination = config.file ? 'file' : loggerConfig.destination;
+  const filePath = config.file || loggerConfig.filePath;
 
   // Detect if we're in a Node.js environment
   const isNode = typeof process !== 'undefined';
@@ -155,13 +147,14 @@ function createPinoLogger(config: LoggerConfig = {}): PinoLogger {
     pinoDestination = pino.destination({ dest: 2 }); // 2 is stderr
   }
 
-  return pino(
+  const logger = pino(
     {
       ...pinoOptions,
       transport,
     },
     pinoDestination,
   );
+  return logger;
 }
 
 /**
@@ -173,14 +166,10 @@ function createPinoLogger(config: LoggerConfig = {}): PinoLogger {
  */
 export function createLogger(
   module: string,
-  minLevel: LogLevel = 'info',
   config: LoggerConfig = {},
 ): Logger {
   // Create the base Pino logger
-  const pinoLogger = createPinoLogger({
-    ...config,
-    level: minLevel,
-  });
+  const pinoLogger = createPinoLogger(config);
 
   // Create a child logger with module context
   const moduleLogger = pinoLogger.child({ module });
@@ -215,30 +204,11 @@ export function createLogger(
       }
     },
 
-    withModule: (newModule: string) =>
-      createLogger(newModule, minLevel, config),
+    withModule: (newModule: string) => createLogger(newModule, config),
   };
 }
 
 /**
  * Default logger instance for the application
  */
-export const logger = createLogger('ctxvm', getLogLevelFromEnv() || 'error');
-
-/**
- * Get log level from environment variables, handling both Node.js and browser environments
- * @returns The log level from environment or undefined
- */
-function getLogLevelFromEnv(): LogLevel | undefined {
-  if (typeof process !== 'undefined' && process.env && process.env.LOG_LEVEL) {
-    return process.env.LOG_LEVEL as LogLevel;
-  }
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  if (typeof window !== 'undefined' && (window as any).LOG_LEVEL) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return (window as any).LOG_LEVEL as LogLevel;
-  }
-
-  return undefined;
-}
+export const logger = createLogger('ctxvm');
