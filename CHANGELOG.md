@@ -1,5 +1,11 @@
 # @contextvm/sdk
 
+## 0.1.36
+
+### Patch Changes
+
+- fix(logger): lintin error, and handle pino pretty gracefully
+
 ## 0.1.35
 
 ### Patch Changes
