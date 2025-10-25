@@ -1,5 +1,11 @@
 # @contextvm/sdk
 
+## 0.1.37
+
+### Patch Changes
+
+- fix(logger): detect enviroment
+
 ## 0.1.36
 
 ### Patch Changes

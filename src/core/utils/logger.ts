@@ -37,10 +37,12 @@ function getLogLevelFromEnv(): LogLevel | undefined {
     return process.env.LOG_LEVEL as LogLevel;
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  if (typeof window !== 'undefined' && (window as any).LOG_LEVEL) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return (window as any).LOG_LEVEL as LogLevel;
+  // Browser environment check (only if globalThis.window exists)
+  if (typeof globalThis !== 'undefined' && (globalThis as any).window) {
+    const globalWindow = (globalThis as any).window;
+    if (globalWindow.LOG_LEVEL) {
+      return globalWindow.LOG_LEVEL as LogLevel;
+    }
   }
 
   return undefined;
@@ -72,6 +74,24 @@ const loggerConfig = (() => {
 })();
 
 /**
+ * Check if we're running in a compiled binary environment
+ * This helps avoid transport resolution issues
+ */
+function isCompiledBinary(): boolean {
+  // Check if we're running as a compiled Bun binary
+  // Bun compiled binaries have specific characteristics
+  if (typeof process !== 'undefined' && process.argv && process.argv[0]) {
+    const executablePath = process.argv[0];
+    // Compiled binaries typically don't have .js extensions and are standalone
+    return (
+      !executablePath.endsWith('.js') &&
+      !executablePath.includes('node_modules')
+    );
+  }
+  return false;
+}
+
+/**
  * Creates a Pino logger instance with the specified configuration
  * @param config - Logger configuration options
  * @returns Configured Pino logger instance
@@ -84,6 +104,9 @@ function createPinoLogger(config: LoggerConfig = {}): PinoLogger {
 
   // Detect if we're in a Node.js environment
   const isNode = typeof process !== 'undefined';
+
+  // Check if we're in a compiled binary environment
+  const isCompiled = isCompiledBinary();
 
   // Base pino options
   const pinoOptions = {
@@ -109,7 +132,8 @@ function createPinoLogger(config: LoggerConfig = {}): PinoLogger {
 
   // Node.js-specific configuration
   // Use pretty printing when NOT logging to a file AND pino-pretty is available
-  let usePrettyPrint = !filePath;
+  // BUT avoid transport configuration in compiled binaries
+  let usePrettyPrint = !filePath && !isCompiled;
 
   if (usePrettyPrint) {
     try {
@@ -124,16 +148,18 @@ function createPinoLogger(config: LoggerConfig = {}): PinoLogger {
   }
 
   // Configure transport for pretty printing (only when both conditions are met)
-  const transport = usePrettyPrint
-    ? {
-        target: 'pino-pretty',
-        options: {
-          colorize: true,
-          ignore: 'pid,hostname',
-          translateTime: 'yyyy-mm-dd HH:MM:ss',
-        },
-      }
-    : undefined;
+  // Skip transport configuration in compiled binaries to avoid resolution issues
+  const transport =
+    usePrettyPrint && !isCompiled
+      ? {
+          target: 'pino-pretty',
+          options: {
+            colorize: true,
+            ignore: 'pid,hostname',
+            translateTime: 'yyyy-mm-dd HH:MM:ss',
+          },
+        }
+      : undefined;
 
   // Determine destination based on configuration (Node.js only)
   let pinoDestination;
