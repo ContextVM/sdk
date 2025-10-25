@@ -108,30 +108,32 @@ function createPinoLogger(config: LoggerConfig = {}): PinoLogger {
   }
 
   // Node.js-specific configuration
-  // Use pretty printing when NOT logging to a file
-  const usePrettyPrint = !filePath;
+  // Use pretty printing when NOT logging to a file AND pino-pretty is available
+  let usePrettyPrint = !filePath;
 
-  // Configure transport for pretty printing (only when not logging to file)
-  // Gracefully handle missing pino-pretty dependency
-  let transport;
   if (usePrettyPrint) {
     try {
-      // Try to require pino-pretty to check if it's available
+      // Check if pino-pretty is available
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
       require('pino-pretty');
-      transport = {
+    } catch {
+      // pino-pretty is not available, disable pretty printing
+      console.warn('pino-pretty not available, using JSON logging format');
+      usePrettyPrint = false;
+    }
+  }
+
+  // Configure transport for pretty printing (only when both conditions are met)
+  const transport = usePrettyPrint
+    ? {
         target: 'pino-pretty',
         options: {
           colorize: true,
           ignore: 'pid,hostname',
           translateTime: 'yyyy-mm-dd HH:MM:ss',
         },
-      };
-    } catch (error) {
-      // pino-pretty is not available, fall back to basic JSON output
-      console.warn('pino-pretty not available, falling back to JSON logging');
-      transport = undefined;
-    }
-  }
+      }
+    : undefined;
 
   // Determine destination based on configuration (Node.js only)
   let pinoDestination;
