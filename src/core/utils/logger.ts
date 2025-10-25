@@ -112,16 +112,26 @@ function createPinoLogger(config: LoggerConfig = {}): PinoLogger {
   const usePrettyPrint = !filePath;
 
   // Configure transport for pretty printing (only when not logging to file)
-  const transport = usePrettyPrint
-    ? {
+  // Gracefully handle missing pino-pretty dependency
+  let transport;
+  if (usePrettyPrint) {
+    try {
+      // Try to require pino-pretty to check if it's available
+      require('pino-pretty');
+      transport = {
         target: 'pino-pretty',
         options: {
           colorize: true,
           ignore: 'pid,hostname',
           translateTime: 'yyyy-mm-dd HH:MM:ss',
         },
-      }
-    : undefined;
+      };
+    } catch (error) {
+      // pino-pretty is not available, fall back to basic JSON output
+      console.warn('pino-pretty not available, falling back to JSON logging');
+      transport = undefined;
+    }
+  }
 
   // Determine destination based on configuration (Node.js only)
   let pinoDestination;
