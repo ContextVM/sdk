@@ -1,5 +1,12 @@
 # @contextvm/sdk
 
+## 0.1.35
+
+### Patch Changes
+
+- fix(logger): add fallback for missing pino-pretty
+  - Gracefully handle missing pino-pretty dependency by implementing try-catch fallback to basic JSON logging
+
 ## 0.1.34
 
 ### Patch Changes
