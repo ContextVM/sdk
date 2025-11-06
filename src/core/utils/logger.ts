@@ -38,8 +38,8 @@ function getLogLevelFromEnv(): LogLevel | undefined {
   }
 
   // Browser environment check (only if globalThis.window exists)
-  if (typeof globalThis !== 'undefined' && (globalThis as any).window) {
-    const globalWindow = (globalThis as any).window;
+  if (typeof globalThis !== 'undefined' && 'window' in globalThis) {
+    const globalWindow = globalThis.window as { LOG_LEVEL?: string };
     if (globalWindow.LOG_LEVEL) {
       return globalWindow.LOG_LEVEL as LogLevel;
     }
@@ -74,41 +74,17 @@ const loggerConfig = (() => {
 })();
 
 /**
- * Check if we're running in a compiled binary environment
- * This helps avoid transport resolution issues
- */
-function isCompiledBinary(): boolean {
-  // Check if we're running as a compiled Bun binary
-  // Bun compiled binaries have specific characteristics
-  if (typeof process !== 'undefined' && process.argv && process.argv[0]) {
-    const executablePath = process.argv[0];
-    // Compiled binaries typically don't have .js extensions and are standalone
-    return (
-      !executablePath.endsWith('.js') &&
-      !executablePath.includes('node_modules')
-    );
-  }
-  return false;
-}
-
-/**
  * Creates a Pino logger instance with the specified configuration
+ * Uses Pino's built-in browser support for browser environments
  * @param config - Logger configuration options
  * @returns Configured Pino logger instance
  */
 function createPinoLogger(config: LoggerConfig = {}): PinoLogger {
-  // Use explicit config or fall back to environment config
   const logLevel = config.level || loggerConfig.level;
   const destination = config.file ? 'file' : loggerConfig.destination;
   const filePath = config.file || loggerConfig.filePath;
 
-  // Detect if we're in a Node.js environment
-  const isNode = typeof process !== 'undefined';
-
-  // Check if we're in a compiled binary environment
-  const isCompiled = isCompiledBinary();
-
-  // Base pino options
+  // Base pino options that work in both Node.js and browser
   const pinoOptions = {
     level: logLevel,
     base: {
@@ -124,59 +100,45 @@ function createPinoLogger(config: LoggerConfig = {}): PinoLogger {
     timestamp: pino.stdTimeFunctions.isoTime,
   };
 
-  // In browser environments, pino automatically uses console methods
-  // No need for pino.destination() or transport configuration
+  // For browser builds, use Pino's built-in browser configuration
+  // This automatically uses console methods and avoids Node.js dependencies
+  const isNode = typeof process !== 'undefined' && process.versions?.node;
+
   if (!isNode) {
-    return pino(pinoOptions);
+    // Browser environment - use Pino's native browser support
+    return pino({
+      ...pinoOptions,
+      browser: {
+        // Use console methods directly - this is the simplest and most compatible approach
+        asObject: false,
+      },
+    });
   }
-
-  // Node.js-specific configuration
-  // Use pretty printing when NOT logging to a file AND pino-pretty is available
-  // BUT avoid transport configuration in compiled binaries
-  let usePrettyPrint = !filePath && !isCompiled;
-
-  if (usePrettyPrint) {
-    try {
-      // Check if pino-pretty is available
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      require('pino-pretty');
-    } catch {
-      // pino-pretty is not available, disable pretty printing
-      console.warn('pino-pretty not available, using JSON logging format');
-      usePrettyPrint = false;
-    }
-  }
-
-  // Configure transport for pretty printing (only when both conditions are met)
-  // Skip transport configuration in compiled binaries to avoid resolution issues
-  const transport =
-    usePrettyPrint && !isCompiled
-      ? {
-          target: 'pino-pretty',
-          options: {
-            colorize: true,
-            ignore: 'pid,hostname',
-            translateTime: 'yyyy-mm-dd HH:MM:ss',
-          },
-        }
-      : undefined;
 
   // Determine destination based on configuration (Node.js only)
   let pinoDestination;
+
+  // Only use file destination in Node.js environment
   if (destination === 'file' && filePath) {
-    // If file logging is enabled, ensure directory exists and use file destination
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { existsSync, mkdirSync } = require('fs');
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { dirname } = require('path');
-    const dir = dirname(filePath);
-    if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true });
+    try {
+      // If file logging is enabled, ensure directory exists and use file destination
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { existsSync, mkdirSync } = require('fs');
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { dirname } = require('path');
+      const dir = dirname(filePath);
+      if (!existsSync(dir)) {
+        mkdirSync(dir, { recursive: true });
+      }
+      pinoDestination = pino.destination({
+        dest: filePath,
+        minLength: 1,
+      });
+    } catch (error) {
+      // Fall back to stderr if file operations fail
+      console.warn('File logging failed, falling back to stderr:', error);
+      pinoDestination = pino.destination({ dest: 2 });
     }
-    pinoDestination = pino.destination({
-      dest: filePath,
-      minLength: 1,
-    });
   } else if (destination === 'stdout') {
     // Use stdout
     pinoDestination = pino.destination({ dest: 1 }); // 1 is stdout
@@ -185,20 +147,12 @@ function createPinoLogger(config: LoggerConfig = {}): PinoLogger {
     pinoDestination = pino.destination({ dest: 2 }); // 2 is stderr
   }
 
-  const logger = pino(
-    {
-      ...pinoOptions,
-      transport,
-    },
-    pinoDestination,
-  );
-  return logger;
+  return pino(pinoOptions, pinoDestination);
 }
 
 /**
  * Creates a logger for the specified module with configurable log level
  * @param module - The module name for log context
- * @param minLevel - Minimum log level (default: 'info')
  * @param config - Optional logger configuration
  * @returns Logger instance with module context
  */

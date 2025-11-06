@@ -1,5 +1,15 @@
 # @contextvm/sdk
 
+## 0.1.38
+
+### Patch Changes
+
+- fix(logger): resolve browser build compatibility with Pino.js
+  - Refactor logger to use Pino's built-in browser configuration
+  - Add environment detection to isolate Node.js-specific code
+  - Maintain file logging support in Node.js while enabling browser builds
+  - Ensure consistent API across both environments without breaking changes
+
 ## 0.1.37
 
 ### Patch Changes
