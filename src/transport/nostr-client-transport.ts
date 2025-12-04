@@ -20,6 +20,7 @@ import {
 import { getNostrEventTag } from '../core/utils/serializers.js';
 import { NostrEvent } from 'nostr-tools';
 import { LogLevel } from '../core/utils/logger.js';
+import { LruCache } from '../core/utils/lru-cache.js';
 
 /**
  * Options for configuring the NostrClientTransport.
@@ -45,7 +46,8 @@ export class NostrClientTransport
 
   // Private properties for managing the transport's state and dependencies.
   private readonly serverPubkey: string;
-  private readonly pendingRequestIds: Set<string>;
+  private readonly pendingRequestIds: LruCache<number>; // eventId -> timestamp for LRU
+  private readonly maxPendingRequests = 1000; // LRU cache limit
   private serverInitializeEvent: NostrEvent | undefined;
   private readonly isStateless: boolean;
 
@@ -58,7 +60,12 @@ export class NostrClientTransport
     }
 
     this.serverPubkey = options.serverPubkey;
-    this.pendingRequestIds = new Set();
+    this.pendingRequestIds = new LruCache<number>(
+      this.maxPendingRequests,
+      (key) => {
+        this.logger.debug('Evicted LRU pending request', { eventId: key });
+      },
+    );
     this.isStateless = options.isStateless ?? false;
   }
 
@@ -67,8 +74,12 @@ export class NostrClientTransport
    */
   public async start(): Promise<void> {
     try {
-      await this.connect();
-      const pubkey = await this.getPublicKey();
+      // Execute independent async operations in parallel
+
+      const [_, pubkey] = await Promise.all([
+        this.connect(),
+        this.getPublicKey(),
+      ]);
       this.logger.info('Client pubkey:', pubkey);
       const filters = this.createSubscriptionFilters(pubkey);
 
@@ -139,7 +150,7 @@ export class NostrClientTransport
 
       const eventId = await this._sendInternal(message);
       if (eventId) {
-        this.pendingRequestIds.add(eventId);
+        this.pendingRequestIds.set(eventId, Date.now());
       }
     } catch (error) {
       this.logger.error('Error sending message', {
@@ -390,7 +401,7 @@ export class NostrClientTransport
       const result = NotificationSchema.safeParse(mcpMessage);
       if (!result.success) {
         this.logger.warn('Invalid notification schema', {
-          errors: result.error.errors,
+          issues: result.error.issues,
           message: mcpMessage,
         });
         return;
