@@ -108,4 +108,75 @@ describe('NostrClientTransport', () => {
     expect(receivedEvents.length).toBe(2);
     await client.close();
   }, 10000);
+
+  test('should handle server restart and continue processing requests', async () => {
+    // Create a client
+    const client = new Client({
+      name: 'Reconnection-Client',
+      version: '1.0.0',
+    });
+    const clientPrivateKey = bytesToHex(generateSecretKey());
+
+    const clientTransport = new NostrClientTransport({
+      signer: new PrivateKeySigner(clientPrivateKey),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      serverPubkey: serverPublicKey,
+      encryptionMode: EncryptionMode.DISABLED,
+    });
+
+    await client.connect(clientTransport);
+
+    // First request - should work
+    const tools1 = await client.listTools();
+    expect(tools1).toBeDefined();
+    expect(Array.isArray(tools1.tools)).toBe(true);
+
+    // Simulate server restart by closing and recreating server
+    await server.close();
+
+    // Create new server with same keys
+    const newServer = new McpServer({
+      name: 'Test-Server-Restarted',
+      version: '1.0.0',
+    });
+
+    newServer.registerTool(
+      'add',
+      {
+        title: 'Addition Tool',
+        description: 'Add two numbers',
+        inputSchema: { a: z.number(), b: z.number() },
+      },
+      async ({ a, b }) => ({
+        content: [{ type: 'text', text: String(a + b) }],
+      }),
+    );
+
+    const newServerTransport = new NostrServerTransport({
+      signer: new PrivateKeySigner(serverPrivateKey),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
+    });
+
+    await newServer.connect(newServerTransport);
+
+    // Wait a bit for reconnection to stabilize
+    await sleep(500);
+
+    // Second request after server restart - should still work
+    const tools2 = await client.listTools();
+    expect(tools2).toBeDefined();
+    expect(Array.isArray(tools2.tools)).toBe(true);
+    expect(tools2.tools.length).toBe(1);
+
+    // Test tool call after restart
+    const toolResult = await client.callTool({
+      name: 'add',
+      arguments: { a: 5, b: 3 },
+    });
+    expect(toolResult).toBeDefined();
+    expect(toolResult.content[0].text).toBe('8');
+
+    await client.close();
+    await newServer.close();
+  }, 15000);
 });

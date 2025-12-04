@@ -32,6 +32,33 @@ export class ApplesauceRelayPool implements RelayHandler {
     const relays = relayUrls.map(
       (url) => new Relay(url, { publishTimeout: 1000 }),
     );
+
+    // Set up observability for connection state monitoring
+    relays.forEach((relay) => {
+      relay.connected$.subscribe((isConnected) => {
+        logger.info(`Connection status changed`, {
+          relayUrl: relay.url,
+          connected: isConnected,
+        });
+      });
+
+      relay.error$.subscribe((error) => {
+        logger.error(`Relay connection error`, {
+          relayUrl: relay.url,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+
+      relay.notices$.subscribe((notices) => {
+        if (notices && notices.length > 0) {
+          logger.debug(`Relay notices`, {
+            relayUrl: relay.url,
+            notices: notices,
+          });
+        }
+      });
+    });
+
     this.relayGroup = new RelayGroup(relays);
   }
 
@@ -113,7 +140,7 @@ export class ApplesauceRelayPool implements RelayHandler {
     });
 
     const subscription = this.relayGroup.subscription(filters, {
-      reconnect: { count: undefined, delay: 1000, resetOnSuccess: true },
+      reconnect: Infinity,
     });
 
     const sub = subscription.subscribe({
