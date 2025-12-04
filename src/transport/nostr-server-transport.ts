@@ -36,6 +36,7 @@ import { EncryptionMode } from '../core/interfaces.js';
 import { NostrEvent } from 'nostr-tools';
 import { LogLevel } from '../core/utils/logger.js';
 import { EventDeletion } from 'nostr-tools/kinds';
+import { LruCache } from '../core/utils/lru-cache.js';
 
 /**
  * Represents a capability exclusion pattern that can bypass whitelisting.
@@ -99,16 +100,14 @@ export class NostrServerTransport
   public onclose?: () => void;
   public onerror?: (error: Error) => void;
 
-  private readonly clientSessions = new Map<string, ClientSession>();
+  private readonly clientSessions: LruCache<ClientSession>;
   private readonly eventIdToClient = new Map<string, string>(); // eventId -> clientPubkey
+  private readonly maxSessions = 1000; // LRU cache limit
   private readonly isPublicServer?: boolean;
-  private readonly allowedPublicKeys?: string[];
+  private readonly allowedPublicKeys?: Set<string>;
   private readonly excludedCapabilities?: CapabilityExclusion[];
   private readonly serverInfo?: ServerInfo;
-  private readonly cleanupIntervalMs: number;
-  private readonly sessionTimeoutMs: number;
   private isInitialized = false;
-  private cleanupInterval?: NodeJS.Timeout;
   private initializationPromise?: Promise<void>;
   private initializationResolver?: () => void;
   private cachedCommonTags?: string[][];
@@ -117,10 +116,25 @@ export class NostrServerTransport
     super('nostr-server-transport', options);
     this.serverInfo = options.serverInfo;
     this.isPublicServer = options.isPublicServer;
-    this.allowedPublicKeys = options.allowedPublicKeys;
+    this.allowedPublicKeys = options.allowedPublicKeys
+      ? new Set(options.allowedPublicKeys)
+      : undefined;
     this.excludedCapabilities = options.excludedCapabilities;
-    this.cleanupIntervalMs = options.cleanupIntervalMs ?? 60000;
-    this.sessionTimeoutMs = options.sessionTimeoutMs ?? 300000;
+
+    // Initialize LRU cache with eviction callback for cleanup
+    this.clientSessions = new LruCache<ClientSession>(
+      this.maxSessions,
+      (key, session) => {
+        // Clean up reverse lookup mappings for evicted session
+        for (const eventId of session.pendingRequests.keys()) {
+          this.eventIdToClient.delete(eventId);
+        }
+        for (const eventId of session.eventToProgressToken.keys()) {
+          this.eventIdToClient.delete(eventId);
+        }
+        this.logger.info(`Evicted LRU session for ${key}`);
+      },
+    );
   }
 
   /**
@@ -159,8 +173,12 @@ export class NostrServerTransport
    */
   public async start(): Promise<void> {
     try {
-      await this.connect();
-      const pubkey = await this.getPublicKey();
+      // Execute independent async operations in parallel
+
+      const [_, pubkey] = await Promise.all([
+        this.connect(),
+        this.getPublicKey(),
+      ]);
       this.logger.info('Server pubkey:', pubkey);
       // Subscribe to events targeting this server's public key
       const filters = this.createSubscriptionFilters(pubkey);
@@ -183,14 +201,6 @@ export class NostrServerTransport
       if (this.isPublicServer) {
         await this.getAnnouncementData();
       }
-
-      // Start periodic cleanup of inactive sessions
-      this.cleanupInterval = setInterval(() => {
-        const cleaned = this.cleanupInactiveSessions();
-        if (cleaned > 0) {
-          this.logger.info(`Cleaned up ${cleaned} inactive sessions`);
-        }
-      }, this.cleanupIntervalMs);
     } catch (error) {
       this.logger.error('Error starting NostrServerTransport', {
         error: error instanceof Error ? error.message : String(error),
@@ -206,12 +216,6 @@ export class NostrServerTransport
    */
   public async close(): Promise<void> {
     try {
-      // Clear the cleanup interval
-      if (this.cleanupInterval) {
-        clearInterval(this.cleanupInterval);
-        this.cleanupInterval = undefined;
-      }
-
       await this.disconnect();
       this.clientSessions.clear();
       this.onclose?.();
@@ -446,6 +450,7 @@ export class NostrServerTransport
    * Gets or creates a client session with proper initialization.
    * @param clientPubkey The client's public key.
    * @param now Current timestamp.
+   * @param isEncrypted Whether the session uses encryption.
    * @returns The client session.
    */
   private getOrCreateClientSession(
@@ -466,6 +471,7 @@ export class NostrServerTransport
       this.clientSessions.set(clientPubkey, newSession);
       return newSession;
     }
+
     session.isEncrypted = isEncrypted;
     return session;
   }
@@ -653,25 +659,23 @@ export class NostrServerTransport
         return;
       }
 
-      const promises: Promise<void>[] = [];
+      // Use TaskQueue for outbound notification broadcasting to prevent event loop blocking
       for (const [clientPubkey, session] of this.clientSessions.entries()) {
         if (session.isInitialized) {
-          promises.push(this.sendNotification(clientPubkey, notification));
+          this.taskQueue.add(async () => {
+            try {
+              await this.sendNotification(clientPubkey, notification);
+            } catch (error) {
+              this.logger.error('Error sending notification', {
+                error: error instanceof Error ? error.message : String(error),
+                clientPubkey,
+                method: isJSONRPCNotification(notification)
+                  ? notification.method
+                  : 'unknown',
+              });
+            }
+          });
         }
-      }
-
-      try {
-        await Promise.all(promises);
-      } catch (error) {
-        this.logger.error('Error broadcasting notification', {
-          error: error instanceof Error ? error.message : String(error),
-          method: isJSONRPCNotification(notification)
-            ? notification.method
-            : 'unknown',
-        });
-        this.onerror?.(
-          error instanceof Error ? error : new Error(String(error)),
-        );
       }
     } catch (error) {
       this.logger.error('Error in handleNotification', {
@@ -838,7 +842,7 @@ export class NostrServerTransport
         return;
       }
 
-      if (this.allowedPublicKeys?.length) {
+      if (this.allowedPublicKeys?.size) {
         // Check if the message should bypass whitelisting due to excluded capabilities
         const shouldBypassWhitelisting =
           this.excludedCapabilities?.length &&
@@ -849,7 +853,7 @@ export class NostrServerTransport
           );
 
         if (
-          !this.allowedPublicKeys.includes(event.pubkey) &&
+          !this.allowedPublicKeys.has(event.pubkey) &&
           !shouldBypassWhitelisting
         ) {
           this.logger.error(
@@ -911,34 +915,5 @@ export class NostrServerTransport
       });
       this.onerror?.(error instanceof Error ? error : new Error(String(error)));
     }
-  }
-
-  /**
-   * Cleans up inactive client sessions based on a timeout.
-   * @param timeoutMs Timeout in milliseconds for considering a session inactive (default: 5 minutes).
-   * @returns The number of sessions that were cleaned up.
-   */
-  public cleanupInactiveSessions(timeoutMs?: number): number {
-    const now = Date.now();
-    const timeout = timeoutMs ?? this.sessionTimeoutMs;
-    let cleaned = 0;
-
-    for (const [clientPubkey, session] of this.clientSessions.entries()) {
-      if (now - session.lastActivity > timeout) {
-        // Clean up reverse lookup mappings for this session
-        for (const eventId of session.pendingRequests.keys()) {
-          this.eventIdToClient.delete(eventId);
-        }
-        // Clean up progress token mappings
-        for (const eventId of session.eventToProgressToken.keys()) {
-          this.eventIdToClient.delete(eventId);
-        }
-
-        this.clientSessions.delete(clientPubkey);
-        cleaned++;
-      }
-    }
-
-    return cleaned;
   }
 }

@@ -1,5 +1,20 @@
 # @contextvm/sdk
 
+## 0.1.39
+
+### Patch Changes
+
+- refactor(async): improve reconnection handling, async architecture improvements
+  - Add observability for relay connection state monitoring in ApplesauceRelayPool
+  - Add test for server restart and continued request processing in NostrClientTransport
+  - Update dependencies in package.json and bun.lock
+  - Add TaskQueue utility for non-blocking event processing with configurable concurrency
+  - Parallelize transport startup operations using Promise.all for reduced latency
+  - Implement LRU cache for session and request management with fixed capacity
+  - Optimize authorization lookup from O(N) to O(1) using Set
+  - Update notification broadcasting to use TaskQueue for backpressure handling
+  - Create reusable LruCache utility eliminating code duplication
+
 ## 0.1.38
 
 ### Patch Changes
