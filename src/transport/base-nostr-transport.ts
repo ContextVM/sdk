@@ -24,6 +24,7 @@ import {
   type LogLevel,
   type Logger,
 } from '../core/utils/logger.js';
+import { TaskQueue } from '../core/utils/task-queue.js';
 
 /**
  * Base options for configuring Nostr-based transports.
@@ -54,11 +55,14 @@ export abstract class BaseNostrTransport {
   protected logger: Logger;
   protected isConnected = false;
 
+  protected readonly taskQueue: TaskQueue;
+
   constructor(module: string, options: BaseNostrTransportOptions) {
     this.signer = options.signer;
     this.relayHandler = options.relayHandler;
     this.encryptionMode = options.encryptionMode ?? EncryptionMode.OPTIONAL;
     this.logger = createLogger(module, { level: options.logLevel });
+    this.taskQueue = new TaskQueue(5);
   }
 
   /**
@@ -120,19 +124,19 @@ export abstract class BaseNostrTransport {
     onEvent: (event: NostrEvent) => void | Promise<void>,
   ): Promise<void> {
     try {
-      await this.relayHandler.subscribe(filters, async (event) => {
-        try {
-          await onEvent(event);
-        } catch (error) {
-          this.logger.error('Error in subscription event handler', {
-            error: error instanceof Error ? error.message : String(error),
-            stack: error instanceof Error ? error.stack : undefined,
-            eventId: event.id,
-            eventKind: event.kind,
-          });
-          // Re-throw to allow the relay handler to handle it
-          throw error;
-        }
+      await this.relayHandler.subscribe(filters, (event) => {
+        this.taskQueue.add(async () => {
+          try {
+            await onEvent(event);
+          } catch (error) {
+            this.logger.error('Error in subscription event handler', {
+              error: error instanceof Error ? error.message : String(error),
+              stack: error instanceof Error ? error.stack : undefined,
+              eventId: event.id,
+              eventKind: event.kind,
+            });
+          }
+        });
       });
       this.logger.debug('Subscribed to Nostr events', { filters });
     } catch (error) {
