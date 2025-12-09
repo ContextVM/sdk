@@ -1,5 +1,15 @@
 # @contextvm/sdk
 
+## 0.1.40
+
+### Patch Changes
+
+- feat: implement robust relay reconnection for transports
+  - Fix relay restart issue in ApplesauceRelayPool by increasing publishTimeout and leveraging Applesauce's built-in reconnection
+  - Add comprehensive reconnection tests covering basic restarts, multiple restarts, and extended outages
+  - Simplify logging and reduce verbosity while maintaining essential debugging
+  - Ensure server transport can publish messages seamlessly after relay restarts
+
 ## 0.1.39
 
 ### Patch Changes

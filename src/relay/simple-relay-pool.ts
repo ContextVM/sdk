@@ -11,6 +11,7 @@ const logger = createLogger('relay');
  * Implements exponential backoff for reconnection attempts when relays drop connections.
  * @argument relayUrls - An array of relay URLs to connect to.
  * @returns A RelayHandler implementation that uses a SimplePool to manage connections and subscriptions.
+ * @deprecated Use ApplesauceRelayPool instead.
  */
 export class SimpleRelayPool implements RelayHandler {
   private readonly relayUrls: string[];

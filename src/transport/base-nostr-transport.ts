@@ -238,6 +238,10 @@ export abstract class BaseNostrTransport {
 
   /**
    * Creates and publishes a Nostr event for an MCP message.
+   * @param onEventCreated Optional callback invoked with the inner event ID before publishing.
+   * This allows callers to register the event ID before the actual publish occurs,
+   * preventing race conditions in multi-relay setups where responses may arrive
+   * before the publish operation completes.
    */
   protected async sendMcpMessage(
     message: JSONRPCMessage,
@@ -245,11 +249,15 @@ export abstract class BaseNostrTransport {
     kind: number,
     tags?: NostrEvent['tags'],
     isEncrypted?: boolean,
+    onEventCreated?: (eventId: string) => void,
   ): Promise<string> {
     try {
       const shouldEncrypt = this.shouldEncryptMessage(kind, isEncrypted);
 
       const event = await this.createSignedNostrEvent(message, kind, tags);
+
+      // Allow caller to register the event ID before publishing
+      onEventCreated?.(event.id);
 
       if (shouldEncrypt) {
         const encryptedEvent = encryptMessage(

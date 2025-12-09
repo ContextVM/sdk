@@ -30,30 +30,23 @@ export class ApplesauceRelayPool implements RelayHandler {
   constructor(relayUrls: string[]) {
     this.relayUrls = relayUrls;
     const relays = relayUrls.map(
-      (url) => new Relay(url, { publishTimeout: 1000 }),
+      (url) => new Relay(url, { publishTimeout: 5000 }),
     );
 
     // Set up observability for connection state monitoring
     relays.forEach((relay) => {
       relay.connected$.subscribe((isConnected) => {
-        logger.info(`Connection status changed`, {
+        logger.debug(`Connection status changed`, {
           relayUrl: relay.url,
           connected: isConnected,
         });
       });
 
       relay.error$.subscribe((error) => {
-        logger.error(`Relay connection error`, {
-          relayUrl: relay.url,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      });
-
-      relay.notices$.subscribe((notices) => {
-        if (notices && notices.length > 0) {
-          logger.debug(`Relay notices`, {
+        if (error) {
+          logger.error(`Relay connection error`, {
             relayUrl: relay.url,
-            notices: notices,
+            error: error instanceof Error ? error.message : String(error),
           });
         }
       });
@@ -67,7 +60,7 @@ export class ApplesauceRelayPool implements RelayHandler {
    * Validates relay URLs and initializes the relay group.
    */
   async connect(): Promise<void> {
-    logger.info('Connecting to relays', { relayUrls: this.relayUrls });
+    logger.debug('Connecting to relays', { relayUrls: this.relayUrls });
 
     for (const url of this.relayUrls) {
       try {
@@ -78,7 +71,7 @@ export class ApplesauceRelayPool implements RelayHandler {
       }
     }
 
-    logger.info('Relay group initialized', { relayUrls: this.relayUrls });
+    logger.debug('Relay group initialized', { relayUrls: this.relayUrls });
   }
 
   /**
@@ -89,33 +82,27 @@ export class ApplesauceRelayPool implements RelayHandler {
     logger.debug('Publishing event', { eventId: event.id, kind: event.kind });
 
     try {
-      logger.debug('Attempting to publish to relay group', {
-        relayUrls: this.relayUrls,
-      });
-      const responses = await this.relayGroup.publish(event);
-      logger.debug('Received publish responses', {
-        totalResponses: responses.length,
-        responses: responses.map((r) => ({
-          ok: r.ok,
-          message: r.message || 'No message',
-        })),
+      const responses = await this.relayGroup.publish(event, {
+        reconnect: true,
       });
 
       const failedResponses = responses.filter((response) => !response.ok);
+      const successCount = responses.length - failedResponses.length;
+
+      // Only throw an error if ALL relays failed to publish
+      if (successCount === 0) {
+        throw new Error('Failed to publish event to any relay');
+      }
 
       if (failedResponses.length > 0) {
         logger.warn('Failed to publish event to some relays', {
           eventId: event.id,
           failedCount: failedResponses.length,
-          successCount: responses.length - failedResponses.length,
-          responses: failedResponses.map((r) => ({
-            ok: r.ok,
-            message: r.message || 'No message',
-          })),
+          successCount,
         });
+      } else {
+        logger.debug('Event published successfully', { eventId: event.id });
       }
-
-      logger.debug('Event publishing completed', { eventId: event.id });
     } catch (error) {
       logger.error('Failed to publish event', { eventId: event.id, error });
       throw error;
@@ -141,6 +128,7 @@ export class ApplesauceRelayPool implements RelayHandler {
 
     const subscription = this.relayGroup.subscription(filters, {
       reconnect: Infinity,
+      resubscribe: true,
     });
 
     const sub = subscription.subscribe({
@@ -206,9 +194,8 @@ export class ApplesauceRelayPool implements RelayHandler {
    * Disconnects from all relays and cleans up resources.
    */
   async disconnect(): Promise<void> {
-    logger.info('Disconnecting from relays');
     this.unsubscribe();
-    logger.info('Disconnected from all relays');
+    logger.debug('Disconnected from all relays');
   }
 
   /**
