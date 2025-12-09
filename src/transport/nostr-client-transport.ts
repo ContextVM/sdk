@@ -75,8 +75,7 @@ export class NostrClientTransport
   public async start(): Promise<void> {
     try {
       // Execute independent async operations in parallel
-
-      const [_, pubkey] = await Promise.all([
+      const [_connectionResult, pubkey] = await Promise.all([
         this.connect(),
         this.getPublicKey(),
       ]);
@@ -148,10 +147,7 @@ export class NostrClientTransport
         }
       }
 
-      const eventId = await this._sendInternal(message);
-      if (eventId) {
-        this.pendingRequestIds.set(eventId, Date.now());
-      }
+      await this._sendInternal(message);
     } catch (error) {
       this.logger.error('Error sending message', {
         error: error instanceof Error ? error.message : String(error),
@@ -233,6 +229,9 @@ export class NostrClientTransport
 
   /**
    * Internal method to send a JSON-RPC message and get the resulting event ID.
+   * Registers the event ID before publishing to avoid race conditions in multi-relay setups
+   * where responses may arrive before the publish operation completes.
+   *
    * @param message The JSON-RPC message to send.
    * @returns The ID of the published Nostr event.
    */
@@ -240,11 +239,17 @@ export class NostrClientTransport
     try {
       const tags = this.createRecipientTags(this.serverPubkey);
 
-      return this.sendMcpMessage(
+      // Use sendMcpMessage with callback to register event ID before publishing
+      return await this.sendMcpMessage(
         message,
         this.serverPubkey,
         CTXVM_MESSAGES_KIND,
         tags,
+        undefined, // isEncrypted - let sendMcpMessage determine from encryptionMode
+        (eventId) => {
+          // Register before publishing to handle fast responses from working relays
+          this.pendingRequestIds.set(eventId, Date.now());
+        },
       );
     } catch (error) {
       this.logger.error('Error in _sendInternal', {

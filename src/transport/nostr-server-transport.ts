@@ -174,8 +174,7 @@ export class NostrServerTransport
   public async start(): Promise<void> {
     try {
       // Execute independent async operations in parallel
-
-      const [_, pubkey] = await Promise.all([
+      const [_connectionResult, pubkey] = await Promise.all([
         this.connect(),
         this.getPublicKey(),
       ]);
