@@ -80,8 +80,3 @@ export const announcementMethods: AnnouncementMethods = {
   resourceTemplates: 'resources/templates/list',
   prompts: 'prompts/list',
 } as const;
-
-/**
- * Maximum allowed message size in bytes (1MB)
- */
-export const MAX_MESSAGE_SIZE = 1024 * 1024;

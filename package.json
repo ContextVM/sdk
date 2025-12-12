@@ -1,6 +1,6 @@
 {
   "name": "@contextvm/sdk",
-  "version": "0.1.40",
+  "version": "0.1.41",
   "description": "CtxVM SDK for JavaScript/TypeScript",
   "license": "LGPL-3.0-1",
   "author": "ContextVM",
@@ -43,7 +43,7 @@
     "lint": "eslint src/",
     "test": "bun tests",
     "format": "bun prettier --write .",
-    "release": "bun run build && bun changeset publish"
+    "release": "bun run build && bun publish"
   },
   "devDependencies": {
     "@changesets/cli": "^2.29.8",

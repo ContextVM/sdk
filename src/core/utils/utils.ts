@@ -1,8 +1,8 @@
 import {
   JSONRPCMessage,
   JSONRPCMessageSchema,
+  JSONRPCRequest,
 } from '@modelcontextprotocol/sdk/types.js';
-import { MAX_MESSAGE_SIZE } from '../constants.js';
 
 /**
  * Sleeps for a specified number of milliseconds.
@@ -13,20 +13,38 @@ export const sleep = (ms: number) =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * Validates message size
- */
-export function validateMessageSize(message: string): boolean {
-  const size = new Blob([message]).size;
-  return size <= MAX_MESSAGE_SIZE;
-}
-
-/**
- * Validates a message using the MCP SDK's schema
+ * Validates a message against the MCP SDK's JSON-RPC message schema.
+ * @param message The message to validate.
+ * @returns The validated JSONRPCMessage if valid, null otherwise.
  */
 export function validateMessage(message: unknown): JSONRPCMessage | null {
   try {
     return JSONRPCMessageSchema.parse(message);
   } catch {
     return null;
+  }
+}
+
+/**
+ * Injects the client's public key into the _meta field of an MCP request message.
+ * This function performs in-place mutation for optimal performance.
+ *
+ * @param request The JSON-RPC request message to modify (must be a request).
+ * @param clientPubkey The client's Nostr public key to inject.
+ */
+export function injectClientPubkey(
+  request: JSONRPCRequest,
+  clientPubkey: string,
+): void {
+  // Only inject if params exists
+  if (!request.params) {
+    return;
+  }
+
+  // In-place mutation: create or update _meta with clientPubkey
+  if (!request.params._meta) {
+    request.params._meta = { clientPubkey };
+  } else {
+    request.params._meta.clientPubkey = clientPubkey;
   }
 }

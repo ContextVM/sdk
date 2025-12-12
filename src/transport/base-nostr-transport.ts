@@ -18,7 +18,7 @@ import {
   RESOURCETEMPLATES_LIST_KIND,
   PROMPTS_LIST_KIND,
 } from '../core/index.js';
-import { validateMessage, validateMessageSize } from '../core/utils/utils.js';
+import { validateMessage } from '../core/utils/utils.js';
 import {
   createLogger,
   type LogLevel,
@@ -153,16 +153,6 @@ export abstract class BaseNostrTransport {
     event: NostrEvent,
   ): JSONRPCMessage | null {
     try {
-      // Early size validation (cheapest check first)
-      if (!validateMessageSize(event.content)) {
-        this.logger.warn('MCP message size validation failed', {
-          eventId: event.id,
-          pubkey: event.pubkey,
-          contentSize: event.content.length,
-        });
-        return null;
-      }
-
       // Convert and validate structure in one pass
       const message = nostrEventToMcpMessage(event);
       if (!message) {
