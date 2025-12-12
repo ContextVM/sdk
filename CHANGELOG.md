@@ -1,5 +1,11 @@
 # @contextvm/sdk
 
+## 0.1.41
+
+### Patch Changes
+
+- feat(transport): add optional client public key injection to MCP requests
+
 ## 0.1.40
 
 ### Patch Changes

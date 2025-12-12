@@ -37,6 +37,7 @@ import { NostrEvent } from 'nostr-tools';
 import { LogLevel } from '../core/utils/logger.js';
 import { EventDeletion } from 'nostr-tools/kinds';
 import { LruCache } from '../core/utils/lru-cache.js';
+import { injectClientPubkey } from '../core/utils/utils.js';
 
 /**
  * Represents a capability exclusion pattern that can bypass whitelisting.
@@ -63,6 +64,11 @@ export interface NostrServerTransportOptions extends BaseNostrTransportOptions {
   /** Timeout in milliseconds for considering a session inactive (default: 300000) */
   sessionTimeoutMs?: number;
   logLevel?: LogLevel;
+  /**
+   * Whether to inject the client's public key into the _meta field of incoming messages.
+   * @default false
+   */
+  injectClientPubkey?: boolean;
 }
 
 /**
@@ -107,6 +113,7 @@ export class NostrServerTransport
   private readonly allowedPublicKeys?: Set<string>;
   private readonly excludedCapabilities?: CapabilityExclusion[];
   private readonly serverInfo?: ServerInfo;
+  private readonly injectClientPubkey: boolean;
   private isInitialized = false;
   private initializationPromise?: Promise<void>;
   private initializationResolver?: () => void;
@@ -120,6 +127,7 @@ export class NostrServerTransport
       ? new Set(options.allowedPublicKeys)
       : undefined;
     this.excludedCapabilities = options.excludedCapabilities;
+    this.injectClientPubkey = options.injectClientPubkey ?? false;
 
     // Initialize LRU cache with eviction callback for cleanup
     this.clientSessions = new LruCache<ClientSession>(
@@ -817,11 +825,11 @@ export class NostrServerTransport
   }
 
   /**
-   * Common logic for authorizing and processing an event.
-   * @param event The event to process.
+   * Authorizes and processes an incoming Nostr event, handling message validation,
+   * client authorization, session management, and optional client public key injection.
+   * @param event The Nostr event to process.
    * @param isEncrypted Whether the original event was encrypted.
    */
-
   private authorizeAndProcessEvent(
     event: NostrEvent,
     isEncrypted: boolean,
@@ -898,8 +906,15 @@ export class NostrServerTransport
         isEncrypted,
       );
       session.lastActivity = now;
+
+      // Handle message routing and conditionally inject client pubkey
       if (isJSONRPCRequest(mcpMessage)) {
         this.handleIncomingRequest(session, event.id, mcpMessage, event.pubkey);
+
+        // Inject client public key for enhanced server integration (in-place mutation)
+        if (this.injectClientPubkey) {
+          injectClientPubkey(mcpMessage, event.pubkey);
+        }
       } else if (isJSONRPCNotification(mcpMessage)) {
         this.handleIncomingNotification(session, mcpMessage);
       }

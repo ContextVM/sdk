@@ -19,6 +19,11 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { EncryptionMode } from '../core/interfaces.js';
 import { ApplesauceRelayPool } from '../relay/applesauce-relay-pool.js';
 import { z } from 'zod';
+import { injectClientPubkey } from '../core/utils/utils.js';
+import {
+  isJSONRPCRequest,
+  JSONRPCMessage,
+} from '@modelcontextprotocol/sdk/types.js';
 
 const baseRelayPort = 7790; // Use a different port to avoid conflicts
 const relayUrl = `ws://localhost:${baseRelayPort}`;
@@ -476,4 +481,62 @@ describe('NostrServerTransport', () => {
     await client.close();
     await server.close();
   }, 10000);
+
+  test('should inject client public key into _meta field when injectClientPubkey is enabled', () => {
+    const testMessage: JSONRPCMessage = {
+      jsonrpc: '2.0' as const,
+      id: 'test-id',
+      method: 'test/method',
+      params: {
+        someParam: 'value',
+      },
+    };
+
+    const clientPubkey = 'test-client-pubkey';
+
+    // Test with object params - function mutates in-place
+    injectClientPubkey(testMessage, clientPubkey);
+    if (isJSONRPCRequest(testMessage)) {
+      expect(testMessage.params?._meta).toBeDefined();
+      expect(testMessage.params?._meta?.clientPubkey).toBe(clientPubkey);
+      expect(testMessage.params?.someParam).toBe('value'); // Original params preserved
+    }
+  });
+
+  test('should preserve existing _meta when injecting client public key', () => {
+    const messageWithMeta: JSONRPCMessage = {
+      jsonrpc: '2.0' as const,
+      id: 'test-id-2',
+      method: 'test/method',
+      params: {
+        _meta: {
+          progressToken: 'existing-token',
+        },
+      },
+    };
+
+    const clientPubkey = 'test-client-pubkey';
+
+    // Function mutates in-place
+    injectClientPubkey(messageWithMeta, clientPubkey);
+    expect(messageWithMeta.params?._meta).toBeDefined();
+    expect(messageWithMeta.params?._meta?.clientPubkey).toBe(clientPubkey);
+    expect(messageWithMeta.params?._meta?.progressToken).toBe('existing-token'); // Existing meta preserved
+  });
+
+  test('should handle messages without params', () => {
+    const messageWithoutParams: JSONRPCMessage = {
+      jsonrpc: '2.0' as const,
+      id: 'test-id-3',
+      method: 'test/method',
+    };
+
+    const clientPubkey = 'test-client-pubkey';
+
+    // Should not throw when params is undefined
+    expect(() =>
+      injectClientPubkey(messageWithoutParams, clientPubkey),
+    ).not.toThrow();
+    expect(messageWithoutParams.params).toBeUndefined();
+  });
 });
