@@ -1,6 +1,6 @@
 {
   "name": "@contextvm/sdk",
-  "version": "0.1.46",
+  "version": "0.1.47",
   "description": "CtxVM SDK for JavaScript/TypeScript",
   "license": "LGPL-3.0-1",
   "author": "ContextVM",
@@ -60,7 +60,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.25.1",
     "applesauce-relay": "^4.4.2",
-    "nostr-tools": "^2.19.4",
+    "nostr-tools": "~2.18",
     "pino": "^10.1.0",
     "pino-pretty": "^13.1.3"
   }

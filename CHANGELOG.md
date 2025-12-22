@@ -1,5 +1,11 @@
 # @contextvm/sdk
 
+## 0.1.47
+
+### Patch Changes
+
+- build(deps): downgrade nostr-tools
+
 ## 0.1.46
 
 ### Patch Changes
