@@ -83,7 +83,8 @@ export class ApplesauceRelayPool implements RelayHandler {
 
     try {
       const responses = await this.relayGroup.publish(event, {
-        reconnect: true,
+        retries: Infinity,
+        reconnect: Infinity,
       });
 
       const failedResponses = responses.filter((response) => !response.ok);
@@ -128,7 +129,7 @@ export class ApplesauceRelayPool implements RelayHandler {
 
     const subscription = this.relayGroup.subscription(filters, {
       reconnect: Infinity,
-      resubscribe: true,
+      resubscribe: Infinity,
     });
 
     const sub = subscription.subscribe({
@@ -212,5 +213,13 @@ export class ApplesauceRelayPool implements RelayHandler {
     } catch (error) {
       logger.error('Error while unsubscribing from subscriptions', { error });
     }
+  }
+
+  /**
+   * Returns the list of relay URLs configured for this relay pool.
+   * @returns An array of relay URLs.
+   */
+  getRelayUrls(): string[] {
+    return [...this.relayUrls];
   }
 }
