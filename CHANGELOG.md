@@ -1,5 +1,19 @@
 # @contextvm/sdk
 
+## 0.1.42
+
+### Patch Changes
+
+- feat: update dependencies and enhance relay pool functionality
+  - Update @modelcontextprotocol/sdk from 1.24.2 to 1.25.1
+  - Update devDependencies: @eslint/js, @types/bun, eslint, typescript-eslint
+  - Update dependencies: nostr-tools
+  - Switch mock transport to use ApplesauceRelayPool
+  - Add getRelayUrls method to RelayHandler interface
+  - Improve relay reconnection with retries and resubscribe options
+  - Update base transport logging to include relay URLs
+  - Adapt server transport to new MCP SDK response types
+
 ## 0.1.41
 
 ### Patch Changes

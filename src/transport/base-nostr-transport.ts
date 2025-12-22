@@ -76,7 +76,10 @@ export abstract class BaseNostrTransport {
     try {
       await this.relayHandler.connect();
       this.isConnected = true;
-      this.logger.info('Connected to Nostr relay network');
+      this.logger.info(
+        'Connected to Nostr relays',
+        this.relayHandler.getRelayUrls?.() ?? '',
+      );
     } catch (error) {
       this.logAndRethrowError(
         'Failed to connect to Nostr relay network',

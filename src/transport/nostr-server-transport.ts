@@ -2,9 +2,7 @@ import {
   InitializeRequest,
   InitializeResultSchema,
   isJSONRPCRequest,
-  isJSONRPCResponse,
   isJSONRPCNotification,
-  JSONRPCError,
   LATEST_PROTOCOL_VERSION,
   ListPromptsResultSchema,
   ListResourcesResultSchema,
@@ -13,7 +11,9 @@ import {
   type JSONRPCMessage,
   type JSONRPCRequest,
   type JSONRPCResponse,
-  isJSONRPCError,
+  isJSONRPCResultResponse,
+  JSONRPCErrorResponse,
+  isJSONRPCErrorResponse,
 } from '@modelcontextprotocol/sdk/types.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import {
@@ -59,10 +59,7 @@ export interface NostrServerTransportOptions extends BaseNostrTransportOptions {
   allowedPublicKeys?: string[];
   /** List of capabilities that are excluded from public key whitelisting requirements */
   excludedCapabilities?: CapabilityExclusion[];
-  /** Interval in milliseconds for cleaning up inactive sessions (default: 60000) */
-  cleanupIntervalMs?: number;
-  /** Timeout in milliseconds for considering a session inactive (default: 300000) */
-  sessionTimeoutMs?: number;
+  /** Log level for the NostrServerTransport: 'debug' | 'info' | 'warn' | 'error' | 'silent' */
   logLevel?: LogLevel;
   /**
    * Whether to inject the client's public key into the _meta field of incoming messages.
@@ -242,7 +239,7 @@ export class NostrServerTransport
    */
   public async send(message: JSONRPCMessage): Promise<void> {
     // Message type detection and routing
-    if (isJSONRPCResponse(message) || isJSONRPCError(message)) {
+    if (isJSONRPCResultResponse(message) || isJSONRPCErrorResponse(message)) {
       await this.handleResponse(message);
     } else if (isJSONRPCNotification(message)) {
       await this.handleNotification(message);
@@ -410,6 +407,11 @@ export class NostrServerTransport
    */
   private async announcer(message: JSONRPCResponse): Promise<void> {
     try {
+      // Only process successful responses with result data
+      if (!isJSONRPCResultResponse(message) || !message.result) {
+        return;
+      }
+
       const recipientPubkey = await this.getPublicKey();
       const commonTags = this.generateCommonTags();
 
@@ -534,11 +536,11 @@ export class NostrServerTransport
    * @param response The JSON-RPC response or error to send.
    */
   private async handleResponse(
-    response: JSONRPCResponse | JSONRPCError,
+    response: JSONRPCResponse | JSONRPCErrorResponse,
   ): Promise<void> {
     // Handle special announcement responses
     if (response.id === 'announcement') {
-      if (isJSONRPCResponse(response)) {
+      if (isJSONRPCResultResponse(response)) {
         if (InitializeResultSchema.safeParse(response.result).success) {
           this.isInitialized = true;
           this.initializationResolver?.(); // Resolve waiting promise
@@ -591,7 +593,7 @@ export class NostrServerTransport
     // Send the response back to the original requester
     const tags = this.createResponseTags(targetClientPubkey, nostrEventId);
     if (
-      isJSONRPCResponse(response) &&
+      isJSONRPCResultResponse(response) &&
       InitializeResultSchema.safeParse(response.result).success &&
       session.isEncrypted
     ) {
@@ -868,7 +870,7 @@ export class NostrServerTransport
           );
 
           if (this.isPublicServer && isJSONRPCRequest(mcpMessage)) {
-            const errorResponse: JSONRPCError = {
+            const errorResponse: JSONRPCErrorResponse = {
               jsonrpc: '2.0',
               id: mcpMessage.id,
               error: {
