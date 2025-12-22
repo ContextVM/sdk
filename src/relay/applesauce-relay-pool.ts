@@ -2,26 +2,62 @@ import { Relay, RelayGroup } from 'applesauce-relay';
 import type { NostrEvent, Filter } from 'nostr-tools';
 import { RelayHandler } from '../core/interfaces.js';
 import { createLogger } from '../core/utils/logger.js';
+import { sleep } from '../core/utils/utils.js';
+import { timer, type Observable } from 'rxjs';
 
 const logger = createLogger('applesauce-relay');
 
 /**
- * Subscription information for tracking active subscriptions
- */
-interface SubscriptionInfo {
-  filters: Filter[];
-  onEvent: (event: NostrEvent) => void;
-  onEose?: () => void;
-  closer: { unsubscribe: () => void };
-}
-
-/**
- * A RelayHandler implementation that uses the applesauce-relay library's RelayPool to manage connections and subscriptions.
+ * RelayHandler implementation backed by applesauce-relay.
  */
 export class ApplesauceRelayPool implements RelayHandler {
   private readonly relayUrls: string[];
   private readonly relayGroup: RelayGroup;
-  private subscriptions: SubscriptionInfo[] = [];
+  private subscriptions: Array<() => void> = [];
+
+  // Outbound publish policy
+  private static readonly PUBLISH_ATTEMPT_TIMEOUT_MS = 10_000;
+  private static readonly PUBLISH_RETRY_INTERVAL_MS = 500;
+  private static readonly PUBLISH_ERROR_LOG_INTERVAL_MS = 10_000;
+
+  // Reconnect backoff policy
+  private static readonly RECONNECT_BASE_DELAY_MS = 3_000;
+  private static readonly RECONNECT_MAX_DELAY_MS = 30_000;
+
+  private createRelay(url: string): Relay {
+    const relay = new Relay(url);
+
+    // Ensure reconnect attempts continue at a bounded cadence even after many
+    // failures, so a relay coming back online is picked up quickly.
+    relay.reconnectTimer = (
+      _error: Error | CloseEvent,
+      tries = 0,
+    ): Observable<number> => {
+      const delay = Math.min(
+        Math.pow(1.5, tries) * ApplesauceRelayPool.RECONNECT_BASE_DELAY_MS,
+        ApplesauceRelayPool.RECONNECT_MAX_DELAY_MS,
+      );
+      return timer(delay);
+    };
+
+    // Observability for connection state monitoring
+    relay.connected$.subscribe((connected) => {
+      logger.debug('Connection status changed', {
+        relayUrl: relay.url,
+        connected,
+      });
+    });
+
+    relay.error$.subscribe((error) => {
+      if (!error) return;
+      logger.error('Relay connection error', {
+        relayUrl: relay.url,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+
+    return relay;
+  }
 
   /**
    * Creates a new ApplesauceRelayPool instance.
@@ -29,30 +65,10 @@ export class ApplesauceRelayPool implements RelayHandler {
    */
   constructor(relayUrls: string[]) {
     this.relayUrls = relayUrls;
-    const relays = relayUrls.map(
-      (url) => new Relay(url, { publishTimeout: 5000 }),
+
+    this.relayGroup = new RelayGroup(
+      relayUrls.map((url) => this.createRelay(url)),
     );
-
-    // Set up observability for connection state monitoring
-    relays.forEach((relay) => {
-      relay.connected$.subscribe((isConnected) => {
-        logger.debug(`Connection status changed`, {
-          relayUrl: relay.url,
-          connected: isConnected,
-        });
-      });
-
-      relay.error$.subscribe((error) => {
-        if (error) {
-          logger.error(`Relay connection error`, {
-            relayUrl: relay.url,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-      });
-    });
-
-    this.relayGroup = new RelayGroup(relays);
   }
 
   /**
@@ -81,32 +97,55 @@ export class ApplesauceRelayPool implements RelayHandler {
   async publish(event: NostrEvent): Promise<void> {
     logger.debug('Publishing event', { eventId: event.id, kind: event.kind });
 
-    try {
-      const responses = await this.relayGroup.publish(event, {
-        retries: Infinity,
-        reconnect: Infinity,
-      });
+    // NOTE: Publishing is intentionally retried indefinitely.
+    // MCP JSON-RPC round-trips cannot complete without delivering responses.
+    let lastLogAt = 0;
+    let attempt = 0;
 
-      const failedResponses = responses.filter((response) => !response.ok);
-      const successCount = responses.length - failedResponses.length;
-
-      // Only throw an error if ALL relays failed to publish
-      if (successCount === 0) {
-        throw new Error('Failed to publish event to any relay');
-      }
-
-      if (failedResponses.length > 0) {
-        logger.warn('Failed to publish event to some relays', {
-          eventId: event.id,
-          failedCount: failedResponses.length,
-          successCount,
+    while (true) {
+      attempt += 1;
+      try {
+        const responses = await this.relayGroup.publish(event, {
+          timeout: ApplesauceRelayPool.PUBLISH_ATTEMPT_TIMEOUT_MS,
+          retries: 0,
         });
-      } else {
-        logger.debug('Event published successfully', { eventId: event.id });
+
+        let successCount = 0;
+        let failedCount = 0;
+        for (const response of responses) {
+          if (response.ok) successCount += 1;
+          else failedCount += 1;
+        }
+
+        if (successCount === 0) throw new Error('Failed to publish event');
+
+        if (failedCount > 0) {
+          logger.warn('Failed to publish event to some relays', {
+            eventId: event.id,
+            failedCount,
+            successCount,
+          });
+        } else {
+          logger.debug('Event published successfully', { eventId: event.id });
+        }
+        return;
+      } catch (error) {
+        const now = Date.now();
+        if (
+          now - lastLogAt >=
+          ApplesauceRelayPool.PUBLISH_ERROR_LOG_INTERVAL_MS
+        ) {
+          lastLogAt = now;
+          logger.error('Publish failed; will retry', {
+            eventId: event.id,
+            kind: event.kind,
+            attempt,
+            error,
+          });
+        }
+
+        await sleep(ApplesauceRelayPool.PUBLISH_RETRY_INTERVAL_MS);
       }
-    } catch (error) {
-      logger.error('Failed to publish event', { eventId: event.id, error });
-      throw error;
     }
   }
 
@@ -121,11 +160,8 @@ export class ApplesauceRelayPool implements RelayHandler {
     filters: Filter[],
     onEvent: (event: NostrEvent) => void,
     onEose?: () => void,
-  ): { unsubscribe: () => void } {
-    logger.debug('Creating subscription with filters', {
-      filters,
-      relayUrls: this.relayUrls,
-    });
+  ): () => void {
+    logger.debug('Creating subscription', { filters });
 
     const subscription = this.relayGroup.subscription(filters, {
       reconnect: Infinity,
@@ -135,13 +171,8 @@ export class ApplesauceRelayPool implements RelayHandler {
     const sub = subscription.subscribe({
       next: (response) => {
         if (response === 'EOSE') {
-          logger.debug('Received EOSE signal');
           onEose?.();
         } else {
-          logger.debug('Received event', {
-            eventId: response.id,
-            kind: response.kind,
-          });
           onEvent(response);
         }
       },
@@ -156,12 +187,7 @@ export class ApplesauceRelayPool implements RelayHandler {
       },
     });
 
-    return {
-      unsubscribe: () => {
-        logger.debug('Unsubscribing from subscription');
-        sub.unsubscribe();
-      },
-    };
+    return () => sub.unsubscribe();
   }
 
   /**
@@ -175,20 +201,7 @@ export class ApplesauceRelayPool implements RelayHandler {
     onEvent: (event: NostrEvent) => void,
     onEose?: () => void,
   ): Promise<void> {
-    logger.debug('Creating subscription', { filters });
-
-    try {
-      const closer = this.createSubscription(filters, onEvent, onEose);
-      this.subscriptions.push({
-        filters,
-        onEvent,
-        onEose,
-        closer,
-      });
-    } catch (error) {
-      logger.error('Failed to create subscription', { filters, error });
-      throw error;
-    }
+    this.subscriptions.push(this.createSubscription(filters, onEvent, onEose));
   }
 
   /**
@@ -206,9 +219,7 @@ export class ApplesauceRelayPool implements RelayHandler {
     logger.debug('Unsubscribing from all subscriptions');
 
     try {
-      for (const subscription of this.subscriptions) {
-        subscription.closer.unsubscribe();
-      }
+      for (const unsubscribe of this.subscriptions) unsubscribe();
       this.subscriptions = [];
     } catch (error) {
       logger.error('Error while unsubscribing from subscriptions', { error });

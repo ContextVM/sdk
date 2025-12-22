@@ -1,5 +1,29 @@
 # @contextvm/sdk
 
+## 0.1.46
+
+### Patch Changes
+
+- feat(relay): enhance publish method with indefinite retries and controlled logging
+
+## 0.1.45
+
+### Patch Changes
+
+- feat(relay): enhance publish method with indefinite retries and controlled logging
+
+## 0.1.44
+
+### Patch Changes
+
+- fix: reconnectTimer
+
+## 0.1.43
+
+### Patch Changes
+
+- feat(relay): enhance publish method with indefinite retries and controlled logging
+
 ## 0.1.42
 
 ### Patch Changes

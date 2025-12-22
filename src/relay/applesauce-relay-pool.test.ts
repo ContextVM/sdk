@@ -323,4 +323,52 @@ describe('ApplesauceRelayPool Integration', () => {
     relayPool.unsubscribe();
     await relayPool.disconnect();
   }, 10000);
+
+  test('should eventually publish after a relay outage and recovery', async () => {
+    // 1. Setup signer
+    const privateKey = generateSecretKey();
+    const privateKeyHex = bytesToHex(privateKey);
+    const publicKeyHex = getPublicKey(privateKey);
+    const signer = new PrivateKeySigner(privateKeyHex);
+
+    // 2. Setup ApplesauceRelayPool
+    const relayPool = new ApplesauceRelayPool([relayUrl]);
+    await relayPool.connect();
+
+    // 3. Stop the relay to simulate an outage
+    relayProcess.kill();
+    await sleep(3000);
+
+    // 4. Create an event and start publishing while the relay is down.
+    // publish() intentionally retries indefinitely, so we don't await until the
+    // relay is brought back.
+    const unsignedEvent: UnsignedEvent = {
+      kind: 1059,
+      pubkey: publicKeyHex,
+      created_at: Math.floor(Date.now() / 1000),
+      tags: [],
+      content: 'Publish during outage; should succeed after recovery',
+    };
+    const signedEvent = await signer.signEvent(unsignedEvent);
+
+    const publishPromise = relayPool.publish(signedEvent);
+
+    // 5. Restart the relay after a short downtime
+    await sleep(1500);
+    relayProcess = Bun.spawn(['bun', 'src/__mocks__/mock-relay.ts'], {
+      env: {
+        ...process.env,
+        PORT: `${relayPort}`,
+        DISABLE_MOCK_RESPONSES: 'true',
+      },
+    });
+    await sleep(150);
+
+    // 6. Ensure publish eventually resolves
+    await publishPromise;
+
+    // 7. Cleanup
+    relayPool.unsubscribe();
+    await relayPool.disconnect();
+  }, 30000);
 });
