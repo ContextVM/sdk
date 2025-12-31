@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
-import { bytesToHex } from '@noble/hashes/utils';
+import { bytesToHex } from 'nostr-tools/utils';
 import { sleep, type Subprocess } from 'bun';
 import {
   generateSecretKey,

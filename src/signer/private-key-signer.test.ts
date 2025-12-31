@@ -1,5 +1,5 @@
 import { test, expect, beforeAll, describe } from 'bun:test';
-import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
+import { bytesToHex, hexToBytes } from 'nostr-tools/utils';
 import {
   generateSecretKey,
   getPublicKey,
