@@ -1,5 +1,11 @@
 # @contextvm/sdk
 
+## 0.1.48
+
+### Patch Changes
+
+- feat(deps): implement automated dependency checking
+
 ## 0.1.47
 
 ### Patch Changes

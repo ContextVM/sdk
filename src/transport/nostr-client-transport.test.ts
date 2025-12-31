@@ -11,12 +11,17 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { NostrServerTransport } from './nostr-server-transport.js';
 import { NostrClientTransport } from './nostr-client-transport.js';
 import { PrivateKeySigner } from '../signer/private-key-signer.js';
-import { generateSecretKey, getPublicKey, NostrEvent } from 'nostr-tools';
+import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
+import type { NostrEvent } from 'nostr-tools';
 import { bytesToHex, hexToBytes } from 'nostr-tools/utils';
 import { ApplesauceRelayPool } from '../relay/applesauce-relay-pool.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import { ListToolsResult } from '@modelcontextprotocol/sdk/types.js';
+import {
+  ListToolsResult,
+  TextContent,
+  ToolResultContent,
+} from '@modelcontextprotocol/sdk/types.js';
 import { EncryptionMode } from '../core/interfaces.js';
 
 const baseRelayPort = 7791;
@@ -174,7 +179,9 @@ describe('NostrClientTransport', () => {
       arguments: { a: 5, b: 3 },
     });
     expect(toolResult).toBeDefined();
-    expect(toolResult.content[0].text).toBe('8');
+    const { text } = (toolResult as ToolResultContent)
+      .content[0] as TextContent;
+    expect(text).toBe('8');
 
     await client.close();
     await newServer.close();

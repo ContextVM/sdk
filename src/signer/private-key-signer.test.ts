@@ -1,5 +1,4 @@
 import { test, expect, beforeAll, describe } from 'bun:test';
-import { bytesToHex, hexToBytes } from 'nostr-tools/utils';
 import {
   generateSecretKey,
   getPublicKey,
@@ -7,6 +6,7 @@ import {
   type UnsignedEvent,
 } from 'nostr-tools';
 import { PrivateKeySigner } from './private-key-signer.js';
+import { bytesToHex, hexToBytes } from 'nostr-tools/utils';
 
 describe('PrivateKeySigner', () => {
   const privateKey = generateSecretKey();

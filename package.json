@@ -1,6 +1,6 @@
 {
   "name": "@contextvm/sdk",
-  "version": "0.1.47",
+  "version": "0.1.48",
   "description": "CtxVM SDK for JavaScript/TypeScript",
   "license": "LGPL-3.0-1",
   "author": "ContextVM",
@@ -43,7 +43,8 @@
     "lint": "eslint src/",
     "test": "bun tests",
     "format": "bun prettier --write .",
-    "release": "bun run build && bun publish"
+    "release": "bun run build && bun publish",
+    "typecheck": "bun run tsc --noEmit"
   },
   "devDependencies": {
     "@changesets/cli": "^2.29.8",
@@ -51,6 +52,7 @@
     "@types/bun": "^1.3.5",
     "eslint": "^9.39.2",
     "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-import": "^2.32.0",
     "prettier": "^3.7.4",
     "typescript-eslint": "^8.50.0"
   },
@@ -62,6 +64,8 @@
     "applesauce-relay": "^4.4.2",
     "nostr-tools": "~2.18",
     "pino": "^10.1.0",
-    "pino-pretty": "^13.1.3"
+    "pino-pretty": "^13.1.3",
+    "rxjs": "^7.8.2",
+    "zod": "3"
   }
 }
