@@ -1,4 +1,3 @@
-import { hexToBytes } from 'nostr-tools/utils';
 import {
   finalizeEvent,
   generateSecretKey,
@@ -8,6 +7,7 @@ import {
 } from 'nostr-tools';
 import { NostrSigner } from '../core/interfaces.js';
 import { nip44 } from 'nostr-tools';
+import { hexToBytes } from 'nostr-tools/utils';
 
 /**
  * A signer that uses a private key to sign events.
