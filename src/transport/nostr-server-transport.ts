@@ -1,19 +1,13 @@
 import {
-  InitializeRequest,
   InitializeResultSchema,
   isJSONRPCRequest,
   isJSONRPCNotification,
-  LATEST_PROTOCOL_VERSION,
-  ListPromptsResultSchema,
-  ListResourcesResultSchema,
-  ListResourceTemplatesResultSchema,
-  ListToolsResultSchema,
   type JSONRPCMessage,
   type JSONRPCRequest,
   type JSONRPCResponse,
   isJSONRPCResultResponse,
-  JSONRPCErrorResponse,
   isJSONRPCErrorResponse,
+  JSONRPCErrorResponse,
 } from '@modelcontextprotocol/sdk/types.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import {
@@ -21,34 +15,25 @@ import {
   BaseNostrTransportOptions,
 } from './base-nostr-transport.js';
 import {
-  announcementMethods,
   CTXVM_MESSAGES_KIND,
   GIFT_WRAP_KIND,
   NOSTR_TAGS,
-  PROMPTS_LIST_KIND,
-  RESOURCES_LIST_KIND,
-  RESOURCETEMPLATES_LIST_KIND,
-  SERVER_ANNOUNCEMENT_KIND,
-  TOOLS_LIST_KIND,
   decryptMessage,
 } from '../core/index.js';
 import { EncryptionMode } from '../core/interfaces.js';
 import { NostrEvent } from 'nostr-tools';
 import { LogLevel } from '../core/utils/logger.js';
-import { EventDeletion } from 'nostr-tools/kinds';
-import { LruCache } from '../core/utils/lru-cache.js';
 import { injectClientPubkey } from '../core/utils/utils.js';
-
-/**
- * Represents a capability exclusion pattern that can bypass whitelisting.
- * Can be either a method-only pattern (e.g., 'tools/list') or a method + name pattern (e.g., 'tools/call, get_weather').
- */
-export interface CapabilityExclusion {
-  /** The JSON-RPC method to exclude from whitelisting (e.g., 'tools/call', 'tools/list') */
-  method: string;
-  /** Optional capability name to specifically exclude (e.g., 'get_weather') */
-  name?: string;
-}
+import { CorrelationStore } from './nostr-server/correlation-store.js';
+import { ClientSession, SessionStore } from './nostr-server/session-store.js';
+import {
+  AuthorizationPolicy,
+  CapabilityExclusion,
+} from './nostr-server/authorization-policy.js';
+import {
+  AnnouncementManager,
+  ServerInfo,
+} from './nostr-server/announcement-manager.js';
 
 /**
  * Options for configuring the NostrServerTransport.
@@ -69,27 +54,6 @@ export interface NostrServerTransportOptions extends BaseNostrTransportOptions {
 }
 
 /**
- * Information about a server.
- */
-export interface ServerInfo {
-  name?: string;
-  picture?: string;
-  website?: string;
-  about?: string;
-}
-
-/**
- * Information about a connected client session with integrated request tracking.
- */
-interface ClientSession {
-  isInitialized: boolean;
-  isEncrypted: boolean;
-  lastActivity: number;
-  pendingRequests: Map<string, string | number>;
-  eventToProgressToken: Map<string, string>; // eventId -> progressToken
-}
-
-/**
  * A server-side transport layer for CTXVM that uses Nostr events for communication.
  * This transport listens for incoming MCP requests via Nostr events and can send
  * responses back to the originating clients. It handles all request/response correlation
@@ -103,73 +67,61 @@ export class NostrServerTransport
   public onclose?: () => void;
   public onerror?: (error: Error) => void;
 
-  private readonly clientSessions: LruCache<ClientSession>;
-  private readonly eventIdToClient = new Map<string, string>(); // eventId -> clientPubkey
-  private readonly maxSessions = 1000; // LRU cache limit
-  private readonly isPublicServer?: boolean;
-  private readonly allowedPublicKeys?: Set<string>;
-  private readonly excludedCapabilities?: CapabilityExclusion[];
-  private readonly serverInfo?: ServerInfo;
+  private readonly sessionStore: SessionStore;
+  private readonly correlationStore: CorrelationStore;
+  private readonly authorizationPolicy: AuthorizationPolicy;
+  private readonly announcementManager: AnnouncementManager;
   private readonly injectClientPubkey: boolean;
-  private isInitialized = false;
-  private initializationPromise?: Promise<void>;
-  private initializationResolver?: () => void;
-  private cachedCommonTags?: string[][];
 
   constructor(options: NostrServerTransportOptions) {
     super('nostr-server-transport', options);
-    this.serverInfo = options.serverInfo;
-    this.isPublicServer = options.isPublicServer;
-    this.allowedPublicKeys = options.allowedPublicKeys
-      ? new Set(options.allowedPublicKeys)
-      : undefined;
-    this.excludedCapabilities = options.excludedCapabilities;
     this.injectClientPubkey = options.injectClientPubkey ?? false;
 
-    // Initialize LRU cache with eviction callback for cleanup
-    this.clientSessions = new LruCache<ClientSession>(
-      this.maxSessions,
-      (key, session) => {
-        // Clean up reverse lookup mappings for evicted session
-        for (const eventId of session.pendingRequests.keys()) {
-          this.eventIdToClient.delete(eventId);
-        }
-        for (const eventId of session.eventToProgressToken.keys()) {
-          this.eventIdToClient.delete(eventId);
-        }
-        this.logger.info(`Evicted LRU session for ${key}`);
+    // Initialize authorization policy
+    this.authorizationPolicy = new AuthorizationPolicy({
+      allowedPublicKeys: options.allowedPublicKeys
+        ? new Set(options.allowedPublicKeys)
+        : undefined,
+      excludedCapabilities: options.excludedCapabilities,
+      isPublicServer: options.isPublicServer,
+    });
+
+    // Initialize session store with eviction callback for correlation cleanup
+    this.sessionStore = new SessionStore({
+      maxSessions: 1000,
+      onSessionEvicted: (clientPubkey) => {
+        // Clean up all correlation data for evicted session
+        const removedCount =
+          this.correlationStore.removeRoutesForClient(clientPubkey);
+        this.logger.info(
+          `Evicted session for ${clientPubkey} (removed ${removedCount} routes)`,
+        );
       },
-    );
-  }
+    });
 
-  /**
-   * Generates common tags from server information for use in Nostr events.
-   * @returns Array of tag arrays for Nostr events.
-   */
-  private generateCommonTags(): string[][] {
-    if (this.cachedCommonTags) {
-      return this.cachedCommonTags;
-    }
+    // Initialize correlation store with bounded caches
+    this.correlationStore = new CorrelationStore({
+      maxEventRoutes: 10000,
+      maxProgressTokens: 10000,
+      onEventRouteEvicted: (eventId, route) => {
+        this.logger.debug(`Evicted event route for ${eventId}`, {
+          clientPubkey: route.clientPubkey,
+        });
+      },
+    });
 
-    const commonTags: string[][] = [];
-    if (this.serverInfo?.name) {
-      commonTags.push([NOSTR_TAGS.NAME, this.serverInfo.name]);
-    }
-    if (this.serverInfo?.about) {
-      commonTags.push([NOSTR_TAGS.ABOUT, this.serverInfo.about]);
-    }
-    if (this.serverInfo?.website) {
-      commonTags.push([NOSTR_TAGS.WEBSITE, this.serverInfo.website]);
-    }
-    if (this.serverInfo?.picture) {
-      commonTags.push([NOSTR_TAGS.PICTURE, this.serverInfo.picture]);
-    }
-    if (this.encryptionMode !== EncryptionMode.DISABLED) {
-      commonTags.push([NOSTR_TAGS.SUPPORT_ENCRYPTION]);
-    }
-
-    this.cachedCommonTags = commonTags;
-    return commonTags;
+    // Initialize announcement manager
+    this.announcementManager = new AnnouncementManager({
+      serverInfo: options.serverInfo,
+      encryptionMode: this.encryptionMode,
+      onSendMessage: (message) => this.onmessage?.(message),
+      onPublishEvent: (event) => this.publishEvent(event),
+      onSignEvent: (eventTemplate) => this.signer.signEvent(eventTemplate),
+      onGetPublicKey: () => this.getPublicKey(),
+      onSubscribe: (filters, onEvent) =>
+        this.relayHandler.subscribe(filters, onEvent),
+      logger: this.logger,
+    });
   }
 
   /**
@@ -202,8 +154,8 @@ export class NostrServerTransport
         }
       });
 
-      if (this.isPublicServer) {
-        await this.getAnnouncementData();
+      if (this.authorizationPolicy.isPublicServer) {
+        await this.announcementManager.getAnnouncementData();
       }
     } catch (error) {
       this.logger.error('Error starting NostrServerTransport', {
@@ -221,7 +173,8 @@ export class NostrServerTransport
   public async close(): Promise<void> {
     try {
       await this.disconnect();
-      this.clientSessions.clear();
+      this.sessionStore.clear();
+      this.correlationStore.clear();
       this.onclose?.();
     } catch (error) {
       this.logger.error('Error closing NostrServerTransport', {
@@ -240,7 +193,9 @@ export class NostrServerTransport
   public async send(message: JSONRPCMessage): Promise<void> {
     // Message type detection and routing
     if (isJSONRPCResultResponse(message) || isJSONRPCErrorResponse(message)) {
-      await this.handleResponse(message);
+      await this.handleResponse(
+        message as JSONRPCResponse | JSONRPCErrorResponse,
+      );
     } else if (isJSONRPCNotification(message)) {
       await this.handleNotification(message);
     } else {
@@ -258,241 +213,33 @@ export class NostrServerTransport
   public async deleteAnnouncement(
     reason: string = 'Service offline',
   ): Promise<NostrEvent[]> {
-    const publicKey = await this.getPublicKey();
-    const events: NostrEvent[] = [];
-
-    const kinds = [
-      SERVER_ANNOUNCEMENT_KIND,
-      TOOLS_LIST_KIND,
-      RESOURCES_LIST_KIND,
-      RESOURCETEMPLATES_LIST_KIND,
-      PROMPTS_LIST_KIND,
-    ];
-
-    for (const kind of kinds) {
-      const filter = {
-        kinds: [kind],
-        authors: [publicKey],
-      };
-
-      // Collect events using the subscribe method with onEvent hook
-      await this.relayHandler.subscribe([filter], (event: NostrEvent) => {
-        try {
-          events.push(event);
-        } catch (error) {
-          this.logger.error('Error in relay subscription event collection', {
-            error: error instanceof Error ? error.message : String(error),
-            eventId: event.id,
-          });
-          this.onerror?.(
-            error instanceof Error ? error : new Error(String(error)),
-          );
-        }
-      });
-
-      if (!events.length) {
-        this.logger.info(`No events found for kind ${kind} to delete`);
-        continue;
-      }
-
-      const deletionEventTemplate = {
-        kind: EventDeletion,
-        pubkey: publicKey,
-        content: reason,
-        tags: events.map((ev) => ['e', ev.id]),
-        created_at: Math.floor(Date.now() / 1000),
-      };
-
-      const deletionEvent = await this.signer.signEvent(deletionEventTemplate);
-
-      await this.relayHandler.publish(deletionEvent);
-      this.logger.info(
-        `Published deletion event for kind ${kind} (${events.length} events)`,
-      );
-    }
-    return events;
-  }
-
-  /**
-   * Initiates the process of fetching announcement data from the server's internal logic.
-   * This method now properly handles the initialization handshake by first sending
-   * the initialize request, waiting for the response, and then proceeding with other announcements.
-   */
-
-  private async getAnnouncementData(): Promise<void> {
-    try {
-      const initializeParams: InitializeRequest['params'] = {
-        protocolVersion: LATEST_PROTOCOL_VERSION,
-        capabilities: {},
-        clientInfo: {
-          name: 'DummyClient',
-          version: '1.0.0',
-        },
-      };
-
-      // Send the initialize request if not already initialized
-      if (!this.isInitialized) {
-        const initializeMessage: JSONRPCMessage = {
-          jsonrpc: '2.0',
-          id: 'announcement',
-          method: 'initialize',
-          params: initializeParams,
-        };
-
-        this.logger.info('Sending initialize request for announcement');
-        this.onmessage?.(initializeMessage);
-      }
-
-      try {
-        // Wait for initialization to complete
-        await this.waitForInitialization();
-
-        // Send all announcements now that we're initialized
-        for (const [key, methodValue] of Object.entries(announcementMethods)) {
-          this.logger.info('Sending announcement', { key, methodValue });
-          const message: JSONRPCMessage = {
-            jsonrpc: '2.0',
-            id: 'announcement',
-            method: methodValue,
-            params: key === 'server' ? initializeParams : {},
-          };
-          this.onmessage?.(message);
-        }
-      } catch (error) {
-        this.logger.warn(
-          'Server not initialized after waiting, skipping announcements',
-          { error: error instanceof Error ? error.message : error },
-        );
-      }
-    } catch (error) {
-      this.logger.error('Error in getAnnouncementData', {
-        error: error instanceof Error ? error.message : String(error),
-        stack: error instanceof Error ? error.stack : undefined,
-      });
-      this.onerror?.(error instanceof Error ? error : new Error(String(error)));
-    }
-  }
-
-  /**
-   * Waits for the server to be initialized with a timeout.
-   * @returns Promise that resolves when initialized or after 10-second timeout.
-   * The method will always resolve, allowing announcements to proceed.
-   */
-  private async waitForInitialization(): Promise<void> {
-    if (this.isInitialized) return;
-
-    if (!this.initializationPromise) {
-      this.initializationPromise = new Promise((resolve) => {
-        this.initializationResolver = resolve;
-      });
-    }
-
-    const timeout = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error('Initialization timeout')), 10000),
-    );
-
-    try {
-      await Promise.race([this.initializationPromise, timeout]);
-    } catch {
-      this.logger.warn(
-        'Server initialization not completed within timeout, proceeding with announcements',
-      );
-    }
-  }
-
-  /**
-   * Handles the JSON-RPC responses for public server announcements and publishes
-   * them as Nostr events to the configured relays.
-   * @param message The JSON-RPC response containing the announcement data.
-   */
-  private async announcer(message: JSONRPCResponse): Promise<void> {
-    try {
-      // Only process successful responses with result data
-      if (!isJSONRPCResultResponse(message) || !message.result) {
-        return;
-      }
-
-      const recipientPubkey = await this.getPublicKey();
-      const commonTags = this.generateCommonTags();
-
-      const announcementMapping = [
-        {
-          schema: InitializeResultSchema,
-          kind: SERVER_ANNOUNCEMENT_KIND,
-          tags: commonTags,
-        },
-        { schema: ListToolsResultSchema, kind: TOOLS_LIST_KIND, tags: [] },
-        {
-          schema: ListResourcesResultSchema,
-          kind: RESOURCES_LIST_KIND,
-          tags: [],
-        },
-        {
-          schema: ListResourceTemplatesResultSchema,
-          kind: RESOURCETEMPLATES_LIST_KIND,
-          tags: [],
-        },
-        { schema: ListPromptsResultSchema, kind: PROMPTS_LIST_KIND, tags: [] },
-      ];
-
-      for (const mapping of announcementMapping) {
-        if (mapping.schema.safeParse(message.result).success) {
-          await this.sendMcpMessage(
-            message.result as JSONRPCMessage,
-            recipientPubkey,
-            mapping.kind,
-            mapping.tags,
-          );
-          break;
-        }
-      }
-    } catch (error) {
-      this.logger.error('Error in announcer', {
-        error: error instanceof Error ? error.message : String(error),
-        stack: error instanceof Error ? error.stack : undefined,
-      });
-      this.onerror?.(error instanceof Error ? error : new Error(String(error)));
-    }
+    return await this.announcementManager.deleteAnnouncement(reason);
   }
 
   /**
    * Gets or creates a client session with proper initialization.
    * @param clientPubkey The client's public key.
-   * @param now Current timestamp.
    * @param isEncrypted Whether the session uses encryption.
    * @returns The client session.
    */
   private getOrCreateClientSession(
     clientPubkey: string,
-    now: number,
     isEncrypted: boolean,
   ): ClientSession {
-    const session = this.clientSessions.get(clientPubkey);
+    const session = this.sessionStore.getSession(clientPubkey);
     if (!session) {
       this.logger.info(`Session created for ${clientPubkey}`);
-      const newSession: ClientSession = {
-        isInitialized: false,
-        isEncrypted,
-        lastActivity: now,
-        pendingRequests: new Map(),
-        eventToProgressToken: new Map(),
-      };
-      this.clientSessions.set(clientPubkey, newSession);
-      return newSession;
     }
-
-    session.isEncrypted = isEncrypted;
-    return session;
+    return this.sessionStore.getOrCreateSession(clientPubkey, isEncrypted);
   }
 
   /**
    * Handles incoming requests with correlation tracking.
-   * @param session The client session.
    * @param eventId The Nostr event ID.
    * @param request The request message.
+   * @param clientPubkey The client's public key.
    */
   private handleIncomingRequest(
-    session: ClientSession,
     eventId: string,
     request: JSONRPCRequest,
     clientPubkey: string,
@@ -501,33 +248,31 @@ export class NostrServerTransport
     const originalRequestId = request.id;
     // Use the unique Nostr event ID as the MCP request ID to avoid collisions
     request.id = eventId;
-    // Store in client session
-    session.pendingRequests.set(eventId, originalRequestId);
-    this.eventIdToClient.set(eventId, clientPubkey);
 
-    // Track progress tokens if provided
+    // Register the event route in the correlation store
     const progressToken = request.params?._meta?.progressToken;
-    if (progressToken) {
-      const tokenStr = String(progressToken);
-      session.pendingRequests.set(tokenStr, eventId);
-      session.eventToProgressToken.set(eventId, tokenStr);
-    }
+    this.correlationStore.registerEventRoute(
+      eventId,
+      clientPubkey,
+      originalRequestId,
+      progressToken ? String(progressToken) : undefined,
+    );
   }
 
   /**
    * Handles incoming notifications.
-   * @param session The client session.
+   * @param clientPubkey The client's public key.
    * @param notification The notification message.
    */
   private handleIncomingNotification(
-    session: ClientSession,
+    clientPubkey: string,
     notification: JSONRPCMessage,
   ): void {
     if (
       isJSONRPCNotification(notification) &&
       notification.method === 'notifications/initialized'
     ) {
-      session.isInitialized = true;
+      this.sessionStore.markInitialized(clientPubkey);
     }
   }
 
@@ -540,64 +285,47 @@ export class NostrServerTransport
   ): Promise<void> {
     // Handle special announcement responses
     if (response.id === 'announcement') {
-      if (isJSONRPCResultResponse(response)) {
+      const wasHandled =
+        await this.announcementManager.handleAnnouncementResponse(response);
+      if (wasHandled && isJSONRPCResultResponse(response)) {
         if (InitializeResultSchema.safeParse(response.result).success) {
-          this.isInitialized = true;
-          this.initializationResolver?.(); // Resolve waiting promise
-
-          // Send the initialized notification
-          const initializedNotification: JSONRPCMessage = {
-            jsonrpc: '2.0',
-            method: 'notifications/initialized',
-          };
-          this.onmessage?.(initializedNotification);
           this.logger.info('Initialized');
         }
-        await this.announcer(response);
       }
       return;
     }
 
-    // Find the client session with this pending request using O(1) lookup
+    // Find the event route using O(1) lookup
     const nostrEventId = response.id as string;
-    const targetClientPubkey = this.eventIdToClient.get(nostrEventId);
+    const route = this.correlationStore.getEventRoute(nostrEventId);
 
-    if (!targetClientPubkey) {
+    if (!route) {
       this.onerror?.(
         new Error(`No pending request found for response ID: ${response.id}`),
       );
       return;
     }
 
-    const session = this.clientSessions.get(targetClientPubkey);
+    const session = this.sessionStore.getSession(route.clientPubkey);
     if (!session) {
       this.onerror?.(
-        new Error(`No session found for client: ${targetClientPubkey}`),
-      );
-      return;
-    }
-
-    const originalRequestId = session.pendingRequests.get(nostrEventId);
-    if (originalRequestId === undefined) {
-      this.onerror?.(
-        new Error(
-          `No original request ID found for response ID: ${response.id}`,
-        ),
+        new Error(`No session found for client: ${route.clientPubkey}`),
       );
       return;
     }
 
     // Restore the original request ID in the response
-    response.id = originalRequestId;
+    response.id = route.originalRequestId;
 
     // Send the response back to the original requester
-    const tags = this.createResponseTags(targetClientPubkey, nostrEventId);
+    const tags = this.createResponseTags(route.clientPubkey, nostrEventId);
+
+    // Add common tags for initialize responses (independent of encryption mode)
     if (
       isJSONRPCResultResponse(response) &&
-      InitializeResultSchema.safeParse(response.result).success &&
-      session.isEncrypted
+      InitializeResultSchema.safeParse(response.result).success
     ) {
-      const commonTags = this.generateCommonTags();
+      const commonTags = this.announcementManager.getCommonTags();
       commonTags.forEach((tag) => {
         tags.push(tag);
       });
@@ -605,22 +333,14 @@ export class NostrServerTransport
 
     await this.sendMcpMessage(
       response,
-      targetClientPubkey,
+      route.clientPubkey,
       CTXVM_MESSAGES_KIND,
       tags,
       session.isEncrypted,
     );
 
-    // Clean up the pending request and any associated progress token
-    session.pendingRequests.delete(nostrEventId);
-    this.eventIdToClient.delete(nostrEventId);
-
-    // Clean up progress token if it exists
-    const progressToken = session.eventToProgressToken.get(nostrEventId);
-    if (progressToken) {
-      session.pendingRequests.delete(progressToken);
-      session.eventToProgressToken.delete(nostrEventId);
-    }
+    // Clean up the event route (this also cleans up progress token mapping)
+    this.correlationStore.removeEventRoute(nostrEventId);
   }
 
   /**
@@ -640,26 +360,20 @@ export class NostrServerTransport
       ) {
         const token = String(notification.params._meta.progressToken);
 
-        // Use reverse lookup map for O(1) progress token routing
-        // First find the session that has this progress token
-        let targetClientPubkey: string | undefined;
-        let nostrEventId: string | undefined;
+        // Use O(1) lookup for progress token routing
+        const nostrEventId =
+          this.correlationStore.getEventIdByProgressToken(token);
 
-        for (const [clientPubkey, session] of this.clientSessions.entries()) {
-          if (session.pendingRequests.has(token)) {
-            nostrEventId = session.pendingRequests.get(token) as string;
-            targetClientPubkey = clientPubkey;
-            break;
+        if (nostrEventId) {
+          const route = this.correlationStore.getEventRoute(nostrEventId);
+          if (route) {
+            await this.sendNotification(
+              route.clientPubkey,
+              notification,
+              nostrEventId,
+            );
+            return;
           }
-        }
-
-        if (targetClientPubkey && nostrEventId) {
-          await this.sendNotification(
-            targetClientPubkey,
-            notification,
-            nostrEventId,
-          );
-          return;
         }
 
         const error = new Error(`No client found for progress token: ${token}`);
@@ -669,7 +383,10 @@ export class NostrServerTransport
       }
 
       // Use TaskQueue for outbound notification broadcasting to prevent event loop blocking
-      for (const [clientPubkey, session] of this.clientSessions.entries()) {
+      for (const [
+        clientPubkey,
+        session,
+      ] of this.sessionStore.getAllSessions()) {
         if (session.isInitialized) {
           this.taskQueue.add(async () => {
             try {
@@ -706,7 +423,7 @@ export class NostrServerTransport
     notification: JSONRPCMessage,
     correlatedEventId?: string,
   ): Promise<void> {
-    const session = this.clientSessions.get(clientPubkey);
+    const session = this.sessionStore.getSession(clientPubkey);
     if (!session) {
       throw new Error(`No active session found for client: ${clientPubkey}`);
     }
@@ -795,38 +512,6 @@ export class NostrServerTransport
   }
 
   /**
-   * Checks if a capability is excluded from whitelisting requirements.
-   * @param method The JSON-RPC method (e.g., 'tools/call', 'tools/list')
-   * @param name Optional capability name for method-specific exclusions (e.g., 'get_weather')
-   * @returns true if the capability should bypass whitelisting, false otherwise
-   */
-  private isCapabilityExcluded(method: string, name?: string): boolean {
-    // Always allow fundamental MCP methods for connection establishment
-    if (method === 'initialize' || method === 'notifications/initialized') {
-      return true;
-    }
-
-    if (!this.excludedCapabilities?.length) {
-      return false;
-    }
-
-    return this.excludedCapabilities.some((exclusion) => {
-      // Check if method matches
-      if (exclusion.method !== method) {
-        return false;
-      }
-
-      // If exclusion has no name requirement, method match is sufficient
-      if (!exclusion.name) {
-        return true;
-      }
-
-      // If exclusion has a name requirement, check if it matches the provided name
-      return exclusion.name === name;
-    });
-  }
-
-  /**
    * Authorizes and processes an incoming Nostr event, handling message validation,
    * client authorization, session management, and optional client public key injection.
    * @param event The Nostr event to process.
@@ -851,74 +536,65 @@ export class NostrServerTransport
         return;
       }
 
-      if (this.allowedPublicKeys?.size) {
-        // Check if the message should bypass whitelisting due to excluded capabilities
-        const shouldBypassWhitelisting =
-          this.excludedCapabilities?.length &&
-          (isJSONRPCRequest(mcpMessage) || isJSONRPCNotification(mcpMessage)) &&
-          this.isCapabilityExcluded(
-            mcpMessage.method,
-            mcpMessage.params?.name as string | undefined,
-          );
+      // Check authorization using the authorization policy
+      const authDecision = this.authorizationPolicy.authorize(
+        event.pubkey,
+        mcpMessage,
+      );
+
+      if (!authDecision.allowed) {
+        this.logger.error(
+          `Unauthorized message from ${event.pubkey}, message: ${JSON.stringify(mcpMessage)}. Ignoring.`,
+        );
 
         if (
-          !this.allowedPublicKeys.has(event.pubkey) &&
-          !shouldBypassWhitelisting
+          'shouldReplyUnauthorized' in authDecision &&
+          authDecision.shouldReplyUnauthorized &&
+          isJSONRPCRequest(mcpMessage)
         ) {
-          this.logger.error(
-            `Unauthorized message from ${event.pubkey}, message: ${JSON.stringify(mcpMessage)}. Ignoring.`,
-          );
+          const errorResponse: JSONRPCErrorResponse = {
+            jsonrpc: '2.0',
+            id: mcpMessage.id,
+            error: {
+              code: -32000,
+              message: 'Unauthorized',
+            },
+          };
 
-          if (this.isPublicServer && isJSONRPCRequest(mcpMessage)) {
-            const errorResponse: JSONRPCErrorResponse = {
-              jsonrpc: '2.0',
-              id: mcpMessage.id,
-              error: {
-                code: -32000,
-                message: 'Unauthorized',
-              },
-            };
-
-            const tags = this.createResponseTags(event.pubkey, event.id);
-            this.sendMcpMessage(
-              errorResponse,
-              event.pubkey,
-              CTXVM_MESSAGES_KIND,
-              tags,
-              isEncrypted,
-            ).catch((err) => {
-              this.logger.error('Failed to send unauthorized response', {
-                error: err instanceof Error ? err.message : String(err),
-                pubkey: event.pubkey,
-                eventId: event.id,
-              });
-              this.onerror?.(
-                new Error(`Failed to send unauthorized response: ${err}`),
-              );
+          const tags = this.createResponseTags(event.pubkey, event.id);
+          this.sendMcpMessage(
+            errorResponse,
+            event.pubkey,
+            CTXVM_MESSAGES_KIND,
+            tags,
+            isEncrypted,
+          ).catch((err) => {
+            this.logger.error('Failed to send unauthorized response', {
+              error: err instanceof Error ? err.message : String(err),
+              pubkey: event.pubkey,
+              eventId: event.id,
             });
-          }
-          return;
+            this.onerror?.(
+              new Error(`Failed to send unauthorized response: ${err}`),
+            );
+          });
         }
+        return;
       }
 
-      const now = Date.now();
-      const session = this.getOrCreateClientSession(
-        event.pubkey,
-        now,
-        isEncrypted,
-      );
-      session.lastActivity = now;
+      // Get or create session for this client (ensures session exists for authorized messages)
+      this.getOrCreateClientSession(event.pubkey, isEncrypted);
 
       // Handle message routing and conditionally inject client pubkey
       if (isJSONRPCRequest(mcpMessage)) {
-        this.handleIncomingRequest(session, event.id, mcpMessage, event.pubkey);
+        this.handleIncomingRequest(event.id, mcpMessage, event.pubkey);
 
         // Inject client public key for enhanced server integration (in-place mutation)
         if (this.injectClientPubkey) {
           injectClientPubkey(mcpMessage, event.pubkey);
         }
       } else if (isJSONRPCNotification(mcpMessage)) {
-        this.handleIncomingNotification(session, mcpMessage);
+        this.handleIncomingNotification(event.pubkey, mcpMessage);
       }
 
       this.onmessage?.(mcpMessage);
@@ -931,5 +607,16 @@ export class NostrServerTransport
       });
       this.onerror?.(error instanceof Error ? error : new Error(String(error)));
     }
+  }
+
+  /**
+   * Test-only accessor for internal state.
+   * @internal
+   */
+  getInternalStateForTesting() {
+    return {
+      sessionStore: this.sessionStore,
+      correlationStore: this.correlationStore,
+    };
   }
 }

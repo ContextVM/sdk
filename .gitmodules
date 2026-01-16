@@ -1,0 +1,3 @@
+[submodule "typescript-sdk"]
+	path = typescript-sdk
+	url = https://github.com/modelcontextprotocol/typescript-sdk.git
