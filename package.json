@@ -42,7 +42,7 @@
     "build:esm": "mkdir -p dist/esm && echo '{\"type\": \"module\"}' > dist/esm/package.json && bun tsc -p tsconfig.prod.json",
     "lint": "eslint src/",
     "test": "bun test src",
-    "format": "bun prettier --write ./src",
+    "format": "bun prettier --write src",
     "release": "bun run build && bun publish",
     "typecheck": "bun run tsc --noEmit"
   },
