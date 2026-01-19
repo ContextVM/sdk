@@ -74,9 +74,14 @@ export const NOSTR_TAGS = {
   SUPPORT_ENCRYPTION: 'support_encryption',
 } as const;
 
+export const DEFAULT_LRU_SIZE = 5000;
+
 export const announcementMethods: AnnouncementMethods = {
   tools: 'tools/list',
   resources: 'resources/list',
   resourceTemplates: 'resources/templates/list',
   prompts: 'prompts/list',
 } as const;
+
+export const INITIALIZE_METHOD = 'initialize';
+export const NOTIFICATIONS_INITIALIZED_METHOD = 'notifications/initialized';

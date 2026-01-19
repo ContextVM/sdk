@@ -5,6 +5,7 @@
  * This module is not exported from the public API.
  */
 
+import { DEFAULT_LRU_SIZE } from '@contextvm/sdk/core/constants.js';
 import { LruCache } from '../../core/utils/lru-cache.js';
 
 /**
@@ -33,17 +34,6 @@ export interface CorrelationStoreOptions {
 
 /**
  * Internal store for managing request/response correlation and progress routing.
- *
- * This class maintains two indexes:
- * 1. `eventRoutes`: Maps eventId → EventRoute (clientPubkey, originalRequestId, progressToken)
- * 2. `progressTokenToEventId`: Maps progressToken → eventId
- *
- * This design enables:
- * - O(1) response routing via eventId
- * - O(1) progress notification routing via progressToken
- * - Straightforward cleanup on response or session eviction
- *
- * Memory is bounded by LRU caches to prevent unbounded growth.
  */
 export class CorrelationStore {
   private readonly eventRoutes: LruCache<EventRoute>;
@@ -51,8 +41,8 @@ export class CorrelationStore {
 
   constructor(options: CorrelationStoreOptions = {}) {
     const {
-      maxEventRoutes = 10000,
-      maxProgressTokens = 10000,
+      maxEventRoutes = DEFAULT_LRU_SIZE,
+      maxProgressTokens = DEFAULT_LRU_SIZE,
       onEventRouteEvicted,
     } = options;
 

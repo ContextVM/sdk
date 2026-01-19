@@ -18,6 +18,7 @@ import {
   CTXVM_MESSAGES_KIND,
   GIFT_WRAP_KIND,
   NOSTR_TAGS,
+  NOTIFICATIONS_INITIALIZED_METHOD,
   decryptMessage,
 } from '../core/index.js';
 import { EncryptionMode } from '../core/interfaces.js';
@@ -270,7 +271,7 @@ export class NostrServerTransport
   ): void {
     if (
       isJSONRPCNotification(notification) &&
-      notification.method === 'notifications/initialized'
+      notification.method === NOTIFICATIONS_INITIALIZED_METHOD
     ) {
       this.sessionStore.markInitialized(clientPubkey);
     }

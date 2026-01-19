@@ -29,6 +29,8 @@ import {
   RESOURCETEMPLATES_LIST_KIND,
   PROMPTS_LIST_KIND,
   NOSTR_TAGS,
+  INITIALIZE_METHOD,
+  NOTIFICATIONS_INITIALIZED_METHOD,
 } from '../../core/index.js';
 import { EncryptionMode } from '../../core/interfaces.js';
 
@@ -202,7 +204,7 @@ export class AnnouncementManager {
         const initializeMessage: JSONRPCMessage = {
           jsonrpc: '2.0',
           id: 'announcement',
-          method: 'initialize',
+          method: INITIALIZE_METHOD,
           params: initializeParams,
         };
 
@@ -290,7 +292,7 @@ export class AnnouncementManager {
       // Send the initialized notification
       const initializedNotification: JSONRPCMessage = {
         jsonrpc: '2.0',
-        method: 'notifications/initialized',
+        method: NOTIFICATIONS_INITIALIZED_METHOD,
       };
       this.onSendMessage(initializedNotification);
       this.logger.info('Initialized');

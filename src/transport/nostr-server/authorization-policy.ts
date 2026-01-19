@@ -5,6 +5,10 @@
  * This module is not exported from the public API.
  */
 
+import {
+  INITIALIZE_METHOD,
+  NOTIFICATIONS_INITIALIZED_METHOD,
+} from '@contextvm/sdk/core/constants.js';
 import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js';
 import {
   isJSONRPCRequest,
@@ -69,7 +73,10 @@ export class AuthorizationPolicy {
    */
   private isCapabilityExcluded(method: string, name?: string): boolean {
     // Always allow fundamental MCP methods for connection establishment
-    if (method === 'initialize' || method === 'notifications/initialized') {
+    if (
+      method === INITIALIZE_METHOD ||
+      method === NOTIFICATIONS_INITIALIZED_METHOD
+    ) {
       return true;
     }
 
