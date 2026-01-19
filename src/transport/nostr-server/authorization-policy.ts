@@ -4,11 +4,10 @@
  *
  * This module is not exported from the public API.
  */
-
 import {
   INITIALIZE_METHOD,
   NOTIFICATIONS_INITIALIZED_METHOD,
-} from '@contextvm/sdk/core/constants.js';
+} from '../../core/constants.js';
 import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js';
 import {
   isJSONRPCRequest,

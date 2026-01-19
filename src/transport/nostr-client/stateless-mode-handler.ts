@@ -1,14 +1,13 @@
 import {
   INITIALIZE_METHOD,
   NOTIFICATIONS_INITIALIZED_METHOD,
-} from '@contextvm/sdk/core/constants.js';
+} from '../../core/constants.js';
 import type {
   JSONRPCMessage,
   InitializeResult,
   JSONRPCResultResponse,
 } from '@modelcontextprotocol/sdk/types.js';
 import { LATEST_PROTOCOL_VERSION } from '@modelcontextprotocol/sdk/types.js';
-
 /**
  * Manages stateless mode emulation for public Nostr servers.
  * Provides emulated initialize responses for clients that cannot

@@ -4,10 +4,8 @@
  *
  * This module is not exported from the public API.
  */
-
-import { DEFAULT_LRU_SIZE } from '@contextvm/sdk/core/constants.js';
+import { DEFAULT_LRU_SIZE } from '../../core/constants.js';
 import { LruCache } from '../../core/utils/lru-cache.js';
-
 /**
  * Represents a route for an in-flight request.
  */
