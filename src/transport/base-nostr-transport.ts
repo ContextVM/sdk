@@ -345,7 +345,7 @@ export abstract class BaseNostrTransport {
   /**
    * Logs an error and re-throws it for consistent error handling.
    */
-  private logAndRethrowError(
+  protected logAndRethrowError(
     context: string,
     error: unknown,
     metadata?: Record<string, unknown>,

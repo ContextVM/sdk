@@ -113,12 +113,8 @@ export class NostrClientTransport
         }
       });
     } catch (error) {
-      this.logger.error('Error starting NostrClientTransport', {
-        error: error instanceof Error ? error.message : String(error),
-        stack: error instanceof Error ? error.stack : undefined,
-      });
       this.onerror?.(error instanceof Error ? error : new Error(String(error)));
-      throw error;
+      this.logAndRethrowError('Error starting NostrClientTransport', error);
     }
   }
 
@@ -131,12 +127,8 @@ export class NostrClientTransport
       this.correlationStore.clear();
       this.onclose?.();
     } catch (error) {
-      this.logger.error('Error closing NostrClientTransport', {
-        error: error instanceof Error ? error.message : String(error),
-        stack: error instanceof Error ? error.stack : undefined,
-      });
       this.onerror?.(error instanceof Error ? error : new Error(String(error)));
-      throw error;
+      this.logAndRethrowError('Error closing NostrClientTransport', error);
     }
   }
 
@@ -161,9 +153,8 @@ export class NostrClientTransport
 
       await this.sendRequest(message);
     } catch (error) {
-      this.logger.error('Error sending message', {
-        error: error instanceof Error ? error.message : String(error),
-        stack: error instanceof Error ? error.stack : undefined,
+      this.onerror?.(error instanceof Error ? error : new Error(String(error)));
+      this.logAndRethrowError('Error sending message', error, {
         messageType: isJSONRPCRequest(message)
           ? 'request'
           : isJSONRPCNotification(message)
@@ -174,8 +165,6 @@ export class NostrClientTransport
             ? message.method
             : undefined,
       });
-      this.onerror?.(error instanceof Error ? error : new Error(String(error)));
-      throw error;
     }
   }
 

@@ -159,12 +159,8 @@ export class NostrServerTransport
         await this.announcementManager.getAnnouncementData();
       }
     } catch (error) {
-      this.logger.error('Error starting NostrServerTransport', {
-        error: error instanceof Error ? error.message : String(error),
-        stack: error instanceof Error ? error.stack : undefined,
-      });
       this.onerror?.(error instanceof Error ? error : new Error(String(error)));
-      throw error;
+      this.logAndRethrowError('Error starting NostrServerTransport', error);
     }
   }
 
@@ -178,12 +174,8 @@ export class NostrServerTransport
       this.correlationStore.clear();
       this.onclose?.();
     } catch (error) {
-      this.logger.error('Error closing NostrServerTransport', {
-        error: error instanceof Error ? error.message : String(error),
-        stack: error instanceof Error ? error.stack : undefined,
-      });
       this.onerror?.(error instanceof Error ? error : new Error(String(error)));
-      throw error;
+      this.logAndRethrowError('Error closing NostrServerTransport', error);
     }
   }
 

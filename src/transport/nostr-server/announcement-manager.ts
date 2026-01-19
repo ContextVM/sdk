@@ -3,7 +3,6 @@
  * Handles public server announcements including initialization handshake,
  * schema mapping, and deletion events.
  *
- * This module is not exported from the public API.
  */
 
 import {
