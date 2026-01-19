@@ -4,7 +4,8 @@ import { InitializeResult } from '@modelcontextprotocol/sdk/types.js';
 import {
   INITIALIZE_METHOD,
   NOTIFICATIONS_INITIALIZED_METHOD,
-} from '@contextvm/sdk/core/constants';
+} from '../../core/index.js';
+
 describe('StatelessModeHandler', () => {
   describe('createEmulatedResponse', () => {
     it('returns response with correct request id', () => {
