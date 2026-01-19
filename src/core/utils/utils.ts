@@ -48,3 +48,32 @@ export function injectClientPubkey(
     request.params._meta.clientPubkey = clientPubkey;
   }
 }
+
+/**
+ * Wraps a Promise with a timeout.
+ * @param promise The promise to wrap.
+ * @param timeoutMs Timeout in milliseconds.
+ * @param errorMessage Error message for the timeout.
+ * @returns A promise that resolves or rejects with the original result/error, or rejects on timeout.
+ */
+export function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  errorMessage: string = 'Operation timed out',
+): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(errorMessage));
+    }, timeoutMs);
+
+    promise
+      .then((result) => {
+        clearTimeout(timer);
+        resolve(result);
+      })
+      .catch((error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+  });
+}

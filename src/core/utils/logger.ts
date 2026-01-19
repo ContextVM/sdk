@@ -24,7 +24,7 @@ export interface Logger {
 export interface LoggerConfig {
   /** Minimum log level to output */
   level?: LogLevel;
-  /** Optional file path to write logs to. If not specified, logs go to stderr with pretty printing */
+  /** Optional file path to write logs to. If not specified, logs go to stderr */
   file?: string;
 }
 

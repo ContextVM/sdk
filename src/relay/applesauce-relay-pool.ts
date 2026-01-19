@@ -3,17 +3,50 @@ import type { NostrEvent, Filter } from 'nostr-tools';
 import { RelayHandler } from '../core/interfaces.js';
 import { createLogger } from '../core/utils/logger.js';
 import { sleep } from '../core/utils/utils.js';
-import { timer, type Observable } from 'rxjs';
+import {
+  lastValueFrom,
+  Subscription,
+  takeUntil,
+  timer,
+  timeout,
+  type Observable,
+  Subject,
+  filter,
+  take,
+  merge,
+} from 'rxjs';
 
 const logger = createLogger('applesauce-relay');
+
+/** Dummy filter that returns no results, used for liveness ping */
+export const PING_FILTER: Filter = {
+  ids: ['aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'],
+  limit: 0,
+};
+
+/** Subscription intent stored for replay after rebuild */
+type SubscriptionDescriptor = {
+  filters: Filter[];
+  onEvent: (event: NostrEvent) => void;
+  onEose?: () => void;
+};
+
+/** Configuration options for ApplesauceRelayPool */
+export interface ApplesauceRelayPoolOptions {
+  /** Ping frequency in ms (default: 30000) */
+  pingFrequencyMs?: number;
+  /** Ping timeout in ms (default: 20000) */
+  pingTimeoutMs?: number;
+}
 
 /**
  * RelayHandler implementation backed by applesauce-relay.
  */
 export class ApplesauceRelayPool implements RelayHandler {
   private readonly relayUrls: string[];
-  private readonly relayGroup: RelayGroup;
-  private subscriptions: Array<() => void> = [];
+  private relayGroup: RelayGroup;
+  private subscriptionDescriptors: SubscriptionDescriptor[] = [];
+  private activeUnsubscribers: Array<() => void> = [];
 
   // Outbound publish policy
   private static readonly PUBLISH_ATTEMPT_TIMEOUT_MS = 10_000;
@@ -23,6 +56,18 @@ export class ApplesauceRelayPool implements RelayHandler {
   // Reconnect backoff policy
   private static readonly RECONNECT_BASE_DELAY_MS = 3_000;
   private static readonly RECONNECT_MAX_DELAY_MS = 30_000;
+
+  // Liveness ping policy (instance-configurable)
+  private readonly pingFrequencyMs: number;
+  private readonly pingTimeoutMs: number;
+  // Liveness tracking
+  private pingSubscription?: Subscription;
+  private readonly destroy$ = new Subject<void>();
+  private lastPingLogAt = 0;
+  private lastMessageReceivedAt = 0;
+  private rebuildInFlight?: Promise<void>;
+  private relayObservers: Subscription[] = [];
+  private messageSubscriptions: Subscription[] = [];
 
   private createRelay(url: string): Relay {
     const relay = new Relay(url);
@@ -40,15 +85,15 @@ export class ApplesauceRelayPool implements RelayHandler {
       return timer(delay);
     };
 
-    // Observability for connection state monitoring
-    relay.connected$.subscribe((connected) => {
+    // Observability for connection state monitoring (tracked for cleanup on rebuild)
+    const connectedSub = relay.connected$.subscribe((connected) => {
       logger.debug('Connection status changed', {
         relayUrl: relay.url,
         connected,
       });
     });
 
-    relay.error$.subscribe((error) => {
+    const errorSub = relay.error$.subscribe((error) => {
       if (!error) return;
       logger.error('Relay connection error', {
         relayUrl: relay.url,
@@ -56,15 +101,26 @@ export class ApplesauceRelayPool implements RelayHandler {
       });
     });
 
+    // Track message activity for idle detection
+    const messageSub = relay.message$.subscribe(() => {
+      this.lastMessageReceivedAt = Date.now();
+    });
+    this.messageSubscriptions.push(messageSub);
+
+    this.relayObservers.push(connectedSub, errorSub);
+
     return relay;
   }
 
   /**
    * Creates a new ApplesauceRelayPool instance.
    * @param relayUrls - An array of relay URLs to connect to.
+   * @param opts - Optional configuration for ping behavior.
    */
-  constructor(relayUrls: string[]) {
+  constructor(relayUrls: string[], opts?: ApplesauceRelayPoolOptions) {
     this.relayUrls = relayUrls;
+    this.pingFrequencyMs = opts?.pingFrequencyMs ?? 30_000;
+    this.pingTimeoutMs = opts?.pingTimeoutMs ?? 20_000;
 
     this.relayGroup = new RelayGroup(
       relayUrls.map((url) => this.createRelay(url)),
@@ -201,26 +257,57 @@ export class ApplesauceRelayPool implements RelayHandler {
     onEvent: (event: NostrEvent) => void,
     onEose?: () => void,
   ): Promise<void> {
-    this.subscriptions.push(this.createSubscription(filters, onEvent, onEose));
+    // Store the descriptor for replay after rebuild
+    this.subscriptionDescriptors.push({ filters, onEvent, onEose });
+    // Start the subscription and store the unsubscribe handle
+    this.activeUnsubscribers.push(
+      this.createSubscription(filters, onEvent, onEose),
+    );
+    // Start ping monitor lazily on first subscription
+    this.startPingMonitor();
   }
 
   /**
    * Disconnects from all relays and cleans up resources.
    */
   async disconnect(): Promise<void> {
+    this.destroy$.next();
+    this.destroy$.complete();
     this.unsubscribe();
+
+    // Clean up relay observers
+    for (const sub of this.relayObservers) sub.unsubscribe();
+    for (const sub of this.messageSubscriptions) sub.unsubscribe();
+    this.relayObservers = [];
+    this.messageSubscriptions = [];
+
     logger.debug('Disconnected from all relays');
   }
 
   /**
-   * Unsubscribes from all active subscriptions.
+   * Stops all active subscriptions without clearing subscription descriptors.
+   * Used internally during rebuild to preserve subscription intent for replay.
+   */
+  private stopActiveSubscriptions(): void {
+    logger.debug('Stopping active subscriptions (preserving descriptors)');
+
+    try {
+      for (const unsubscribe of this.activeUnsubscribers) unsubscribe();
+      this.activeUnsubscribers = [];
+    } catch (error) {
+      logger.error('Error while stopping active subscriptions', { error });
+    }
+  }
+
+  /**
+   * Unsubscribes from all active subscriptions and clears subscription descriptors.
    */
   unsubscribe(): void {
     logger.debug('Unsubscribing from all subscriptions');
 
     try {
-      for (const unsubscribe of this.subscriptions) unsubscribe();
-      this.subscriptions = [];
+      this.stopActiveSubscriptions();
+      this.subscriptionDescriptors = [];
     } catch (error) {
       logger.error('Error while unsubscribing from subscriptions', { error });
     }
@@ -232,5 +319,137 @@ export class ApplesauceRelayPool implements RelayHandler {
    */
   getRelayUrls(): string[] {
     return [...this.relayUrls];
+  }
+
+  /** Stops the liveness ping monitor */
+  private stopPingMonitor(): void {
+    if (this.pingSubscription) {
+      this.pingSubscription.unsubscribe();
+      this.pingSubscription = undefined;
+    }
+  }
+
+  /** Starts the liveness ping monitor (called lazily on first subscribe) */
+  private startPingMonitor(): void {
+    if (this.pingSubscription) return;
+
+    this.pingSubscription = timer(this.pingFrequencyMs, this.pingFrequencyMs)
+      .pipe(
+        // Stop on destroy
+        takeUntil(this.destroy$),
+      )
+      .subscribe({
+        next: () => this.checkLiveness(),
+        error: () => {
+          /* ignore errors */
+        },
+      });
+  }
+
+  /** Performs a liveness check and triggers rebuild on timeout */
+  private async checkLiveness(): Promise<void> {
+    // Skip if recently active
+    if (Date.now() - this.lastMessageReceivedAt < this.pingFrequencyMs) {
+      return;
+    }
+
+    const relays = this.relayGroup.relays;
+
+    // If no relays in group, trigger rebuild
+    if (relays.length === 0) {
+      logger.warn('No relays in group, triggering rebuild');
+      this.rebuild('no-relays');
+      return;
+    }
+
+    const connectedRelays = relays.filter((relay) => relay.connected);
+
+    // If relays exist but none connected, trigger rebuild
+    if (connectedRelays.length === 0) {
+      logger.warn('No connected relays, triggering rebuild');
+      this.rebuild('no-connected-relays');
+      return;
+    }
+
+    const pingId = `ping:${Date.now()}`;
+
+    try {
+      // Send pings to all connected relays using the internal send method
+      // Cast to Relay to access the non-interface send method
+      for (const relay of connectedRelays) {
+        try {
+          (relay as Relay).send(['REQ', pingId, PING_FILTER]);
+        } catch (error) {
+          // If send fails immediately, log but continue - timeout will catch it
+          logger.debug('Failed to send ping to relay', {
+            url: relay.url,
+            error,
+          });
+        }
+      }
+
+      // Wait for any response with timeout using raw message stream
+      await lastValueFrom(
+        merge(...connectedRelays.map((relay) => relay.message$)).pipe(
+          filter(
+            (msg) =>
+              Array.isArray(msg) && msg[0] === 'EOSE' && msg[1] === pingId,
+          ),
+          take(1),
+          timeout(this.pingTimeoutMs),
+        ),
+      );
+    } catch (error) {
+      if (error instanceof Error && error.name === 'TimeoutError') {
+        logger.warn('Liveness check timed out - no response from relays', {
+          pingTimeoutMs: this.pingTimeoutMs,
+          connectedRelays: connectedRelays.length,
+        });
+      } else {
+        logger.warn('Liveness check failed, triggering rebuild', { error });
+      }
+      this.rebuild('liveness-timeout');
+    }
+  }
+
+  /** Rebuilds the relay group and replays all subscriptions (single-flight) */
+  private rebuild(reason: string): void {
+    if (this.rebuildInFlight) return;
+
+    this.rebuildInFlight = (async () => {
+      logger.info('Rebuilding relay pool', { reason });
+
+      // Pause ping monitor during rebuild to avoid redundant checks
+      this.stopPingMonitor();
+
+      // Clean up old relay subscriptions BEFORE creating new ones to prevent leaks
+      for (const sub of this.relayObservers) sub.unsubscribe();
+      for (const sub of this.messageSubscriptions) sub.unsubscribe();
+      this.relayObservers = [];
+      this.messageSubscriptions = [];
+
+      // Stop current subscriptions (preserve descriptors for replay)
+      this.stopActiveSubscriptions();
+
+      // Create new relays and group
+      this.relayGroup = new RelayGroup(
+        this.relayUrls.map((url) => this.createRelay(url)),
+      );
+
+      // Replay all stored subscription descriptors
+      // Note: New subscriptions added during rebuild will be replayed after this completes
+      for (const desc of this.subscriptionDescriptors) {
+        this.activeUnsubscribers.push(
+          this.createSubscription(desc.filters, desc.onEvent, desc.onEose),
+        );
+      }
+
+      logger.info('Relay pool rebuilt successfully');
+
+      // Resume ping monitor
+      this.startPingMonitor();
+    })().finally(() => {
+      this.rebuildInFlight = undefined;
+    });
   }
 }

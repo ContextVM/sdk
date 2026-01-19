@@ -4,7 +4,6 @@ import {
   type JSONRPCMessage,
   isJSONRPCRequest,
   isJSONRPCNotification,
-  LATEST_PROTOCOL_VERSION,
   type JSONRPCResponse,
 } from '@modelcontextprotocol/sdk/types.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
@@ -12,6 +11,8 @@ import {
   CTXVM_MESSAGES_KIND,
   GIFT_WRAP_KIND,
   decryptMessage,
+  DEFAULT_LRU_SIZE,
+  INITIALIZE_METHOD,
 } from '../core/index.js';
 import {
   BaseNostrTransport,
@@ -20,37 +21,52 @@ import {
 import { getNostrEventTag } from '../core/utils/serializers.js';
 import { NostrEvent } from 'nostr-tools';
 import { LogLevel } from '../core/utils/logger.js';
-import { LruCache } from '../core/utils/lru-cache.js';
+import { ClientCorrelationStore } from './nostr-client/correlation-store.js';
+import { StatelessModeHandler } from './nostr-client/stateless-mode-handler.js';
+import { withTimeout } from '../core/utils/utils.js';
 
 /**
  * Options for configuring the NostrClientTransport.
  */
 export interface NostrTransportOptions extends BaseNostrTransportOptions {
+  /** The server's public key for targeting messages */
   serverPubkey: string;
+  /** Whether to operate in stateless mode (emulates server responses) */
   isStateless?: boolean;
+  /** Log level for the transport */
   logLevel?: LogLevel;
 }
 
 /**
- * A transport layer for CTXVM that uses Nostr events for communication.
- * It implements the Transport interface from the @modelcontextprotocol/sdk.
+ * A client transport layer for CTXVM that uses Nostr events for communication.
+ * Implements the Transport interface from the @modelcontextprotocol/sdk.
+ * Handles request/response correlation and optional stateless mode emulation.
  */
 export class NostrClientTransport
   extends BaseNostrTransport
   implements Transport
 {
-  // Public event handlers required by the Transport interface.
+  /** Public event handlers required by the Transport interface */
   public onmessage?: (message: JSONRPCMessage) => void;
   public onclose?: () => void;
   public onerror?: (error: Error) => void;
 
-  // Private properties for managing the transport's state and dependencies.
+  /** The server's public key for message targeting */
   private readonly serverPubkey: string;
-  private readonly pendingRequestIds: LruCache<number>; // eventId -> timestamp for LRU
-  private readonly maxPendingRequests = 1000; // LRU cache limit
-  private serverInitializeEvent: NostrEvent | undefined;
+  /** Manages request/response correlation for pending requests */
+  private readonly correlationStore: ClientCorrelationStore;
+  /** Handles stateless mode emulation for public servers */
+  private readonly statelessHandler: StatelessModeHandler;
+  /** Whether stateless mode is enabled */
   private readonly isStateless: boolean;
+  /** The server's initialize event, if received */
+  private serverInitializeEvent: NostrEvent | undefined;
 
+  /**
+   * Creates a new NostrClientTransport instance.
+   * @param options - Configuration options for the transport
+   * @throws Error if serverPubkey is not a valid hex public key
+   */
   constructor(options: NostrTransportOptions) {
     super('nostr-client-transport', options);
 
@@ -60,13 +76,14 @@ export class NostrClientTransport
     }
 
     this.serverPubkey = options.serverPubkey;
-    this.pendingRequestIds = new LruCache<number>(
-      this.maxPendingRequests,
-      (key) => {
-        this.logger.debug('Evicted LRU pending request', { eventId: key });
-      },
-    );
     this.isStateless = options.isStateless ?? false;
+    this.correlationStore = new ClientCorrelationStore({
+      maxPendingRequests: DEFAULT_LRU_SIZE,
+      onRequestEvicted: (eventId) => {
+        this.logger.debug('Evicted pending request', { eventId });
+      },
+    });
+    this.statelessHandler = new StatelessModeHandler();
   }
 
   /**
@@ -97,61 +114,48 @@ export class NostrClientTransport
         }
       });
     } catch (error) {
-      this.logger.error('Error starting NostrClientTransport', {
-        error: error instanceof Error ? error.message : String(error),
-        stack: error instanceof Error ? error.stack : undefined,
-      });
       this.onerror?.(error instanceof Error ? error : new Error(String(error)));
-      throw error;
+      this.logAndRethrowError('Error starting NostrClientTransport', error);
     }
   }
 
   /**
-   * Closes the transport, disconnecting from the relay.
+   * Closes the transport, disconnecting from the relay and clearing state.
    */
   public async close(): Promise<void> {
     try {
       await this.disconnect();
+      this.correlationStore.clear();
       this.onclose?.();
     } catch (error) {
-      this.logger.error('Error closing NostrClientTransport', {
-        error: error instanceof Error ? error.message : String(error),
-        stack: error instanceof Error ? error.stack : undefined,
-      });
       this.onerror?.(error instanceof Error ? error : new Error(String(error)));
-      throw error;
+      this.logAndRethrowError('Error closing NostrClientTransport', error);
     }
   }
 
   /**
    * Sends a JSON-RPC message over the Nostr transport.
-   * @param message The JSON-RPC request or response to send.
+   * Handles stateless mode emulation for initialize requests.
+   * @param message - The JSON-RPC request or notification to send
    */
   public async send(message: JSONRPCMessage): Promise<void> {
     try {
-      if (this.isStateless) {
-        if (isJSONRPCRequest(message) && message.method === 'initialize') {
+      if (
+        this.isStateless &&
+        this.statelessHandler.shouldHandleStatelessly(message)
+      ) {
+        if (isJSONRPCRequest(message) && message.method === INITIALIZE_METHOD) {
           this.logger.info('Stateless mode: Emulating initialize response.');
           this.emulateInitializeResponse(message.id as string | number);
           return;
         }
-        if (
-          isJSONRPCNotification(message) &&
-          message.method === 'notifications/initialized'
-        ) {
-          this.logger.info(
-            'Stateless mode: Catching notifications/initialized.',
-            message,
-          );
-          return;
-        }
+        return;
       }
 
-      await this._sendInternal(message);
+      await this.sendRequest(message);
     } catch (error) {
-      this.logger.error('Error sending message', {
-        error: error instanceof Error ? error.message : String(error),
-        stack: error instanceof Error ? error.stack : undefined,
+      this.onerror?.(error instanceof Error ? error : new Error(String(error)));
+      this.logAndRethrowError('Error sending message', error, {
         messageType: isJSONRPCRequest(message)
           ? 'request'
           : isJSONRPCNotification(message)
@@ -162,116 +166,71 @@ export class NostrClientTransport
             ? message.method
             : undefined,
       });
-      this.onerror?.(error instanceof Error ? error : new Error(String(error)));
-      throw error;
     }
+  }
+
+  /**
+   * Sends a request and registers it for correlation tracking.
+   * @param message - The JSON-RPC message to send
+   * @returns The ID of the published Nostr event
+   */
+  private async sendRequest(message: JSONRPCMessage): Promise<string> {
+    const tags = this.createRecipientTags(this.serverPubkey);
+
+    return await this.sendMcpMessage(
+      message,
+      this.serverPubkey,
+      CTXVM_MESSAGES_KIND,
+      tags,
+      undefined,
+      (eventId) => {
+        this.correlationStore.registerRequest(eventId, {
+          originalRequestId: isJSONRPCRequest(message) ? message.id : null,
+          isInitialize:
+            isJSONRPCRequest(message) && message.method === INITIALIZE_METHOD,
+        });
+      },
+    );
   }
 
   /**
    * Emulates the server's initialize response for stateless clients.
-   * This method constructs a generic server response and injects it back into the client,
-   * allowing the client to self-initialize without a network roundtrip.
-   * @param requestId The ID of the original initialize request.
+   * @param requestId - The ID of the original initialize request
    */
   private emulateInitializeResponse(requestId: string | number): void {
-    try {
-      const emulatedResult = {
-        protocolVersion: LATEST_PROTOCOL_VERSION,
-        serverInfo: {
-          name: 'Emulated-Stateless-Server',
-          version: '1.0.0',
-        },
-        capabilities: {
-          tools: {
-            listChanged: true,
-          },
-          prompts: {
-            listChanged: true,
-          },
-          resources: {
-            subscribe: true,
-            listChanged: true,
-          },
-        },
-      };
+    const response = this.statelessHandler.createEmulatedResponse(requestId);
 
-      const response: JSONRPCResponse = {
-        jsonrpc: '2.0',
-        id: requestId,
-        result: emulatedResult,
-      };
-
-      // Feed the emulated response back to the MCP client.
-      // Use queueMicrotask to avoid re-entrancy issues without artificial delay.
-      queueMicrotask(() => {
-        try {
-          this.onmessage?.(response);
-        } catch (error) {
-          this.logger.error('Error in emulated initialize response callback', {
-            error: error instanceof Error ? error.message : String(error),
-            stack: error instanceof Error ? error.stack : undefined,
-            requestId,
-          });
-          this.onerror?.(
-            error instanceof Error ? error : new Error(String(error)),
-          );
-        }
-      });
-    } catch (error) {
-      this.logger.error('Error emulating initialize response', {
-        error: error instanceof Error ? error.message : String(error),
-        stack: error instanceof Error ? error.stack : undefined,
-        requestId,
-      });
-      this.onerror?.(error instanceof Error ? error : new Error(String(error)));
-    }
-  }
-
-  /**
-   * Internal method to send a JSON-RPC message and get the resulting event ID.
-   * Registers the event ID before publishing to avoid race conditions in multi-relay setups
-   * where responses may arrive before the publish operation completes.
-   *
-   * @param message The JSON-RPC message to send.
-   * @returns The ID of the published Nostr event.
-   */
-  private async _sendInternal(message: JSONRPCMessage): Promise<string> {
-    try {
-      const tags = this.createRecipientTags(this.serverPubkey);
-
-      // Use sendMcpMessage with callback to register event ID before publishing
-      return await this.sendMcpMessage(
-        message,
-        this.serverPubkey,
-        CTXVM_MESSAGES_KIND,
-        tags,
-        undefined, // isEncrypted - let sendMcpMessage determine from encryptionMode
-        (eventId) => {
-          // Register before publishing to handle fast responses from working relays
-          this.pendingRequestIds.set(eventId, Date.now());
-        },
-      );
-    } catch (error) {
-      this.logger.error('Error in _sendInternal', {
-        error: error instanceof Error ? error.message : String(error),
-        stack: error instanceof Error ? error.stack : undefined,
-        serverPubkey: this.serverPubkey,
-      });
-      throw error;
-    }
+    queueMicrotask(() => {
+      try {
+        this.onmessage?.(response);
+      } catch (error) {
+        this.logger.error('Error in emulated initialize response callback', {
+          error: error instanceof Error ? error.message : String(error),
+          stack: error instanceof Error ? error.stack : undefined,
+          requestId,
+        });
+        this.onerror?.(
+          error instanceof Error ? error : new Error(String(error)),
+        );
+      }
+    });
   }
 
   /**
    * Processes incoming Nostr events, routing them to the correct handler.
+   * @param event - The incoming Nostr event
    */
   private async processIncomingEvent(event: NostrEvent): Promise<void> {
     try {
       let nostrEvent = event;
 
-      // Handle encrypted messages
       if (event.kind === GIFT_WRAP_KIND) {
         try {
-          const decryptedContent = await decryptMessage(event, this.signer);
+          const decryptedContent = await withTimeout(
+            decryptMessage(event, this.signer),
+            30000,
+            'Decrypt message timed out',
+          );
           nostrEvent = JSON.parse(decryptedContent) as NostrEvent;
         } catch (decryptError) {
           this.logger.error('Failed to decrypt gift-wrapped event', {
@@ -293,7 +252,6 @@ export class NostrClientTransport
         }
       }
 
-      // Check if the event is from the expected server
       if (nostrEvent.pubkey !== this.serverPubkey) {
         this.logger.debug('Skipping event from unexpected server pubkey:', {
           receivedPubkey: nostrEvent.pubkey,
@@ -305,9 +263,7 @@ export class NostrClientTransport
 
       const eTag = getNostrEventTag(nostrEvent.tags, 'e');
 
-      // Only check if we haven't initialized AND this looks like an initialize response
       if (!this.serverInitializeEvent && eTag) {
-        // Only check responses (have eTag), not notifications
         try {
           const content = JSON.parse(nostrEvent.content);
           const parse = InitializeResultSchema.safeParse(content.result);
@@ -317,17 +273,15 @@ export class NostrClientTransport
               eventId: nostrEvent.id,
             });
           }
-        } catch (error) {
-          // Ignore parse errors - not every response is an initialize response
+        } catch {
           this.logger.debug('Event is not a valid initialize response', {
             eventId: nostrEvent.id,
-            error,
           });
         }
       }
 
-      if (eTag && !this.pendingRequestIds.has(eTag)) {
-        this.logger.warn(`Received response for unknown/expired request`, {
+      if (eTag && !this.correlationStore.hasPendingRequest(eTag)) {
+        this.logger.warn('Received response for unknown/expired request', {
           eventId: nostrEvent.id,
           eTag,
           reason:
@@ -336,7 +290,6 @@ export class NostrClientTransport
         return;
       }
 
-      // Process the resulting event
       const mcpMessage = this.convertNostrEventToMcpMessage(nostrEvent);
 
       if (!mcpMessage) {
@@ -369,7 +322,8 @@ export class NostrClientTransport
   }
 
   /**
-   * Get the server initialize event
+   * Gets the server's initialize event if received.
+   * @returns The server initialize event or undefined
    */
   public getServerInitializeEvent(): NostrEvent | undefined {
     return this.serverInitializeEvent;
@@ -377,16 +331,26 @@ export class NostrClientTransport
 
   /**
    * Handles response messages by correlating them with pending requests.
-   * @param correlatedEventId The event ID from the 'e' tag.
-   * @param mcpMessage The incoming MCP message.
+   * @param correlatedEventId - The Nostr event ID used for correlation
+   * @param mcpMessage - The JSON-RPC response message
    */
   private handleResponse(
     correlatedEventId: string,
     mcpMessage: JSONRPCMessage,
   ): void {
     try {
-      this.onmessage?.(mcpMessage);
-      this.pendingRequestIds.delete(correlatedEventId);
+      const resolved = this.correlationStore.resolveResponse(
+        correlatedEventId,
+        mcpMessage as JSONRPCResponse,
+      );
+
+      if (resolved) {
+        this.onmessage?.(mcpMessage);
+      } else {
+        this.logger.warn('Response for unknown request', {
+          eventId: correlatedEventId,
+        });
+      }
     } catch (error) {
       this.logger.error('Error handling response', {
         error: error instanceof Error ? error.message : String(error),
@@ -398,8 +362,8 @@ export class NostrClientTransport
   }
 
   /**
-   * Handles notification messages.
-   * @param mcpMessage The incoming MCP message.
+   * Handles notification messages by validating and forwarding them.
+   * @param mcpMessage - The JSON-RPC notification message
    */
   private handleNotification(mcpMessage: JSONRPCMessage): void {
     try {
@@ -423,5 +387,17 @@ export class NostrClientTransport
           : new Error('Failed to handle incoming notification'),
       );
     }
+  }
+
+  /**
+   * Test-only accessor for internal state.
+   * @internal
+   */
+  getInternalStateForTesting() {
+    return {
+      correlationStore: this.correlationStore,
+      statelessHandler: this.statelessHandler,
+      serverInitializeEvent: this.serverInitializeEvent,
+    };
   }
 }

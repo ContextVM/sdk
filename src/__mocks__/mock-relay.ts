@@ -140,6 +140,13 @@ class Instance {
 
     this.addSub(subId, filters);
 
+    // Simulate unresponsive mode - no EOSE response for any request
+    // This simulates a half-open connection where the relay is connected but stops responding
+    if (process.env.UNRESPONSIVE === 'true') {
+      console.log('Simulating unresponsive relay - ignoring request');
+      return;
+    }
+
     for (const filter of filters) {
       let limitCount = filter.limit;
       if (limitCount !== undefined && limitCount <= 0) {

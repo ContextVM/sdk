@@ -15,7 +15,14 @@ import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import type { NostrEvent } from 'nostr-tools';
 import { bytesToHex, hexToBytes } from 'nostr-tools/utils';
 import { TEST_PRIVATE_KEY } from '../__mocks__/fixtures.js';
-import { SERVER_ANNOUNCEMENT_KIND } from '../core/constants.js';
+import {
+  INITIALIZE_METHOD,
+  PROMPTS_LIST_KIND,
+  RESOURCES_LIST_KIND,
+  RESOURCETEMPLATES_LIST_KIND,
+  SERVER_ANNOUNCEMENT_KIND,
+  TOOLS_LIST_KIND,
+} from '../core/constants.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { EncryptionMode } from '../core/interfaces.js';
 import { ApplesauceRelayPool } from '../relay/applesauce-relay-pool.js';
@@ -66,12 +73,14 @@ describe('NostrServerTransport', () => {
     privateKey: string,
     name: string,
     serverPublicKey: string,
+    encryptionMode?: EncryptionMode,
   ) => {
     const client = new Client({ name, version: '1.0.0' });
     const clientNostrTransport = new NostrClientTransport({
       signer: new PrivateKeySigner(privateKey),
       relayHandler: new ApplesauceRelayPool([relayUrl]),
       serverPubkey: serverPublicKey,
+      encryptionMode, // Enable encryption
     });
     return { client, clientNostrTransport };
   };
@@ -186,7 +195,7 @@ describe('NostrServerTransport', () => {
       signer: new PrivateKeySigner(serverPrivateKey),
       relayHandler: new ApplesauceRelayPool([relayUrl]),
       allowedPublicKeys: [allowedClientPublicKey], // Only allow the dummy key
-      excludedCapabilities: [{ method: 'initialize' }],
+      excludedCapabilities: [{ method: INITIALIZE_METHOD }],
     });
 
     await server.connect(allowedTransport);
@@ -540,4 +549,181 @@ describe('NostrServerTransport', () => {
     ).not.toThrow();
     expect(messageWithoutParams.params).toBeUndefined();
   });
+
+  test('should include common tags in initialize response', async () => {
+    const serverPrivateKey = bytesToHex(generateSecretKey());
+    const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
+
+    const clientPrivateKey = bytesToHex(generateSecretKey());
+
+    const server = new McpServer({
+      name: 'Test Server',
+      version: '1.0.0',
+    });
+
+    const serverTransport = new NostrServerTransport({
+      signer: new PrivateKeySigner(serverPrivateKey),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      serverInfo: {
+        name: 'Test Server',
+        about: 'A test server for CTXVM',
+        website: 'http://localhost',
+        picture: 'http://localhost/logo.png',
+      },
+      encryptionMode: EncryptionMode.OPTIONAL, // Enable encryption
+    });
+
+    await server.connect(serverTransport);
+
+    const { client, clientNostrTransport } = createClientAndTransport(
+      clientPrivateKey,
+      'Test Client',
+      serverPublicKey,
+      EncryptionMode.DISABLED, // Enable encryption
+    );
+
+    // Subscribe to all events from server to capture initialize response
+    let initializeResponseEvent: NostrEvent | null = null;
+    const relayPool = new ApplesauceRelayPool([relayUrl]);
+    await relayPool.connect();
+
+    await relayPool.subscribe([{ authors: [serverPublicKey] }], (event) => {
+      // Check if this is an initialize response
+      try {
+        const content = JSON.parse(event.content);
+        if (content.result?.protocolVersion) {
+          initializeResponseEvent = event;
+        }
+      } catch {
+        // Ignore parse errors
+      }
+    });
+
+    // Connect client (triggers initialize handshake)
+    await client.connect(clientNostrTransport);
+
+    // Wait for response
+    await sleep(300);
+
+    expect(initializeResponseEvent).toBeDefined();
+    expect(initializeResponseEvent!.tags).toBeDefined();
+
+    // Convert tags to an object for easier testing
+    const tagsObject: { [key: string]: string } = {};
+    initializeResponseEvent!.tags.forEach((tag: string[]) => {
+      if (
+        tag.length >= 2 &&
+        typeof tag[0] === 'string' &&
+        typeof tag[1] === 'string'
+      ) {
+        tagsObject[tag[0]] = tag[1];
+      }
+    });
+
+    // Verify all common tags are present
+    expect(tagsObject.name).toBe('Test Server');
+    expect(tagsObject.about).toBe('A test server for CTXVM');
+    expect(tagsObject.website).toBe('http://localhost');
+    expect(tagsObject.picture).toBe('http://localhost/logo.png');
+
+    // Verify support_encryption tag is present
+    const supportEncryptionTag = initializeResponseEvent!.tags.find(
+      (tag: string[]) => tag.length === 1 && tag[0] === 'support_encryption',
+    );
+    expect(supportEncryptionTag).toBeDefined();
+
+    await client.close();
+    await server.close();
+    await relayPool.disconnect();
+  }, 10000);
+
+  test('should delete announcements per-kind without cross-kind accumulation', async () => {
+    const serverPrivateKey = bytesToHex(generateSecretKey());
+    const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
+
+    const server = new McpServer({
+      name: 'Test Server',
+      version: '1.0.0',
+    });
+
+    const serverTransport = new NostrServerTransport({
+      signer: new PrivateKeySigner(serverPrivateKey),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      serverInfo: {
+        name: 'Test Server',
+        website: 'http://localhost',
+      },
+      isPublicServer: true,
+    });
+
+    await server.connect(serverTransport);
+
+    // Wait for announcements to be published
+    await sleep(200);
+
+    // Collect all announcement events before deletion
+    const announcementEventsByKind: { [kind: number]: NostrEvent[] } = {};
+    const relayPool = new ApplesauceRelayPool([relayUrl]);
+    await relayPool.connect();
+
+    const kinds = [
+      SERVER_ANNOUNCEMENT_KIND,
+      TOOLS_LIST_KIND,
+      RESOURCES_LIST_KIND,
+      RESOURCETEMPLATES_LIST_KIND,
+      PROMPTS_LIST_KIND,
+    ];
+
+    for (const kind of kinds) {
+      const events: NostrEvent[] = [];
+      await relayPool.subscribe(
+        [{ kinds: [kind], authors: [serverPublicKey] }],
+        (event) => {
+          events.push(event);
+        },
+      );
+      await sleep(50);
+      if (events.length > 0) {
+        announcementEventsByKind[kind] = events;
+      }
+    }
+
+    // Delete announcements
+    const deletionEvents =
+      await serverTransport.deleteAnnouncement('Test deletion');
+
+    // Verify each deletion event only references events of its kind
+    for (const deletionEvent of deletionEvents) {
+      const referencedEventIds = deletionEvent.tags
+        .filter((tag: string[]) => tag[0] === 'e')
+        .map((tag: string[]) => tag[1]);
+
+      // Find which kind this deletion event is for
+      let matchedKind: number | undefined;
+      for (const [kind, events] of Object.entries(announcementEventsByKind)) {
+        const kindNum = Number(kind);
+        const eventIds = events.map((ev) => ev.id);
+        if (referencedEventIds.some((id) => eventIds.includes(id))) {
+          matchedKind = kindNum;
+          break;
+        }
+      }
+
+      expect(matchedKind).toBeDefined();
+
+      // Verify all referenced events are of the same kind
+      if (matchedKind !== undefined && announcementEventsByKind[matchedKind]) {
+        const expectedEventIds = announcementEventsByKind[matchedKind].map(
+          (ev) => ev.id,
+        );
+        const allMatch = referencedEventIds.every((id) =>
+          expectedEventIds.includes(id),
+        );
+        expect(allMatch).toBe(true);
+      }
+    }
+
+    await server.close();
+    await relayPool.disconnect();
+  }, 15000);
 });

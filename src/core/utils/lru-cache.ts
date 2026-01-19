@@ -33,7 +33,14 @@ export class LruCache<T> {
         const evictedValue = this.cache.get(firstKey);
         this.cache.delete(firstKey);
         if (evictedValue !== undefined && this.onEvict) {
-          this.onEvict(firstKey, evictedValue);
+          try {
+            this.onEvict(firstKey, evictedValue);
+          } catch (error) {
+            console.error('Error in LruCache eviction callback', {
+              key: firstKey,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
         }
       }
     }

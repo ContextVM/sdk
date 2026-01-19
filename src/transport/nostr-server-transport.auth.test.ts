@@ -169,4 +169,68 @@ describe('NostrServerTransport Auth', () => {
     await disallowedClient.close();
     await server.close();
   }, 10000);
+
+  test('should create session for authorized client on first message', async () => {
+    const serverPrivateKey = bytesToHex(generateSecretKey());
+    const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
+
+    const allowedClientPrivateKey = bytesToHex(generateSecretKey());
+    const allowedClientPublicKey = getPublicKey(
+      hexToBytes(allowedClientPrivateKey),
+    );
+
+    const unauthorizedClientPrivateKey = bytesToHex(generateSecretKey());
+
+    const server = new McpServer({
+      name: 'Test Session Server',
+      version: '1.0.0',
+    });
+
+    const serverTransport = new NostrServerTransport({
+      signer: new PrivateKeySigner(serverPrivateKey),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      allowedPublicKeys: [allowedClientPublicKey],
+      isPublicServer: true, // Public server to send unauthorized error
+    });
+
+    await server.connect(serverTransport);
+
+    const { client, clientNostrTransport } = createClientAndTransport(
+      allowedClientPrivateKey,
+      'Allowed Client',
+      serverPublicKey,
+    );
+
+    const {
+      client: unauthorizedClient,
+      clientNostrTransport: unauthorizedClientNostrTransport,
+    } = createClientAndTransport(
+      unauthorizedClientPrivateKey,
+      'Unauthorized Client',
+      serverPublicKey,
+    );
+
+    // Connect client (sends initialize message)
+    await client.connect(clientNostrTransport);
+    // Attempt to connect (should fail with Unauthorized error)
+    expect(
+      unauthorizedClient.connect(unauthorizedClientNostrTransport),
+    ).rejects.toThrow('Unauthorized');
+
+    // Wait for session to be created
+    await sleep(200);
+
+    // Verify session exists for the authorized client
+    const internalState = serverTransport.getInternalStateForTesting();
+    const session = internalState.sessionStore.getSession(
+      allowedClientPublicKey,
+    );
+
+    expect(session).toBeDefined();
+    expect(session!.isInitialized).toBe(true);
+    expect(session!.isEncrypted).toBe(false); // Encryption is disabled in createClientAndTransport
+    expect(internalState.sessionStore.sessionCount).toBe(1);
+    await client.close();
+    await server.close();
+  }, 10000);
 });
