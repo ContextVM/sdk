@@ -5,6 +5,7 @@
 export class TaskQueue {
   private running = 0;
   private queue: Array<() => Promise<void>> = [];
+  private isShutdown = false;
 
   /**
    * Creates a new TaskQueue with the specified concurrency limit.
@@ -17,6 +18,9 @@ export class TaskQueue {
    * @param task - A function that returns a Promise
    */
   add(task: () => Promise<void>): void {
+    if (this.isShutdown) {
+      return;
+    }
     this.queue.push(task);
     this.processNext();
   }
@@ -35,6 +39,14 @@ export class TaskQueue {
    */
   getRunningCount(): number {
     return this.running;
+  }
+
+  /**
+   * Shuts down the queue, clearing pending tasks and preventing new tasks from being added.
+   */
+  shutdown(): void {
+    this.isShutdown = true;
+    this.queue = [];
   }
 
   /**

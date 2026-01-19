@@ -24,7 +24,7 @@ import {
 import { EncryptionMode } from '../core/interfaces.js';
 import { NostrEvent } from 'nostr-tools';
 import { LogLevel } from '../core/utils/logger.js';
-import { injectClientPubkey } from '../core/utils/utils.js';
+import { injectClientPubkey, withTimeout } from '../core/utils/utils.js';
 import { CorrelationStore } from './nostr-server/correlation-store.js';
 import { ClientSession, SessionStore } from './nostr-server/session-store.js';
 import {
@@ -169,6 +169,10 @@ export class NostrServerTransport
    */
   public async close(): Promise<void> {
     try {
+      // Shutdown the task queue to prevent new tasks from being queued
+      // and clear pending tasks to avoid operating on stale state
+      this.taskQueue.shutdown();
+
       await this.disconnect();
       this.sessionStore.clear();
       this.correlationStore.clear();
@@ -472,7 +476,11 @@ export class NostrServerTransport
       return;
     }
     try {
-      const decryptedJson = await decryptMessage(event, this.signer);
+      const decryptedJson = await withTimeout(
+        decryptMessage(event, this.signer),
+        30000, // 30 seconds default timeout
+        'Decrypt message timed out',
+      );
       const currentEvent = JSON.parse(decryptedJson) as NostrEvent;
       this.authorizeAndProcessEvent(currentEvent, true);
     } catch (error) {
