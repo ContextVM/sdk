@@ -16,6 +16,7 @@ import type { NostrEvent } from 'nostr-tools';
 import { bytesToHex, hexToBytes } from 'nostr-tools/utils';
 import { TEST_PRIVATE_KEY } from '../__mocks__/fixtures.js';
 import {
+  INITIALIZE_METHOD,
   PROMPTS_LIST_KIND,
   RESOURCES_LIST_KIND,
   RESOURCETEMPLATES_LIST_KIND,
@@ -194,7 +195,7 @@ describe('NostrServerTransport', () => {
       signer: new PrivateKeySigner(serverPrivateKey),
       relayHandler: new ApplesauceRelayPool([relayUrl]),
       allowedPublicKeys: [allowedClientPublicKey], // Only allow the dummy key
-      excludedCapabilities: [{ method: 'initialize' }],
+      excludedCapabilities: [{ method: INITIALIZE_METHOD }],
     });
 
     await server.connect(allowedTransport);

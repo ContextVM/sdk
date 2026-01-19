@@ -5,6 +5,7 @@
  * This module is not exported from the public API.
  */
 
+import { DEFAULT_LRU_SIZE } from '@contextvm/sdk/core/constants.js';
 import { LruCache } from '../../core/utils/lru-cache.js';
 
 /**
@@ -44,7 +45,7 @@ export class SessionStore {
   private readonly sessions: LruCache<ClientSession>;
 
   constructor(options: SessionStoreOptions = {}) {
-    const { maxSessions = 1000, onSessionEvicted } = options;
+    const { maxSessions = DEFAULT_LRU_SIZE, onSessionEvicted } = options;
 
     this.sessions = new LruCache<ClientSession>(
       maxSessions,
