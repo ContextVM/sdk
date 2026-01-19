@@ -1,5 +1,58 @@
 # @contextvm/sdk
 
+## 0.2.1
+
+### Patch Changes
+
+- refactor(transport): fix import paths to use relative imports
+
+## 0.2.0
+
+### Minor Changes
+
+- 0.2.0 release notes
+
+  This release focuses on **modularity**, **robustness**, and **consistency** improvements across the transport and relay layers, drawing inspiration from production-grade patterns.
+
+  ### Major Refactors
+  - **refactor(transport): split NostrServerTransport into modular components**
+    - Broken down into `announcement-manager`, `authorization-policy`, `correlation-store`, and `session-store`.
+    - Improves maintainability and separation of concerns.
+    - Adopts thin-facade patterns similar to the MCP TypeScript SDK.
+  - **refactor(nostr-client-transport): add correlation store and stateless mode**
+    - Added `ClientCorrelationStore` for request/response correlation with LRU cache.
+    - Introduced `StatelessModeHandler` for stateless mode emulation.
+    - Refactored `NostrClientTransport` to use new modules for better clarity.
+
+  ### New Features & Improvements
+  - **feat(relay): add liveness checks and auto-rebuild**
+    - Implemented liveness monitoring in `ApplesauceRelayPool` to detect unresponsive relays.
+    - Uses periodic pings with a dummy filter and triggers automatic rebuild on timeout.
+    - Subscriptions are preserved and replayed after rebuild to maintain continuity.
+    - Added configuration options for ping frequency and timeout.
+  - **fix(relay): improve liveness check robustness**
+    - Enhanced liveness check to handle edge cases (no relays or no connected relays).
+    - Refactored ping mechanism to use RxJS observables for improved reliability.
+  - **feat(transport): add timeout handling and graceful shutdown**
+    - Added timeout wrapper utility to prevent hanging network operations.
+    - Implemented graceful shutdown for task queue to prevent stale operations.
+    - Fixed memory leaks in relay pool and announcement manager.
+    - Improved error handling in LRU cache eviction callbacks.
+
+  ### Bug Fixes
+  - **fix(transport): optimize error handling and correlation store**
+    - Changed `logAndRethrowError` to `protected` in base transport for inheritance.
+    - Added `clientEventIds` map in `CorrelationStore` to track event IDs per client, enabling O(1) lookups.
+
+  ### Maintenance
+  - **build(deps): update dependencies**
+    - Updated several dependencies to their latest versions.
+    - Removed `pino-pretty` dependency as logging now outputs directly to stderr.
+
+### Patch Changes
+
+- 9a7128f: Fix package importing missing `@noble/hashes` dependency
+
 ## 0.1.48
 
 ### Patch Changes
