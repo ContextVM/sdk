@@ -1,5 +1,11 @@
 # @contextvm/sdk
 
+## 0.2.2
+
+### Patch Changes
+
+- fix: self referencing
+
 ## 0.2.1
 
 ### Patch Changes
