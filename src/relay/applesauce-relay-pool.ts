@@ -13,6 +13,7 @@ import {
   Subject,
   filter,
   take,
+  merge,
 } from 'rxjs';
 
 const logger = createLogger('applesauce-relay');
@@ -347,33 +348,66 @@ export class ApplesauceRelayPool implements RelayHandler {
 
   /** Performs a liveness check and triggers rebuild on timeout */
   private async checkLiveness(): Promise<void> {
+    // Skip if recently active
     if (Date.now() - this.lastMessageReceivedAt < this.pingFrequencyMs) {
       return;
     }
 
-    const pingId = 'ping:' + Date.now();
+    const relays = this.relayGroup.relays;
+
+    // If no relays in group, trigger rebuild
+    if (relays.length === 0) {
+      logger.warn('No relays in group, triggering rebuild');
+      this.rebuild('no-relays');
+      return;
+    }
+
+    const connectedRelays = relays.filter((relay) => relay.connected);
+
+    // If relays exist but none connected, trigger rebuild
+    if (connectedRelays.length === 0) {
+      logger.warn('No connected relays, triggering rebuild');
+      this.rebuild('no-connected-relays');
+      return;
+    }
+
+    const pingId = `ping:${Date.now()}`;
 
     try {
-      // Use relay.req() directly instead of request()
-      // This gives us more control and doesn't rely on completeOnEose()
-      await Promise.race([
-        // Wait for EOSE from the group
-        lastValueFrom(
-          this.relayGroup.req([PING_FILTER], pingId).pipe(
-            filter((msg) => msg === 'EOSE'),
-            take(1),
+      // Send pings to all connected relays using the internal send method
+      // Cast to Relay to access the non-interface send method
+      for (const relay of connectedRelays) {
+        try {
+          (relay as Relay).send(['REQ', pingId, PING_FILTER]);
+        } catch (error) {
+          // If send fails immediately, log but continue - timeout will catch it
+          logger.debug('Failed to send ping to relay', {
+            url: relay.url,
+            error,
+          });
+        }
+      }
+
+      // Wait for any response with timeout using raw message stream
+      await lastValueFrom(
+        merge(...connectedRelays.map((relay) => relay.message$)).pipe(
+          filter(
+            (msg) =>
+              Array.isArray(msg) && msg[0] === 'EOSE' && msg[1] === pingId,
           ),
+          take(1),
+          timeout(this.pingTimeoutMs),
         ),
-        // Timeout
-        new Promise((_, reject) =>
-          setTimeout(
-            () => reject(new Error('Ping timeout')),
-            this.pingTimeoutMs,
-          ),
-        ),
-      ]);
-    } catch {
-      logger.warn('Liveness check failed, triggering rebuild');
+      );
+    } catch (error) {
+      if (error instanceof Error && error.name === 'TimeoutError') {
+        logger.warn('Liveness check timed out - no response from relays', {
+          pingTimeoutMs: this.pingTimeoutMs,
+          connectedRelays: connectedRelays.length,
+        });
+      } else {
+        logger.warn('Liveness check failed, triggering rebuild', { error });
+      }
       this.rebuild('liveness-timeout');
     }
   }
