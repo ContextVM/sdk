@@ -288,6 +288,10 @@ export class AnnouncementManager {
       this.isInitialized = true;
       this.initializationResolver?.(); // Resolve waiting promise
 
+      // Clean up promise references to prevent memory leaks
+      this.initializationPromise = undefined;
+      this.initializationResolver = undefined;
+
       // Send the initialized notification
       const initializedNotification: JSONRPCMessage = {
         jsonrpc: '2.0',

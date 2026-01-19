@@ -18,13 +18,16 @@ import {
   RESOURCETEMPLATES_LIST_KIND,
   PROMPTS_LIST_KIND,
 } from '../core/index.js';
-import { validateMessage } from '../core/utils/utils.js';
+import { validateMessage, withTimeout } from '../core/utils/utils.js';
 import {
   createLogger,
   type LogLevel,
   type Logger,
 } from '../core/utils/logger.js';
 import { TaskQueue } from '../core/utils/task-queue.js';
+
+// Default timeout for network operations (30 seconds)
+const DEFAULT_TIMEOUT_MS = 30000;
 
 /**
  * Base options for configuring Nostr-based transports.
@@ -74,7 +77,11 @@ export abstract class BaseNostrTransport {
     }
 
     try {
-      await this.relayHandler.connect();
+      await withTimeout(
+        this.relayHandler.connect(),
+        DEFAULT_TIMEOUT_MS,
+        'Connection to Nostr relay network timed out',
+      );
       this.isConnected = true;
       this.logger.info(
         'Connected to Nostr relays',
@@ -97,7 +104,11 @@ export abstract class BaseNostrTransport {
     }
 
     try {
-      await this.relayHandler.disconnect();
+      await withTimeout(
+        this.relayHandler.disconnect(),
+        DEFAULT_TIMEOUT_MS,
+        'Disconnection from Nostr relay network timed out',
+      );
       this.isConnected = false;
       this.logger.info('Disconnected from Nostr relay network');
     } catch (error) {
@@ -113,7 +124,11 @@ export abstract class BaseNostrTransport {
    */
   protected async getPublicKey(): Promise<string> {
     try {
-      return await this.signer.getPublicKey();
+      return await withTimeout(
+        this.signer.getPublicKey(),
+        DEFAULT_TIMEOUT_MS,
+        'Get public key timed out',
+      );
     } catch (error) {
       this.logAndRethrowError('Failed to get public key from signer', error);
     }
@@ -202,7 +217,11 @@ export abstract class BaseNostrTransport {
     try {
       const pubkey = await this.getPublicKey();
       const unsignedEvent = mcpToNostrEvent(message, pubkey, kind, tags);
-      return await this.signer.signEvent(unsignedEvent);
+      return await withTimeout(
+        this.signer.signEvent(unsignedEvent),
+        DEFAULT_TIMEOUT_MS,
+        'Sign event timed out',
+      );
     } catch (error) {
       this.logAndRethrowError('Failed to create signed Nostr event', error, {
         kind,
@@ -216,7 +235,11 @@ export abstract class BaseNostrTransport {
    */
   protected async publishEvent(event: NostrEvent): Promise<void> {
     try {
-      await this.relayHandler.publish(event);
+      await withTimeout(
+        this.relayHandler.publish(event),
+        DEFAULT_TIMEOUT_MS,
+        'Publish event timed out',
+      );
       this.logger.debug('Published Nostr event', {
         eventId: event.id,
         kind: event.kind,

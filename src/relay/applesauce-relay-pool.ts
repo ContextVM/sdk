@@ -422,12 +422,14 @@ export class ApplesauceRelayPool implements RelayHandler {
       // Pause ping monitor during rebuild to avoid redundant checks
       this.stopPingMonitor();
 
-      // Stop current subscriptions (preserve descriptors for replay)
-      this.stopActiveSubscriptions();
+      // Clean up old relay subscriptions BEFORE creating new ones to prevent leaks
       for (const sub of this.relayObservers) sub.unsubscribe();
       for (const sub of this.messageSubscriptions) sub.unsubscribe();
       this.relayObservers = [];
       this.messageSubscriptions = [];
+
+      // Stop current subscriptions (preserve descriptors for replay)
+      this.stopActiveSubscriptions();
 
       // Create new relays and group
       this.relayGroup = new RelayGroup(

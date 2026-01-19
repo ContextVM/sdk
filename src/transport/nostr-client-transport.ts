@@ -23,6 +23,7 @@ import { NostrEvent } from 'nostr-tools';
 import { LogLevel } from '../core/utils/logger.js';
 import { ClientCorrelationStore } from './nostr-client/correlation-store.js';
 import { StatelessModeHandler } from './nostr-client/stateless-mode-handler.js';
+import { withTimeout } from '../core/utils/utils.js';
 
 /**
  * Options for configuring the NostrClientTransport.
@@ -225,7 +226,11 @@ export class NostrClientTransport
 
       if (event.kind === GIFT_WRAP_KIND) {
         try {
-          const decryptedContent = await decryptMessage(event, this.signer);
+          const decryptedContent = await withTimeout(
+            decryptMessage(event, this.signer),
+            30000,
+            'Decrypt message timed out',
+          );
           nostrEvent = JSON.parse(decryptedContent) as NostrEvent;
         } catch (decryptError) {
           this.logger.error('Failed to decrypt gift-wrapped event', {
