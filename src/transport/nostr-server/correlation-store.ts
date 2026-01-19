@@ -38,6 +38,7 @@ export interface CorrelationStoreOptions {
 export class CorrelationStore {
   private readonly eventRoutes: LruCache<EventRoute>;
   private readonly progressTokenToEventId: LruCache<string>;
+  private readonly clientEventIds: Map<string, Set<string>>;
 
   constructor(options: CorrelationStoreOptions = {}) {
     const {
@@ -53,11 +54,20 @@ export class CorrelationStore {
         if (route.progressToken) {
           this.progressTokenToEventId.delete(route.progressToken);
         }
+        // Clean up client index when event route is evicted
+        const clientSet = this.clientEventIds.get(route.clientPubkey);
+        if (clientSet) {
+          clientSet.delete(eventId);
+          if (clientSet.size === 0) {
+            this.clientEventIds.delete(route.clientPubkey);
+          }
+        }
         onEventRouteEvicted?.(eventId, route);
       },
     );
 
     this.progressTokenToEventId = new LruCache<string>(maxProgressTokens);
+    this.clientEventIds = new Map<string, Set<string>>();
   }
 
   /**
@@ -81,6 +91,14 @@ export class CorrelationStore {
     };
 
     this.eventRoutes.set(eventId, route);
+
+    // Update client index
+    let clientSet = this.clientEventIds.get(clientPubkey);
+    if (!clientSet) {
+      clientSet = new Set();
+      this.clientEventIds.set(clientPubkey, clientSet);
+    }
+    clientSet.add(eventId);
 
     if (progressToken) {
       this.progressTokenToEventId.set(progressToken, eventId);
@@ -124,6 +142,15 @@ export class CorrelationStore {
       this.progressTokenToEventId.delete(route.progressToken);
     }
 
+    // Remove from client index
+    const clientSet = this.clientEventIds.get(route.clientPubkey);
+    if (clientSet) {
+      clientSet.delete(eventId);
+      if (clientSet.size === 0) {
+        this.clientEventIds.delete(route.clientPubkey);
+      }
+    }
+
     // Remove the event route
     this.eventRoutes.delete(eventId);
     return true;
@@ -139,19 +166,22 @@ export class CorrelationStore {
   removeRoutesForClient(clientPubkey: string): number {
     let removed = 0;
 
-    // Iterate over all event routes and remove those matching the client
-    const toRemove: string[] = [];
-    for (const [eventId, route] of this.eventRoutes.entries()) {
-      if (route.clientPubkey === clientPubkey) {
-        toRemove.push(eventId);
-      }
+    // Get the set of event IDs for this client (O(1) lookup)
+    const eventIds = this.clientEventIds.get(clientPubkey);
+    if (!eventIds) {
+      return 0;
     }
 
+    // Remove each event route (O(k) where k is the number of active requests for this client)
+    const toRemove = Array.from(eventIds);
     for (const eventId of toRemove) {
       if (this.removeEventRoute(eventId)) {
         removed++;
       }
     }
+
+    // The client index should now be empty, but ensure it's cleaned up
+    this.clientEventIds.delete(clientPubkey);
 
     return removed;
   }
