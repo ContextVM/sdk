@@ -85,49 +85,55 @@ export class ApplesauceRelayPool implements RelayHandler {
 
   /**
    * Safely closes a relay and completes all its RxJS subjects to prevent memory leaks.
-   * This works around the incomplete Relay.close() implementation in applesauce-relay
-   * which only calls socket.unsubscribe() but doesn't complete the internal subjects.
    *
-   * See docs/relay-pool-production-analysis.md for the full analysis.
    */
   private safelyCloseRelay(relay: Relay): void {
     try {
       // Call the native close method first
       relay.close();
 
-      // Complete all public BehaviorSubjects (safe to call complete() multiple times)
-      const publicBehaviorSubjects = [
+      // Collect all subjects to clean up in a single pass
+      const subjects: (
+        | { complete?: () => void; closed?: boolean }
+        | undefined
+      )[] = [
+        // Public BehaviorSubjects
         relay.connected$,
         relay.attempts$,
         relay.challenge$,
         relay.authenticationResponse$,
         relay.notices$,
         relay.error$,
+        // Public Subjects
+        relay.open$,
+        relay.close$,
+        relay.closing$,
+        // Internal BehaviorSubjects (accessed via structural typing)
+        (
+          relay as Relay & {
+            _ready$?: { complete?: () => void; closed?: boolean };
+          }
+        )._ready$,
+        (
+          relay as Relay & {
+            receivedAuthRequiredForReq?: {
+              complete?: () => void;
+              closed?: boolean;
+            };
+          }
+        ).receivedAuthRequiredForReq,
+        (
+          relay as Relay & {
+            receivedAuthRequiredForEvent?: {
+              complete?: () => void;
+              closed?: boolean;
+            };
+          }
+        ).receivedAuthRequiredForEvent,
       ];
-      publicBehaviorSubjects.forEach((s) => this.completeSubjectSafely(s));
 
-      // Complete all public Subjects
-      const publicSubjects = [relay.open$, relay.close$, relay.closing$];
-      publicSubjects.forEach((s) => this.completeSubjectSafely(s));
-
-      // Complete internal BehaviorSubjects using structural typing
-      const relayWithInternals = relay as Relay & {
-        _ready$?: { complete?: () => void; closed?: boolean };
-        receivedAuthRequiredForReq?: {
-          complete?: () => void;
-          closed?: boolean;
-        };
-        receivedAuthRequiredForEvent?: {
-          complete?: () => void;
-          closed?: boolean;
-        };
-      };
-      const internalBehaviorSubjects = [
-        relayWithInternals._ready$,
-        relayWithInternals.receivedAuthRequiredForReq,
-        relayWithInternals.receivedAuthRequiredForEvent,
-      ];
-      internalBehaviorSubjects.forEach((s) => this.completeSubjectSafely(s));
+      // Complete all subjects
+      subjects.forEach((s) => this.completeSubjectSafely(s));
 
       logger.debug('Completed all subjects for relay', { url: relay.url });
     } catch (error) {
@@ -143,12 +149,8 @@ export class ApplesauceRelayPool implements RelayHandler {
     // NOTE: applesauce-relay uses `keepAlive` as the delay before tearing down the
     // websocket after the last subscription is unsubscribed.
     //
-    // We *do not* want to disable it with a huge value (it overflows setTimeout
-    // on some runtimes). Instead, we set it to slightly larger than our liveness
+    // We set it to slightly larger than our liveness
     // cadence so that short gaps don't cause unnecessary disconnect/reconnect.
-    //
-    // See docs/relay-pool-production-analysis.md for the full analysis of the
-    // 30-second rebuild cycle issue and memory leak that this configuration helps prevent.
     const relay = new Relay(url, {
       keepAlive: this.pingFrequencyMs + this.pingTimeoutMs + 5_000,
     });
@@ -194,7 +196,7 @@ export class ApplesauceRelayPool implements RelayHandler {
    */
   constructor(relayUrls: string[], opts?: ApplesauceRelayPoolOptions) {
     this.relayUrls = relayUrls;
-    this.pingFrequencyMs = opts?.pingFrequencyMs ?? 120_000; // Increased from 30s to 2 minutes
+    this.pingFrequencyMs = opts?.pingFrequencyMs ?? 120_000;
     this.pingTimeoutMs = opts?.pingTimeoutMs ?? 20_000;
 
     this.relays = relayUrls.map((url) => this.createRelay(url));
@@ -427,11 +429,6 @@ export class ApplesauceRelayPool implements RelayHandler {
       Math.min(5_000, this.pingFrequencyMs / 2);
     const initialDelay = Math.max(0, this.pingFrequencyMs + jitter);
 
-    logger.debug('Starting ping monitor', {
-      pingFrequencyMs: this.pingFrequencyMs,
-      initialDelay,
-    });
-
     this.pingSubscription = timer(initialDelay, this.pingFrequencyMs)
       .pipe(
         // Stop on destroy
@@ -439,7 +436,6 @@ export class ApplesauceRelayPool implements RelayHandler {
       )
       .subscribe({
         next: () => {
-          logger.debug('Ping timer tick');
           void this.checkLiveness();
         },
         error: (err) => {
