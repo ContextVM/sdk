@@ -1021,6 +1021,123 @@ describe('ApplesauceRelayPool Cleanup', () => {
     };
 
     // Create a mock relay with the expected subject structure
+    // Track which subjects had complete() called
+    const completedSubjects: string[] = [];
+    const createSubject = (name: string) => ({
+      complete: () => completedSubjects.push(name),
+      closed: false,
+    });
+
+    const mockRelay = {
+      close: () => {},
+      connected$: createSubject('connected$'),
+      attempts$: createSubject('attempts$'),
+      challenge$: createSubject('challenge$'),
+      authenticationResponse$: createSubject('authenticationResponse$'),
+      notices$: createSubject('notices$'),
+      error$: createSubject('error$'),
+      open$: createSubject('open$'),
+      close$: createSubject('close$'),
+      closing$: createSubject('closing$'),
+      // Internal subjects accessed via structural typing
+      _ready$: createSubject('_ready$'),
+      receivedAuthRequiredForReq: createSubject('receivedAuthRequiredForReq'),
+      receivedAuthRequiredForEvent: createSubject(
+        'receivedAuthRequiredForEvent',
+      ),
+      url: 'ws://mock.relay',
+    };
+
+    // Should not throw
+    expect(() =>
+      testPool.safelyCloseRelay(mockRelay as unknown as Relay),
+    ).not.toThrow();
+
+    // Verify all subjects were completed
+    expect(completedSubjects).toContain('connected$');
+    expect(completedSubjects).toContain('attempts$');
+    expect(completedSubjects).toContain('challenge$');
+    expect(completedSubjects).toContain('authenticationResponse$');
+    expect(completedSubjects).toContain('notices$');
+    expect(completedSubjects).toContain('error$');
+    expect(completedSubjects).toContain('open$');
+    expect(completedSubjects).toContain('close$');
+    expect(completedSubjects).toContain('closing$');
+    expect(completedSubjects).toContain('_ready$');
+    expect(completedSubjects).toContain('receivedAuthRequiredForReq');
+    expect(completedSubjects).toContain('receivedAuthRequiredForEvent');
+
+    // Verify all 12 subjects were completed
+    expect(completedSubjects.length).toBe(12);
+
+    await pool.disconnect();
+  });
+
+  test('safelyCloseRelay handles already-closed subjects gracefully', async () => {
+    const pool = new ApplesauceRelayPool(['ws://localhost:1234']);
+    await pool.connect();
+
+    const testPool = pool as unknown as {
+      safelyCloseRelay: (relay: Relay) => void;
+    };
+
+    // Create a mock relay with some already-closed subjects
+    const createSubject = (name: string, isClosed: boolean = false) => {
+      let completeCalled = false;
+      return {
+        complete: () => {
+          completeCalled = true;
+          if (isClosed) throw new Error('Already closed');
+        },
+        closed: isClosed,
+        wasCalled: () => completeCalled,
+      };
+    };
+
+    const mockRelay = {
+      close: () => {},
+      connected$: createSubject('connected$', true), // Already closed
+      attempts$: createSubject('attempts$', false),
+      challenge$: createSubject('challenge$', false),
+      authenticationResponse$: createSubject('authenticationResponse$', false),
+      notices$: createSubject('notices$', false),
+      error$: createSubject('error$', false),
+      open$: createSubject('open$', false),
+      close$: createSubject('close$', false),
+      closing$: createSubject('closing$', false),
+      _ready$: createSubject('_ready$', false),
+      receivedAuthRequiredForReq: createSubject(
+        'receivedAuthRequiredForReq',
+        false,
+      ),
+      receivedAuthRequiredForEvent: createSubject(
+        'receivedAuthRequiredForEvent',
+        false,
+      ),
+      url: 'ws://mock.relay',
+    };
+
+    // Should not throw even with already-closed subjects
+    expect(() =>
+      testPool.safelyCloseRelay(mockRelay as unknown as Relay),
+    ).not.toThrow();
+
+    // Verify complete was still called on all (safelyComplete checks closed flag)
+    expect(mockRelay.connected$.wasCalled()).toBe(false); // Closed subjects are skipped
+    expect(mockRelay.attempts$.wasCalled()).toBe(true);
+
+    await pool.disconnect();
+  });
+
+  test('safelyCloseRelay handles missing internal subjects gracefully', async () => {
+    const pool = new ApplesauceRelayPool(['ws://localhost:1234']);
+    await pool.connect();
+
+    const testPool = pool as unknown as {
+      safelyCloseRelay: (relay: Relay) => void;
+    };
+
+    // Create a mock relay missing some internal subjects
     const mockRelay = {
       close: () => {},
       connected$: { complete: () => {}, closed: false },
@@ -1032,16 +1149,18 @@ describe('ApplesauceRelayPool Cleanup', () => {
       open$: { complete: () => {}, closed: false },
       close$: { complete: () => {}, closed: false },
       closing$: { complete: () => {}, closed: false },
+      // Missing internal subjects - these should be handled gracefully
+      _ready$: undefined,
+      receivedAuthRequiredForReq: undefined,
+      receivedAuthRequiredForEvent: undefined,
       url: 'ws://mock.relay',
     };
 
-    // Should not throw
+    // Should not throw even with missing internal subjects
     expect(() =>
       testPool.safelyCloseRelay(mockRelay as unknown as Relay),
     ).not.toThrow();
 
-    // Verify subjects were marked as closed (our mock doesn't actually update closed property,
-    // but the complete method was called)
     await pool.disconnect();
   });
 });

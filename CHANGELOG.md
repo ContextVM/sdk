@@ -1,5 +1,11 @@
 # @contextvm/sdk
 
+## 0.2.4
+
+### Patch Changes
+
+- fix(relay): improve relay cleanup error handling and test coverage
+
 ## 0.2.3
 
 ### Patch Changes
