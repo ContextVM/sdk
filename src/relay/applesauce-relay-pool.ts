@@ -63,14 +63,95 @@ export class ApplesauceRelayPool implements RelayHandler {
   // Liveness tracking
   private pingSubscription?: Subscription;
   private readonly destroy$ = new Subject<void>();
-  private lastPingLogAt = 0;
-  private lastMessageReceivedAt = 0;
   private rebuildInFlight?: Promise<void>;
   private relayObservers: Subscription[] = [];
-  private messageSubscriptions: Subscription[] = [];
+  private relays: Relay[] = [];
+
+  /**
+   * Safely completes an RxJS Subject or BehaviorSubject if it exists and isn't already closed.
+   * This is a defensive measure to prevent memory leaks from incomplete cleanup in external libraries.
+   */
+  private completeSubjectSafely(
+    subject: { complete?: () => void; closed?: boolean } | undefined,
+  ): void {
+    if (subject && typeof subject.complete === 'function' && !subject.closed) {
+      try {
+        subject.complete();
+      } catch {
+        // Subject might already be completed or errored; ignore
+      }
+    }
+  }
+
+  /**
+   * Safely closes a relay and completes all its RxJS subjects to prevent memory leaks.
+   * This works around the incomplete Relay.close() implementation in applesauce-relay
+   * which only calls socket.unsubscribe() but doesn't complete the internal subjects.
+   *
+   * See docs/relay-pool-production-analysis.md for the full analysis.
+   */
+  private safelyCloseRelay(relay: Relay): void {
+    try {
+      // Call the native close method first
+      relay.close();
+
+      // Complete all public BehaviorSubjects (safe to call complete() multiple times)
+      const publicBehaviorSubjects = [
+        relay.connected$,
+        relay.attempts$,
+        relay.challenge$,
+        relay.authenticationResponse$,
+        relay.notices$,
+        relay.error$,
+      ];
+      publicBehaviorSubjects.forEach((s) => this.completeSubjectSafely(s));
+
+      // Complete all public Subjects
+      const publicSubjects = [relay.open$, relay.close$, relay.closing$];
+      publicSubjects.forEach((s) => this.completeSubjectSafely(s));
+
+      // Complete internal BehaviorSubjects using structural typing
+      const relayWithInternals = relay as Relay & {
+        _ready$?: { complete?: () => void; closed?: boolean };
+        receivedAuthRequiredForReq?: {
+          complete?: () => void;
+          closed?: boolean;
+        };
+        receivedAuthRequiredForEvent?: {
+          complete?: () => void;
+          closed?: boolean;
+        };
+      };
+      const internalBehaviorSubjects = [
+        relayWithInternals._ready$,
+        relayWithInternals.receivedAuthRequiredForReq,
+        relayWithInternals.receivedAuthRequiredForEvent,
+      ];
+      internalBehaviorSubjects.forEach((s) => this.completeSubjectSafely(s));
+
+      logger.debug('Completed all subjects for relay', { url: relay.url });
+    } catch (error) {
+      logger.warn('Error during relay cleanup', {
+        url: relay.url,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      // Don't throw - best effort cleanup
+    }
+  }
 
   private createRelay(url: string): Relay {
-    const relay = new Relay(url);
+    // NOTE: applesauce-relay uses `keepAlive` as the delay before tearing down the
+    // websocket after the last subscription is unsubscribed.
+    //
+    // We *do not* want to disable it with a huge value (it overflows setTimeout
+    // on some runtimes). Instead, we set it to slightly larger than our liveness
+    // cadence so that short gaps don't cause unnecessary disconnect/reconnect.
+    //
+    // See docs/relay-pool-production-analysis.md for the full analysis of the
+    // 30-second rebuild cycle issue and memory leak that this configuration helps prevent.
+    const relay = new Relay(url, {
+      keepAlive: this.pingFrequencyMs + this.pingTimeoutMs + 5_000,
+    });
 
     // Ensure reconnect attempts continue at a bounded cadence even after many
     // failures, so a relay coming back online is picked up quickly.
@@ -101,12 +182,6 @@ export class ApplesauceRelayPool implements RelayHandler {
       });
     });
 
-    // Track message activity for idle detection
-    const messageSub = relay.message$.subscribe(() => {
-      this.lastMessageReceivedAt = Date.now();
-    });
-    this.messageSubscriptions.push(messageSub);
-
     this.relayObservers.push(connectedSub, errorSub);
 
     return relay;
@@ -119,12 +194,11 @@ export class ApplesauceRelayPool implements RelayHandler {
    */
   constructor(relayUrls: string[], opts?: ApplesauceRelayPoolOptions) {
     this.relayUrls = relayUrls;
-    this.pingFrequencyMs = opts?.pingFrequencyMs ?? 30_000;
+    this.pingFrequencyMs = opts?.pingFrequencyMs ?? 120_000; // Increased from 30s to 2 minutes
     this.pingTimeoutMs = opts?.pingTimeoutMs ?? 20_000;
 
-    this.relayGroup = new RelayGroup(
-      relayUrls.map((url) => this.createRelay(url)),
-    );
+    this.relays = relayUrls.map((url) => this.createRelay(url));
+    this.relayGroup = new RelayGroup(this.relays);
   }
 
   /**
@@ -264,6 +338,9 @@ export class ApplesauceRelayPool implements RelayHandler {
       this.createSubscription(filters, onEvent, onEose),
     );
     // Start ping monitor lazily on first subscription
+    logger.debug('Starting ping monitor from subscribe', {
+      activeUnsubscribers: this.activeUnsubscribers.length,
+    });
     this.startPingMonitor();
   }
 
@@ -277,9 +354,14 @@ export class ApplesauceRelayPool implements RelayHandler {
 
     // Clean up relay observers
     for (const sub of this.relayObservers) sub.unsubscribe();
-    for (const sub of this.messageSubscriptions) sub.unsubscribe();
     this.relayObservers = [];
-    this.messageSubscriptions = [];
+
+    // Safely close all relays and complete their subjects
+    for (const relay of this.relays) {
+      this.safelyCloseRelay(relay);
+    }
+    this.relays = [];
+    this.relayGroup = new RelayGroup([]);
 
     logger.debug('Disconnected from all relays');
   }
@@ -308,6 +390,9 @@ export class ApplesauceRelayPool implements RelayHandler {
     try {
       this.stopActiveSubscriptions();
       this.subscriptionDescriptors = [];
+      // If nothing is subscribed, stop pinging (otherwise liveness can
+      // incorrectly rebuild a perfectly healthy-but-idle pool).
+      this.stopPingMonitor();
     } catch (error) {
       logger.error('Error while unsubscribing from subscriptions', { error });
     }
@@ -331,29 +416,54 @@ export class ApplesauceRelayPool implements RelayHandler {
 
   /** Starts the liveness ping monitor (called lazily on first subscribe) */
   private startPingMonitor(): void {
-    if (this.pingSubscription) return;
+    if (this.pingSubscription) {
+      logger.debug('Ping monitor already started, skipping');
+      return;
+    }
 
-    this.pingSubscription = timer(this.pingFrequencyMs, this.pingFrequencyMs)
+    // Add jitter to prevent thundering herd: ±5 seconds (but ensure it's reasonable for small intervals)
+    const jitter =
+      Math.random() * Math.min(10_000, this.pingFrequencyMs) -
+      Math.min(5_000, this.pingFrequencyMs / 2);
+    const initialDelay = Math.max(0, this.pingFrequencyMs + jitter);
+
+    logger.debug('Starting ping monitor', {
+      pingFrequencyMs: this.pingFrequencyMs,
+      initialDelay,
+    });
+
+    this.pingSubscription = timer(initialDelay, this.pingFrequencyMs)
       .pipe(
         // Stop on destroy
         takeUntil(this.destroy$),
       )
       .subscribe({
-        next: () => this.checkLiveness(),
-        error: () => {
-          /* ignore errors */
+        next: () => {
+          logger.debug('Ping timer tick');
+          void this.checkLiveness();
+        },
+        error: (err) => {
+          logger.error('Ping monitor error', { error: err });
         },
       });
   }
 
   /** Performs a liveness check and triggers rebuild on timeout */
   private async checkLiveness(): Promise<void> {
-    // Skip if recently active
-    if (Date.now() - this.lastMessageReceivedAt < this.pingFrequencyMs) {
+    // If there are no active subscriptions, don't perform liveness checks.
+    // applesauce-relay may legitimately close sockets after `keepAlive` when
+    // nothing is subscribed, and that should not trigger a rebuild.
+    if (this.activeUnsubscribers.length === 0) {
+      logger.debug('Skipping liveness check: no active subscriptions');
       return;
     }
 
-    const relays = this.relayGroup.relays;
+    logger.debug('Running liveness check', {
+      activeUnsubscribers: this.activeUnsubscribers.length,
+      relayCount: this.relays.length,
+    });
+
+    const relays = this.relays;
 
     // If no relays in group, trigger rebuild
     if (relays.length === 0) {
@@ -366,8 +476,14 @@ export class ApplesauceRelayPool implements RelayHandler {
 
     // If relays exist but none connected, trigger rebuild
     if (connectedRelays.length === 0) {
-      logger.warn('No connected relays, triggering rebuild');
-      this.rebuild('no-connected-relays');
+      logger.warn('No connected relays, triggering rebuild', {
+        totalRelays: relays.length,
+        relayStates: relays.map((r) => ({
+          url: r.url,
+          connected: r.connected,
+        })),
+      });
+      void this.rebuild('no-connected-relays');
       return;
     }
 
@@ -424,17 +540,19 @@ export class ApplesauceRelayPool implements RelayHandler {
 
       // Clean up old relay subscriptions BEFORE creating new ones to prevent leaks
       for (const sub of this.relayObservers) sub.unsubscribe();
-      for (const sub of this.messageSubscriptions) sub.unsubscribe();
       this.relayObservers = [];
-      this.messageSubscriptions = [];
+
+      // Safely close old relays and complete their subjects to prevent memory leaks
+      for (const relay of this.relays) {
+        this.safelyCloseRelay(relay);
+      }
 
       // Stop current subscriptions (preserve descriptors for replay)
       this.stopActiveSubscriptions();
 
       // Create new relays and group
-      this.relayGroup = new RelayGroup(
-        this.relayUrls.map((url) => this.createRelay(url)),
-      );
+      this.relays = this.relayUrls.map((url) => this.createRelay(url));
+      this.relayGroup = new RelayGroup(this.relays);
 
       // Replay all stored subscription descriptors
       // Note: New subscriptions added during rebuild will be replayed after this completes
