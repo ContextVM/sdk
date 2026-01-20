@@ -1,5 +1,24 @@
 # @contextvm/sdk
 
+## 0.2.3
+
+### Patch Changes
+
+- fix(relay): prevent memory leaks in relay pool cleanup
+
+  Implement defensive cleanup to prevent memory leaks from incomplete RxJS
+  subject completion in applesauce-relay library. Add safelyCloseRelay() and
+  completeSubjectSafely() methods to properly close all relay subjects.
+  - Increase ping frequency from 30s to 2min to reduce rebuild cycles
+  - Configure keepAlive to prevent premature socket teardown
+  - Add jitter to ping monitor to avoid thundering herd
+  - Skip liveness checks when no active subscriptions exist
+  - Add comprehensive tests for cleanup logic
+  - Update .gitignore for development artifacts
+
+  Addresses production memory leak analysis where Relay.close() only calls
+  socket.unsubscribe() without completing internal BehaviorSubjects.
+
 ## 0.2.2
 
 ### Patch Changes
