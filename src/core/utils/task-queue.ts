@@ -1,3 +1,5 @@
+import { sleep } from './utils.js';
+
 /**
  * A simple, concurrency-limited task queue.
  * Ensures that no more than `concurrency` tasks are running at the same time.
@@ -42,11 +44,27 @@ export class TaskQueue {
   }
 
   /**
-   * Shuts down the queue, clearing pending tasks and preventing new tasks from being added.
+   * Shuts down the queue, waiting for running tasks to complete with a timeout.
+   * @param timeoutMs - Maximum time to wait for running tasks (default: 5000ms)
+   * @returns Promise that resolves when shutdown is complete
    */
-  shutdown(): void {
+  async shutdown(timeoutMs: number = 5000): Promise<void> {
     this.isShutdown = true;
-    this.queue = [];
+    const pendingCount = this.queue.length;
+    if (pendingCount > 0) {
+      this.queue = [];
+    }
+
+    const startTime = Date.now();
+    while (this.running > 0 && Date.now() - startTime < timeoutMs) {
+      await sleep(100);
+    }
+
+    if (this.running > 0) {
+      console.warn(
+        `TaskQueue shutdown timed out with ${this.running} tasks still running`,
+      );
+    }
   }
 
   /**
