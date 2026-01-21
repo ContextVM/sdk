@@ -171,7 +171,7 @@ export class NostrServerTransport
     try {
       // Shutdown the task queue to prevent new tasks from being queued
       // and clear pending tasks to avoid operating on stale state
-      this.taskQueue.shutdown();
+      await this.taskQueue.shutdown();
 
       await this.disconnect();
       this.sessionStore.clear();
