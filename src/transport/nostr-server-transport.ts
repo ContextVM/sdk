@@ -90,6 +90,16 @@ export class NostrServerTransport
     // Initialize session store with eviction callback for correlation cleanup
     this.sessionStore = new SessionStore({
       maxSessions: 1000,
+      shouldEvictSession: (clientPubkey) => {
+        // Prevent eviction if client has active routes (in-flight requests)
+        if (this.correlationStore.hasActiveRoutesForClient(clientPubkey)) {
+          this.logger.debug(
+            `Skipped eviction for session ${clientPubkey} (has active routes)`,
+          );
+          return false;
+        }
+        return true;
+      },
       onSessionEvicted: (clientPubkey) => {
         // Clean up all correlation data for evicted session
         const removedCount =

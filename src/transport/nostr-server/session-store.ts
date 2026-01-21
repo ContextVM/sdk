@@ -28,6 +28,15 @@ export interface SessionStoreOptions {
   maxSessions?: number;
   /** Callback invoked when a session is evicted */
   onSessionEvicted?: (clientPubkey: string, session: ClientSession) => void;
+  /**
+   * Predicate called during LRU eviction to determine if a session should be evicted.
+   * Return true to proceed with eviction, false to keep the session.
+   * If not provided, all LRU evictions proceed normally.
+   */
+  shouldEvictSession?: (
+    clientPubkey: string,
+    session: ClientSession,
+  ) => boolean;
 }
 
 /**
@@ -43,11 +52,21 @@ export class SessionStore {
   private readonly sessions: LruCache<ClientSession>;
 
   constructor(options: SessionStoreOptions = {}) {
-    const { maxSessions = DEFAULT_LRU_SIZE, onSessionEvicted } = options;
+    const {
+      maxSessions = DEFAULT_LRU_SIZE,
+      onSessionEvicted,
+      shouldEvictSession,
+    } = options;
 
     this.sessions = new LruCache<ClientSession>(
       maxSessions,
       (clientPubkey, session) => {
+        // Check if eviction should proceed via predicate
+        if (shouldEvictSession && !shouldEvictSession(clientPubkey, session)) {
+          // Re-insert the session to prevent eviction
+          this.sessions.set(clientPubkey, session);
+          return;
+        }
         onSessionEvicted?.(clientPubkey, session);
       },
     );

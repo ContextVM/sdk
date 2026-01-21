@@ -205,6 +205,17 @@ export class CorrelationStore {
   }
 
   /**
+   * Checks if a client has any active event routes.
+   *
+   * @param clientPubkey The client's public key
+   * @returns true if the client has active routes, false otherwise
+   */
+  hasActiveRoutesForClient(clientPubkey: string): boolean {
+    const eventIds = this.clientEventIds.get(clientPubkey);
+    return eventIds !== undefined && eventIds.size > 0;
+  }
+
+  /**
    * Gets the current number of event routes.
    */
   get eventRouteCount(): number {
