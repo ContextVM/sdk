@@ -1,5 +1,29 @@
 # @contextvm/sdk
 
+## 0.2.5
+
+### Patch Changes
+
+- 504ea75: fix(task-queue): make shutdown async and wait for running tasks
+
+  The shutdown method now waits for running tasks to complete with a
+  configurable timeout instead of immediately clearing them. This provides
+  more graceful shutdown behavior and prevents dropping in-progress tasks.
+
+- fix(nostr-server): prevent session eviction with active routes
+
+  Add shouldEvictSession hook to SessionStore to check for active routes
+  before evicting sessions. This prevents sessions from being removed
+  while they have in-flight requests, which could cause data loss or
+  errors. The CorrelationStore now provides hasActiveRoutesForClient
+  to track active routes per client. Includes comprehensive tests for
+  the new eviction protection logic.
+
+  Updated dependencies:
+  - @modelcontextprotocol/sdk to 1.25.3
+  - pino to 10.2.1
+  - typescript-eslint to 8.53.1
+
 ## 0.2.4
 
 ### Patch Changes
