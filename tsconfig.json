@@ -16,7 +16,14 @@
     "baseUrl": ".",
     "paths": {
       "@contextvm/sdk/*": ["./src/*"]
-    }
+    },
+    "noImplicitAny": true,
+    "noImplicitReturns": true,
+    "noImplicitThis": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "pretty": true,
   },
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist"]
