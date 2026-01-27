@@ -25,6 +25,7 @@ import {
   type Logger,
 } from '../core/utils/logger.js';
 import { TaskQueue } from '../core/utils/task-queue.js';
+import { ApplesauceRelayPool } from '../relay/applesauce-relay-pool.js';
 
 // Default timeout for network operations (30 seconds)
 const DEFAULT_TIMEOUT_MS = 30000;
@@ -34,7 +35,7 @@ const DEFAULT_TIMEOUT_MS = 30000;
  */
 export interface BaseNostrTransportOptions {
   signer: NostrSigner;
-  relayHandler: RelayHandler;
+  relayHandler: RelayHandler | string[];
   encryptionMode?: EncryptionMode;
   logLevel?: LogLevel;
 }
@@ -62,7 +63,9 @@ export abstract class BaseNostrTransport {
 
   constructor(module: string, options: BaseNostrTransportOptions) {
     this.signer = options.signer;
-    this.relayHandler = options.relayHandler;
+    this.relayHandler = Array.isArray(options.relayHandler)
+      ? new ApplesauceRelayPool(options.relayHandler)
+      : options.relayHandler;
     this.encryptionMode = options.encryptionMode ?? EncryptionMode.OPTIONAL;
     this.logger = createLogger(module, { level: options.logLevel });
     this.taskQueue = new TaskQueue(5);

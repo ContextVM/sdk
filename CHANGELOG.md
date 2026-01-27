@@ -1,5 +1,17 @@
 # @contextvm/sdk
 
+## 0.2.6
+
+### Patch Changes
+
+- refactor: update BaseNostrTransport to support string[] relayHandler option
+  - Add comprehensive AGENTS.md with TypeScript and project guidelines
+  - Replace RULES.md with new AGENTS.md documentation
+  - Add CLAUDE.md reference file
+  - Enhance tsconfig.json with stricter TypeScript compilation options
+
+  BREAKING CHANGE: relayHandler option now accepts string[] in addition to RelayHandler
+
 ## 0.2.5
 
 ### Patch Changes
