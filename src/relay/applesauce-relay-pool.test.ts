@@ -1082,7 +1082,7 @@ describe('ApplesauceRelayPool Cleanup', () => {
     };
 
     // Create a mock relay with some already-closed subjects
-    const createSubject = (name: string, isClosed: boolean = false) => {
+    const createSubject = (_: string, isClosed: boolean = false) => {
       let completeCalled = false;
       return {
         complete: () => {

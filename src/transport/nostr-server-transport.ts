@@ -110,10 +110,10 @@ export class NostrServerTransport
       },
     });
 
-    // Initialize correlation store with bounded caches
+    // Initialize correlation store with bounded event routes
+    // Progress tokens use a Map (lifecycle-coupled to routes, no separate bound needed)
     this.correlationStore = new CorrelationStore({
       maxEventRoutes: 10000,
-      maxProgressTokens: 10000,
       onEventRouteEvicted: (eventId, route) => {
         this.logger.debug(`Evicted event route for ${eventId}`, {
           clientPubkey: route.clientPubkey,

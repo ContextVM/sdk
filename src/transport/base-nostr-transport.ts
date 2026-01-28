@@ -33,6 +33,7 @@ const DEFAULT_TIMEOUT_MS = 30000;
 /**
  * Base options for configuring Nostr-based transports.
  */
+// TODO: We could improve the ergonomics of this and simplify the signer creation, it can accept a NostrSigner instance or an string defaulting to a private key signer
 export interface BaseNostrTransportOptions {
   signer: NostrSigner;
   relayHandler: RelayHandler | string[];
