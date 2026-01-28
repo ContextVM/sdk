@@ -6,6 +6,7 @@
  */
 import { DEFAULT_LRU_SIZE } from '../../core/constants.js';
 import { LruCache } from '../../core/utils/lru-cache.js';
+
 /**
  * Represents a route for an in-flight request.
  */
@@ -24,26 +25,31 @@ export interface EventRoute {
 export interface CorrelationStoreOptions {
   /** Maximum number of event routes to keep in memory */
   maxEventRoutes?: number;
-  /** Maximum number of progress token mappings to keep in memory */
-  maxProgressTokens?: number;
   /** Callback invoked when an event route is evicted */
   onEventRouteEvicted?: (eventId: string, route: EventRoute) => void;
 }
 
 /**
  * Internal store for managing request/response correlation and progress routing.
+ *
+ * @remarks
+ * Uses a combination of LRU cache for event routes (to bound memory) and
+ * plain Map for progress tokens. Progress tokens use a Map because they
+ * are lifecycle-coupled to event routes - when a route is removed, its
+ * progress token mapping is also removed. This eliminates LRU overhead
+ * (no timestamp tracking, no reordering on access) while maintaining O(1)
+ * lookups and automatic cleanup.
  */
 export class CorrelationStore {
   private readonly eventRoutes: LruCache<EventRoute>;
-  private readonly progressTokenToEventId: LruCache<string>;
+  private readonly progressTokenToEventId: Map<string, string>;
   private readonly clientEventIds: Map<string, Set<string>>;
 
   constructor(options: CorrelationStoreOptions = {}) {
-    const {
-      maxEventRoutes = DEFAULT_LRU_SIZE,
-      maxProgressTokens = DEFAULT_LRU_SIZE,
-      onEventRouteEvicted,
-    } = options;
+    const { maxEventRoutes = DEFAULT_LRU_SIZE, onEventRouteEvicted } = options;
+
+    this.progressTokenToEventId = new Map<string, string>();
+    this.clientEventIds = new Map<string, Set<string>>();
 
     this.eventRoutes = new LruCache<EventRoute>(
       maxEventRoutes,
@@ -63,9 +69,6 @@ export class CorrelationStore {
         onEventRouteEvicted?.(eventId, route);
       },
     );
-
-    this.progressTokenToEventId = new LruCache<string>(maxProgressTokens);
-    this.clientEventIds = new Map<string, Set<string>>();
   }
 
   /**
@@ -235,5 +238,6 @@ export class CorrelationStore {
   clear(): void {
     this.eventRoutes.clear();
     this.progressTokenToEventId.clear();
+    this.clientEventIds.clear();
   }
 }

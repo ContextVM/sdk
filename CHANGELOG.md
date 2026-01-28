@@ -1,5 +1,11 @@
 # @contextvm/sdk
 
+## 0.2.7
+
+### Patch Changes
+
+- refactor(nostr-server): optimize correlation store and client index
+
 ## 0.2.6
 
 ### Patch Changes
