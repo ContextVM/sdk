@@ -25,6 +25,42 @@ npm install @contextvm/sdk
 
 **Note:** You can use your preferred package manager to install the SDK.
 
+## Package Structure
+
+The SDK supports two import patterns:
+
+### Primary Entrypoint (Recommended)
+
+Import from the root for convenience:
+
+```typescript
+import { NostrClientTransport, createLogger } from '@contextvm/sdk';
+```
+
+### Subpath Imports (Tree-shaking)
+
+For smaller bundles, import directly from specific modules:
+
+```typescript
+// Core utilities
+import { createLogger } from '@contextvm/sdk/core';
+
+// Transport implementations
+import { NostrClientTransport } from '@contextvm/sdk/transport';
+
+// Relay management
+import { RelayPool } from '@contextvm/sdk/relay';
+
+// Cryptographic signing
+import { NostrSigner } from '@contextvm/sdk/signer';
+
+// Gateway and Proxy
+import { Gateway } from '@contextvm/sdk/gateway';
+import { Proxy } from '@contextvm/sdk/proxy';
+```
+
+**Note:** Subpath imports help bundlers eliminate unused code. Use them when bundle size matters.
+
 ## Usage
 
 Visit the [ContextVM documentation](https://contextvm.org) for information on how to use ContextVM.

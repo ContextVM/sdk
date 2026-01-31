@@ -1,5 +1,22 @@
 # @contextvm/sdk
 
+## 0.2.8
+
+### Patch Changes
+
+- chore: enhance SDK packaging and CI/CD validation
+  - Add export verification script (scripts/verify-exports.ts) with:
+    - File extension validation (.js/.d.ts)
+    - Types field consistency check
+    - Files coverage validation
+  - Remove broken @arethetypeswrong/cli from CI
+  - Update README with package structure docs (root vs subpath imports)
+  - Simplify verify-exports.ts helpers with Array.some()
+  - Export announcement-manager.js for ServerInfo type visibility
+  - Add "./transport" export entry to package.json
+  - Add conditional exports with types/default for proper TS support
+  - Set sideEffects: false for tree-shaking
+
 ## 0.2.7
 
 ### Patch Changes

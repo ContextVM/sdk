@@ -1,0 +1,36 @@
+name: Package Check
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  package-check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun Runtime
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Build package
+        run: bun run build
+
+      - name: Verify exports match package.json
+        run: bun run verify-exports
+
+      - name: Check package with Publint
+        run: bunx publint
+
+      # NOTE: @arethetypeswrong/cli was removed because it was interactive by default
+      # (npm pack prompt) and crashed in our environment. Publint + verify-exports
+      # already cover the most common packaging/export footguns.
