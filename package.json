@@ -1,11 +1,12 @@
 {
   "name": "@contextvm/sdk",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "description": "CtxVM SDK for JavaScript/TypeScript",
   "license": "LGPL-3.0-1",
   "author": "ContextVM",
   "bugs": "https://github.com/ContextVM/ts-sdk/issues",
   "type": "module",
+  "sideEffects": false,
   "repository": {
     "type": "git",
     "url": "git+https://github.com/ContextVM/ts-sdk.git"
@@ -23,15 +24,46 @@
     "llm"
   ],
   "exports": {
-    ".": "./dist/esm/index.js",
-    "./core": "./dist/esm/core/index.js",
-    "./core/*": "./dist/esm/core/*.js",
-    "./relay": "./dist/esm/relay/index.js",
-    "./relay/*": "./dist/esm/relay/*.js",
-    "./signer": "./dist/esm/signer/index.js",
-    "./signer/*": "./dist/esm/signer/*.js",
-    "./gateway": "./dist/esm/gateway/index.js",
-    "./proxy": "./dist/esm/proxy/index.js"
+    ".": {
+      "types": "./dist/esm/index.d.ts",
+      "default": "./dist/esm/index.js"
+    },
+    "./core": {
+      "types": "./dist/esm/core/index.d.ts",
+      "default": "./dist/esm/core/index.js"
+    },
+    "./core/*": {
+      "types": "./dist/esm/core/*.d.ts",
+      "default": "./dist/esm/core/*.js"
+    },
+    "./relay": {
+      "types": "./dist/esm/relay/index.d.ts",
+      "default": "./dist/esm/relay/index.js"
+    },
+    "./relay/*": {
+      "types": "./dist/esm/relay/*.d.ts",
+      "default": "./dist/esm/relay/*.js"
+    },
+    "./signer": {
+      "types": "./dist/esm/signer/index.d.ts",
+      "default": "./dist/esm/signer/index.js"
+    },
+    "./signer/*": {
+      "types": "./dist/esm/signer/*.d.ts",
+      "default": "./dist/esm/signer/*.js"
+    },
+    "./gateway": {
+      "types": "./dist/esm/gateway/index.d.ts",
+      "default": "./dist/esm/gateway/index.js"
+    },
+    "./proxy": {
+      "types": "./dist/esm/proxy/index.d.ts",
+      "default": "./dist/esm/proxy/index.js"
+    },
+    "./transport": {
+      "types": "./dist/esm/transport/index.d.ts",
+      "default": "./dist/esm/transport/index.js"
+    }
   },
   "types": "./dist/esm/index.d.ts",
   "files": [
@@ -44,7 +76,8 @@
     "test": "bun test src",
     "format": "bun prettier --write src",
     "release": "bun run build && bun publish",
-    "typecheck": "bun run tsc --noEmit"
+    "typecheck": "bun run tsc --noEmit",
+    "verify-exports": "bun run scripts/verify-exports.ts"
   },
   "devDependencies": {
     "@changesets/cli": "^2.29.8",
