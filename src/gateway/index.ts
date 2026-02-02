@@ -5,8 +5,15 @@ import {
   NostrServerTransportOptions,
 } from '../transport/nostr-server-transport.js';
 import { createLogger } from '../core/utils/logger.js';
+import { LruCache } from '../core/utils/lru-cache.js';
 
 const logger = createLogger('gateway');
+
+type ClientPubkey = string;
+
+type SessionTerminationCapableTransport = Transport & {
+  terminateSession?: () => void | Promise<void>;
+};
 
 /**
  * Options for configuring the NostrMCPGateway.
@@ -16,6 +23,17 @@ export interface NostrMCPGatewayOptions {
   mcpClientTransport: Transport;
   /** Options for configuring the Nostr server transport */
   nostrTransportOptions: NostrServerTransportOptions;
+
+  /**
+   * Optional factory for creating per-client MCP transports keyed by Nostr client pubkey.
+   * If provided, the gateway will isolate MCP sessions per pubkey.
+   */
+  createMcpClientTransport?: (ctx: {
+    clientPubkey: ClientPubkey;
+  }) => Transport | Promise<Transport>;
+
+  /** Maximum number of per-client MCP transports to keep in memory. @default 1000 */
+  maxClientTransports?: number;
 }
 
 /**
@@ -32,13 +50,50 @@ export interface NostrMCPGatewayOptions {
 export class NostrMCPGateway {
   private readonly mcpClientTransport: Transport;
   private readonly nostrServerTransport: NostrServerTransport;
+  private readonly createMcpClientTransport:
+    | ((ctx: { clientPubkey: ClientPubkey }) => Transport | Promise<Transport>)
+    | undefined;
+  private readonly clientTransports: LruCache<Transport> | undefined;
+  private readonly clientTransportPromises:
+    | Map<ClientPubkey, Promise<Transport>>
+    | undefined;
+  private readonly handleNostrErrorBound: (error: Error) => void;
+  private readonly handleNostrCloseBound: () => void;
+  private readonly handleServerErrorBound: (error: Error) => void;
+  private readonly handleServerCloseBound: () => void;
   private isRunning = false;
 
   constructor(options: NostrMCPGatewayOptions) {
     this.mcpClientTransport = options.mcpClientTransport;
-    this.nostrServerTransport = new NostrServerTransport(
-      options.nostrTransportOptions,
-    );
+    this.createMcpClientTransport = options.createMcpClientTransport;
+
+    this.handleNostrErrorBound = this.handleNostrError.bind(this);
+    this.handleNostrCloseBound = this.handleNostrClose.bind(this);
+    this.handleServerErrorBound = this.handleServerError.bind(this);
+    this.handleServerCloseBound = this.handleServerClose.bind(this);
+
+    this.nostrServerTransport = new NostrServerTransport({
+      ...options.nostrTransportOptions,
+      onClientSessionEvicted: ({ clientPubkey }) =>
+        this.closeClientTransport(clientPubkey),
+    });
+
+    if (this.createMcpClientTransport) {
+      this.clientTransportPromises = new Map();
+      this.clientTransports = new LruCache<Transport>(
+        options.maxClientTransports ?? 1000,
+        (clientPubkey, transport) => {
+          this.closeTransportForEviction(clientPubkey, transport).catch(
+            (err) => {
+              logger.error('Error closing evicted MCP transport', {
+                error: err instanceof Error ? err.message : String(err),
+                clientPubkey,
+              });
+            },
+          );
+        },
+      );
+    }
 
     this.setupEventHandlers();
   }
@@ -48,24 +103,142 @@ export class NostrMCPGateway {
    */
   private setupEventHandlers(): void {
     // Forward messages from Nostr to the MCP server, handling any potential errors.
+    // Note: this handler is used for transport-internal messages too (e.g., public-server announcements),
+    // which don't have a client pubkey context.
     this.nostrServerTransport.onmessage = (message: JSONRPCMessage) => {
+      if (this.createMcpClientTransport) {
+        // In per-client mode, we only forward messages that have pubkey context.
+        // Internal transport messages (e.g., announcement traffic) should not be sent to an MCP server.
+        return;
+      }
       logger.debug('Received message from Nostr:', message);
-      this.mcpClientTransport
-        .send(message)
-        .catch(this.handleServerError.bind(this));
+      this.mcpClientTransport.send(message).catch(this.handleServerErrorBound);
     };
-    this.nostrServerTransport.onerror = this.handleNostrError.bind(this);
-    this.nostrServerTransport.onclose = this.handleNostrClose.bind(this);
+
+    this.nostrServerTransport.onmessageWithContext = (
+      message: JSONRPCMessage,
+      ctx: { clientPubkey: ClientPubkey },
+    ) => {
+      logger.debug('Received message from Nostr (context):', {
+        clientPubkey: ctx.clientPubkey,
+        message,
+      });
+      this.getOrCreateClientTransport(ctx.clientPubkey)
+        .then((transport) => transport.send(message))
+        .catch(this.handleServerErrorBound);
+    };
+    this.nostrServerTransport.onerror = this.handleNostrErrorBound;
+    this.nostrServerTransport.onclose = this.handleNostrCloseBound;
 
     // Forward messages from the MCP server to the Nostr transport, handling any potential errors.
     this.mcpClientTransport.onmessage = (message: JSONRPCMessage) => {
       logger.debug('Received message from MCP server:', message);
-      this.nostrServerTransport
-        .send(message)
-        .catch(this.handleNostrError.bind(this));
+      this.nostrServerTransport.send(message).catch(this.handleNostrErrorBound);
     };
-    this.mcpClientTransport.onerror = this.handleServerError.bind(this);
-    this.mcpClientTransport.onclose = this.handleServerClose.bind(this);
+    this.mcpClientTransport.onerror = this.handleServerErrorBound;
+    this.mcpClientTransport.onclose = this.handleServerCloseBound;
+  }
+
+  private async getOrCreateClientTransport(
+    clientPubkey: ClientPubkey,
+  ): Promise<Transport> {
+    const createMcpClientTransport = this.createMcpClientTransport;
+    const clientTransports = this.clientTransports;
+
+    if (!createMcpClientTransport || !clientTransports) {
+      return this.mcpClientTransport;
+    }
+
+    const existing = clientTransports.get(clientPubkey);
+    if (existing) {
+      return existing;
+    }
+
+    const inflight = this.clientTransportPromises?.get(clientPubkey);
+    if (inflight) {
+      return inflight;
+    }
+
+    const createPromise = (async () => {
+      const created = await createMcpClientTransport({ clientPubkey });
+
+      created.onmessage = (message: JSONRPCMessage) => {
+        logger.debug('Received message from MCP server (per-client):', {
+          clientPubkey,
+          message,
+        });
+        this.nostrServerTransport
+          .send(message)
+          .catch(this.handleNostrErrorBound);
+      };
+      created.onerror = this.handleServerErrorBound;
+      created.onclose = this.handleServerCloseBound;
+
+      await created.start();
+      clientTransports.set(clientPubkey, created);
+      return created;
+    })();
+
+    this.clientTransportPromises?.set(clientPubkey, createPromise);
+
+    try {
+      return await createPromise;
+    } finally {
+      this.clientTransportPromises?.delete(clientPubkey);
+    }
+  }
+
+  private async closeClientTransport(
+    clientPubkey: ClientPubkey,
+  ): Promise<void> {
+    if (!this.clientTransports) {
+      return;
+    }
+
+    const inflight = this.clientTransportPromises?.get(clientPubkey);
+    if (inflight) {
+      // Best-effort: wait for creation to complete, then close.
+      // (If creation fails, the promise will reject and there's nothing to close.)
+      await inflight
+        .then((transport) =>
+          this.closeTransportForEviction(clientPubkey, transport),
+        )
+        .catch(() => undefined);
+      this.clientTransportPromises?.delete(clientPubkey);
+      this.clientTransports.delete(clientPubkey);
+      return;
+    }
+
+    const transport = this.clientTransports.get(clientPubkey);
+    if (!transport) {
+      return;
+    }
+    this.clientTransports.delete(clientPubkey);
+    await this.closeTransportForEviction(clientPubkey, transport);
+  }
+
+  private async closeTransportForEviction(
+    clientPubkey: ClientPubkey,
+    transport: Transport,
+  ): Promise<void> {
+    try {
+      const maybeTerminable = transport as SessionTerminationCapableTransport;
+      await maybeTerminable.terminateSession?.();
+    } catch (error) {
+      logger.warn('Failed to terminate MCP session', {
+        error: error instanceof Error ? error.message : String(error),
+        clientPubkey,
+      });
+    }
+
+    try {
+      await transport.close();
+    } catch (error) {
+      logger.warn('Failed to close MCP transport', {
+        error: error instanceof Error ? error.message : String(error),
+        clientPubkey,
+      });
+    }
   }
 
   /**
@@ -78,7 +251,9 @@ export class NostrMCPGateway {
 
     try {
       // Start both transports
-      await this.mcpClientTransport.start();
+      if (!this.createMcpClientTransport) {
+        await this.mcpClientTransport.start();
+      }
       await this.nostrServerTransport.start();
 
       this.isRunning = true;
@@ -94,14 +269,30 @@ export class NostrMCPGateway {
    * Stops the gateway, closing both transports.
    */
   public async stop(): Promise<void> {
-    if (!this.isRunning) {
-      return;
-    }
-
     try {
       // Stop both transports
       await this.nostrServerTransport.close();
-      await this.mcpClientTransport.close();
+
+      if (this.clientTransportPromises?.size) {
+        await Promise.allSettled(this.clientTransportPromises.values());
+        this.clientTransportPromises.clear();
+      }
+
+      if (this.clientTransports) {
+        const closePromises: Promise<void>[] = [];
+        for (const [
+          clientPubkey,
+          transport,
+        ] of this.clientTransports.entries()) {
+          closePromises.push(
+            this.closeTransportForEviction(clientPubkey, transport),
+          );
+        }
+        this.clientTransports.clear();
+        await Promise.all(closePromises);
+      } else {
+        await this.mcpClientTransport.close();
+      }
 
       this.isRunning = false;
       logger.info('NostrMCPGateway stopped successfully');
