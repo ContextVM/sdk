@@ -1,5 +1,14 @@
 # @contextvm/sdk
 
+## 0.2.10
+
+### Patch Changes
+
+- fix: ensure ApplesauceRelayPool.disconnect() exits cleanly
+  - Await relay close$ with bounded timeout
+  - Disable reconnect timers during shutdown to prevent Node event-loop keep-alive
+  - Add regression tests for both behaviors
+
 ## 0.2.9
 
 ### Patch Changes

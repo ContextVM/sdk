@@ -496,7 +496,7 @@ describe('ApplesauceRelayPool Integration', () => {
     relayPool.unsubscribe();
     await relayPool.disconnect();
     unresponsiveRelayProcess.kill();
-  }, 30000);
+  }, 40000);
 
   test('should handle rebuild triggers without crashing (graceful degradation)', async () => {
     // 1. Start a relay that will be unresponsive for pings
@@ -1222,5 +1222,62 @@ describe('ApplesauceRelayPool Cleanup', () => {
     expect(early).toBe('not-yet');
 
     await disconnectPromise;
+  });
+
+  test('disconnect disables relay reconnect timers during shutdown', async () => {
+    const pool = new ApplesauceRelayPool(['ws://localhost:1234']);
+    await pool.connect();
+
+    const close$ = new Subject<void>();
+    let reconnectTimerReplaced = false;
+
+    const createSubject = () => ({
+      complete: () => {},
+      closed: false,
+    });
+
+    const originalReconnectTimer = () => {
+      throw new Error('reconnectTimer should not run');
+    };
+
+    const mockRelay = {
+      url: 'ws://mock.relay',
+      connected: true,
+      reconnectTimer: originalReconnectTimer,
+      close: () => {
+        setTimeout(() => {
+          close$.next();
+          close$.complete();
+        }, 10);
+      },
+      close$,
+      // Subjects used by safelyCloseRelay completion
+      connected$: createSubject(),
+      attempts$: createSubject(),
+      challenge$: createSubject(),
+      authenticationResponse$: createSubject(),
+      notices$: createSubject(),
+      error$: createSubject(),
+      open$: createSubject(),
+      closing$: createSubject(),
+      receivedAuthRequiredForReq: createSubject(),
+      receivedAuthRequiredForEvent: createSubject(),
+    };
+
+    const testPool = pool as unknown as {
+      relays: Relay[];
+      relayGroup: RelayGroup;
+    };
+    testPool.relays = [mockRelay as unknown as Relay];
+    testPool.relayGroup = new RelayGroup(testPool.relays);
+
+    const relayRef = testPool.relays[0] as unknown as {
+      reconnectTimer?: unknown;
+    };
+
+    await pool.disconnect();
+
+    reconnectTimerReplaced = relayRef.reconnectTimer !== originalReconnectTimer;
+    expect(reconnectTimerReplaced).toBe(true);
   });
 });
