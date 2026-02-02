@@ -15,6 +15,7 @@ import {
   take,
   merge,
   firstValueFrom,
+  NEVER,
 } from 'rxjs';
 
 const logger = createLogger('applesauce-relay');
@@ -63,6 +64,36 @@ export class ApplesauceRelayPool implements RelayHandler {
   private readonly pingTimeoutMs: number;
 
   private static readonly DISCONNECT_CLOSE_TIMEOUT_MS = 2_000;
+
+  private prepareRelayForShutdown(relay: Relay): void {
+    // applesauce-relay uses RxJS timers for keepAlive + reconnect backoff.
+    // During shutdown, long timers can keep the Node event loop alive.
+    //
+    // Reference:
+    // - applesauce-relay schedules reconnect on close$ when `event.wasClean === false`
+    //   and `startReconnectTimer()` subscribes to `reconnectTimer(...)=timer(...)`.
+    // - keepAlive uses `share({ resetOnRefCountZero: () => timer(keepAlive) })`.
+    //
+    // We disable both behaviors in a best-effort way using only public-ish fields.
+    try {
+      (relay as Relay & { keepAlive?: number }).keepAlive = 0;
+    } catch {
+      // ignore
+    }
+
+    try {
+      (
+        relay as Relay & {
+          reconnectTimer?: (
+            error: Error | CloseEvent,
+            attempts: number,
+          ) => Observable<number>;
+        }
+      ).reconnectTimer = () => NEVER;
+    } catch {
+      // ignore
+    }
+  }
   // Liveness tracking
   private pingSubscription?: Subscription;
   private readonly destroy$ = new Subject<void>();
@@ -107,6 +138,10 @@ export class ApplesauceRelayPool implements RelayHandler {
         closePromise = firstValueFrom(
           relay.close$.pipe(take(1), timeout(closeTimeoutMs)),
         );
+      }
+
+      if (opts?.awaitClose) {
+        this.prepareRelayForShutdown(relay);
       }
 
       // Collect all subjects to clean up in a single pass
