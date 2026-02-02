@@ -19,8 +19,11 @@ type SessionTerminationCapableTransport = Transport & {
  * Options for configuring the NostrMCPGateway.
  */
 export interface NostrMCPGatewayOptions {
-  /** The MCP client transport (e.g., StdioClientTransport) to connect to the original MCP server */
-  mcpClientTransport: Transport;
+  /**
+   * The MCP client transport (e.g., StdioClientTransport) to connect to the original MCP server.
+   * Required unless `createMcpClientTransport` is provided.
+   */
+  mcpClientTransport?: Transport;
   /** Options for configuring the Nostr server transport */
   nostrTransportOptions: NostrServerTransportOptions;
 
@@ -48,7 +51,7 @@ export interface NostrMCPGatewayOptions {
  * @param options.nostrTransportOptions - Configuration options for the Nostr server transport
  */
 export class NostrMCPGateway {
-  private readonly mcpClientTransport: Transport;
+  private readonly mcpClientTransport: Transport | undefined;
   private readonly nostrServerTransport: NostrServerTransport;
   private readonly createMcpClientTransport:
     | ((ctx: { clientPubkey: ClientPubkey }) => Transport | Promise<Transport>)
@@ -66,6 +69,12 @@ export class NostrMCPGateway {
   constructor(options: NostrMCPGatewayOptions) {
     this.mcpClientTransport = options.mcpClientTransport;
     this.createMcpClientTransport = options.createMcpClientTransport;
+
+    if (!this.mcpClientTransport && !this.createMcpClientTransport) {
+      throw new Error(
+        'NostrMCPGateway requires either mcpClientTransport (single-client mode) or createMcpClientTransport (per-client mode)',
+      );
+    }
 
     this.handleNostrErrorBound = this.handleNostrError.bind(this);
     this.handleNostrCloseBound = this.handleNostrClose.bind(this);
@@ -111,6 +120,12 @@ export class NostrMCPGateway {
         // Internal transport messages (e.g., announcement traffic) should not be sent to an MCP server.
         return;
       }
+
+      if (!this.mcpClientTransport) {
+        throw new Error(
+          'mcpClientTransport is required when not using per-client mode',
+        );
+      }
       logger.debug('Received message from Nostr:', message);
       this.mcpClientTransport.send(message).catch(this.handleServerErrorBound);
     };
@@ -131,12 +146,16 @@ export class NostrMCPGateway {
     this.nostrServerTransport.onclose = this.handleNostrCloseBound;
 
     // Forward messages from the MCP server to the Nostr transport, handling any potential errors.
-    this.mcpClientTransport.onmessage = (message: JSONRPCMessage) => {
-      logger.debug('Received message from MCP server:', message);
-      this.nostrServerTransport.send(message).catch(this.handleNostrErrorBound);
-    };
-    this.mcpClientTransport.onerror = this.handleServerErrorBound;
-    this.mcpClientTransport.onclose = this.handleServerCloseBound;
+    if (this.mcpClientTransport) {
+      this.mcpClientTransport.onmessage = (message: JSONRPCMessage) => {
+        logger.debug('Received message from MCP server:', message);
+        this.nostrServerTransport
+          .send(message)
+          .catch(this.handleNostrErrorBound);
+      };
+      this.mcpClientTransport.onerror = this.handleServerErrorBound;
+      this.mcpClientTransport.onclose = this.handleServerCloseBound;
+    }
   }
 
   private async getOrCreateClientTransport(
@@ -146,6 +165,11 @@ export class NostrMCPGateway {
     const clientTransports = this.clientTransports;
 
     if (!createMcpClientTransport || !clientTransports) {
+      if (!this.mcpClientTransport) {
+        throw new Error(
+          'mcpClientTransport is required when not using per-client mode',
+        );
+      }
       return this.mcpClientTransport;
     }
 
@@ -252,6 +276,11 @@ export class NostrMCPGateway {
     try {
       // Start both transports
       if (!this.createMcpClientTransport) {
+        if (!this.mcpClientTransport) {
+          throw new Error(
+            'mcpClientTransport is required when not using per-client mode',
+          );
+        }
         await this.mcpClientTransport.start();
       }
       await this.nostrServerTransport.start();
@@ -291,6 +320,11 @@ export class NostrMCPGateway {
         this.clientTransports.clear();
         await Promise.all(closePromises);
       } else {
+        if (!this.mcpClientTransport) {
+          throw new Error(
+            'mcpClientTransport is required when not using per-client mode',
+          );
+        }
         await this.mcpClientTransport.close();
       }
 

@@ -1,5 +1,20 @@
 # @contextvm/sdk
 
+## 0.3.1
+
+### Patch Changes
+
+- refactor(gateway): make mcpClientTransport optional
+
+  Made mcpClientTransport optional in NostrMCPGatewayOptions and added
+  validation to ensure either mcpClientTransport or
+  createMcpClientTransport is provided. Updated methods to handle the
+  optional transport, improving flexibility for both single-client and
+  per-client modes.
+
+  BREAKING CHANGE: mcpClientTransport is now optional; provide either
+  mcpClientTransport or createMcpClientTransport.
+
 ## 0.3.0
 
 ### Minor Changes

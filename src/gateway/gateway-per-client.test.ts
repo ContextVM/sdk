@@ -51,12 +51,6 @@ describe('NostrMCPGateway per-client MCP routing', () => {
     const closeByPubkey = new Map<string, boolean>();
 
     const gateway = new NostrMCPGateway({
-      // Unused in per-client mode, but kept for backwards-compatibility.
-      mcpClientTransport: new StdioClientTransport({
-        command: 'bun',
-        args: ['src/__mocks__/mock-mcp-server.ts'],
-        stderr: 'pipe',
-      }),
       createMcpClientTransport: ({ clientPubkey }) => {
         createdCount += 1;
         const transport = new StdioClientTransport({
