@@ -11,6 +11,7 @@ import {
 import { PrivateKeySigner } from '../signer/private-key-signer.js';
 import { ApplesauceRelayPool, PING_FILTER } from './applesauce-relay-pool.js';
 import { Relay, RelayGroup } from 'applesauce-relay';
+import { Subject } from 'rxjs';
 
 /** Type for accessing private members in tests */
 type TestableApplesauceRelayPool = Omit<ApplesauceRelayPool, 'relayGroup'> & {
@@ -1017,7 +1018,7 @@ describe('ApplesauceRelayPool Cleanup', () => {
 
     // Get internal state accessor
     const testPool = pool as unknown as {
-      safelyCloseRelay: (relay: Relay) => void;
+      safelyCloseRelay: (relay: Relay) => Promise<void>;
     };
 
     // Create a mock relay with the expected subject structure
@@ -1049,9 +1050,9 @@ describe('ApplesauceRelayPool Cleanup', () => {
     };
 
     // Should not throw
-    expect(() =>
+    await expect(
       testPool.safelyCloseRelay(mockRelay as unknown as Relay),
-    ).not.toThrow();
+    ).resolves.toBeUndefined();
 
     // Verify all subjects were completed
     expect(completedSubjects).toContain('connected$');
@@ -1078,7 +1079,7 @@ describe('ApplesauceRelayPool Cleanup', () => {
     await pool.connect();
 
     const testPool = pool as unknown as {
-      safelyCloseRelay: (relay: Relay) => void;
+      safelyCloseRelay: (relay: Relay) => Promise<void>;
     };
 
     // Create a mock relay with some already-closed subjects
@@ -1118,9 +1119,9 @@ describe('ApplesauceRelayPool Cleanup', () => {
     };
 
     // Should not throw even with already-closed subjects
-    expect(() =>
+    await expect(
       testPool.safelyCloseRelay(mockRelay as unknown as Relay),
-    ).not.toThrow();
+    ).resolves.toBeUndefined();
 
     // Verify complete was still called on all (safelyComplete checks closed flag)
     expect(mockRelay.connected$.wasCalled()).toBe(false); // Closed subjects are skipped
@@ -1134,7 +1135,7 @@ describe('ApplesauceRelayPool Cleanup', () => {
     await pool.connect();
 
     const testPool = pool as unknown as {
-      safelyCloseRelay: (relay: Relay) => void;
+      safelyCloseRelay: (relay: Relay) => Promise<void>;
     };
 
     // Create a mock relay missing some internal subjects
@@ -1157,10 +1158,69 @@ describe('ApplesauceRelayPool Cleanup', () => {
     };
 
     // Should not throw even with missing internal subjects
-    expect(() =>
+    await expect(
       testPool.safelyCloseRelay(mockRelay as unknown as Relay),
-    ).not.toThrow();
+    ).resolves.toBeUndefined();
 
     await pool.disconnect();
+  });
+
+  test('disconnect waits (bounded) for relay close$ emission when connected', async () => {
+    const pool = new ApplesauceRelayPool(['ws://localhost:1234']);
+    await pool.connect();
+
+    const close$ = new Subject<void>();
+
+    const createSubject = () => ({
+      complete: () => {},
+      closed: false,
+    });
+
+    let closeCalled = false;
+
+    const mockRelay = {
+      url: 'ws://mock.relay',
+      connected: true,
+      close: () => {
+        closeCalled = true;
+        setTimeout(() => {
+          close$.next();
+          close$.complete();
+        }, 200);
+      },
+      close$,
+      // Subjects used by completeRelaySubjects
+      connected$: createSubject(),
+      attempts$: createSubject(),
+      challenge$: createSubject(),
+      authenticationResponse$: createSubject(),
+      notices$: createSubject(),
+      error$: createSubject(),
+      open$: createSubject(),
+      closing$: createSubject(),
+      _ready$: createSubject(),
+      receivedAuthRequiredForReq: createSubject(),
+      receivedAuthRequiredForEvent: createSubject(),
+    };
+
+    // Inject mock relay into the pool
+    const testPool = pool as unknown as {
+      relays: Relay[];
+      relayGroup: RelayGroup;
+    };
+    testPool.relays = [mockRelay as unknown as Relay];
+    testPool.relayGroup = new RelayGroup(testPool.relays);
+
+    const disconnectPromise = pool.disconnect();
+
+    // If disconnect resolves immediately, it didn't wait for close$.
+    const early = await Promise.race([
+      disconnectPromise.then(() => 'disconnected'),
+      sleep(100).then(() => 'not-yet'),
+    ]);
+    expect(closeCalled).toBe(true);
+    expect(early).toBe('not-yet');
+
+    await disconnectPromise;
   });
 });
