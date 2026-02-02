@@ -1,5 +1,23 @@
 # @contextvm/sdk
 
+## 0.3.0
+
+### Minor Changes
+
+- feat(gateway): add per-client MCP routing support
+
+  This commit introduces per-client MCP routing in the NostrMCPGateway. When a
+  `createMcpClientTransport` factory is provided, the gateway will isolate MCP
+  sessions per Nostr client pubkey. It uses an LRU cache to manage per-client
+  transports and evicts them when the Nostr session is evicted.
+
+  The NostrServerTransport is extended with:
+  - A `maxSessions` option to control the number of client sessions.
+  - An `onClientSessionEvicted` callback for cleanup.
+  - A `onmessageWithContext` event to route messages with client context.
+
+  A new test file verifies the per-client routing and eviction behavior.
+
 ## 0.2.10
 
 ### Patch Changes

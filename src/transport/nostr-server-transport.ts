@@ -47,11 +47,22 @@ export interface NostrServerTransportOptions extends BaseNostrTransportOptions {
   excludedCapabilities?: CapabilityExclusion[];
   /** Log level for the NostrServerTransport: 'debug' | 'info' | 'warn' | 'error' | 'silent' */
   logLevel?: LogLevel;
+  /** Maximum number of client sessions to keep in memory. @default 1000 */
+  maxSessions?: number;
   /**
    * Whether to inject the client's public key into the _meta field of incoming messages.
    * @default false
    */
   injectClientPubkey?: boolean;
+
+  /**
+   * Optional callback invoked when a client session is evicted.
+   * Useful for external resource cleanup (e.g., per-client MCP transport sessions).
+   */
+  onClientSessionEvicted?: (ctx: {
+    clientPubkey: string;
+    session: ClientSession;
+  }) => void | Promise<void>;
 }
 
 /**
@@ -65,6 +76,10 @@ export class NostrServerTransport
   implements Transport
 {
   public onmessage?: (message: JSONRPCMessage) => void;
+  public onmessageWithContext?: (
+    message: JSONRPCMessage,
+    ctx: { clientPubkey: string },
+  ) => void;
   public onclose?: () => void;
   public onerror?: (error: Error) => void;
 
@@ -73,10 +88,17 @@ export class NostrServerTransport
   private readonly authorizationPolicy: AuthorizationPolicy;
   private readonly announcementManager: AnnouncementManager;
   private readonly injectClientPubkey: boolean;
+  private readonly onClientSessionEvicted:
+    | ((ctx: {
+        clientPubkey: string;
+        session: ClientSession;
+      }) => void | Promise<void>)
+    | undefined;
 
   constructor(options: NostrServerTransportOptions) {
     super('nostr-server-transport', options);
     this.injectClientPubkey = options.injectClientPubkey ?? false;
+    this.onClientSessionEvicted = options.onClientSessionEvicted;
 
     // Initialize authorization policy
     this.authorizationPolicy = new AuthorizationPolicy({
@@ -89,7 +111,7 @@ export class NostrServerTransport
 
     // Initialize session store with eviction callback for correlation cleanup
     this.sessionStore = new SessionStore({
-      maxSessions: 1000,
+      maxSessions: options.maxSessions ?? 1000,
       shouldEvictSession: (clientPubkey) => {
         // Prevent eviction if client has active routes (in-flight requests)
         if (this.correlationStore.hasActiveRoutesForClient(clientPubkey)) {
@@ -100,13 +122,24 @@ export class NostrServerTransport
         }
         return true;
       },
-      onSessionEvicted: (clientPubkey) => {
+      onSessionEvicted: (clientPubkey, session) => {
         // Clean up all correlation data for evicted session
         const removedCount =
           this.correlationStore.removeRoutesForClient(clientPubkey);
         this.logger.info(
           `Evicted session for ${clientPubkey} (removed ${removedCount} routes)`,
         );
+
+        if (this.onClientSessionEvicted) {
+          Promise.resolve(
+            this.onClientSessionEvicted({ clientPubkey, session }),
+          ).catch((error) => {
+            this.logger.error('Error in onClientSessionEvicted callback', {
+              error: error instanceof Error ? error.message : String(error),
+              clientPubkey,
+            });
+          });
+        }
       },
     });
 
@@ -609,6 +642,9 @@ export class NostrServerTransport
       }
 
       this.onmessage?.(mcpMessage);
+      this.onmessageWithContext?.(mcpMessage, {
+        clientPubkey: event.pubkey,
+      });
     } catch (error) {
       this.logger.error('Error in authorizeAndProcessEvent', {
         error: error instanceof Error ? error.message : String(error),
