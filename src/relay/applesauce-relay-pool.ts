@@ -14,6 +14,7 @@ import {
   filter,
   take,
   merge,
+  firstValueFrom,
 } from 'rxjs';
 
 const logger = createLogger('applesauce-relay');
@@ -60,6 +61,8 @@ export class ApplesauceRelayPool implements RelayHandler {
   // Liveness ping policy (instance-configurable)
   private readonly pingFrequencyMs: number;
   private readonly pingTimeoutMs: number;
+
+  private static readonly DISCONNECT_CLOSE_TIMEOUT_MS = 2_000;
   // Liveness tracking
   private pingSubscription?: Subscription;
   private readonly destroy$ = new Subject<void>();
@@ -84,13 +87,27 @@ export class ApplesauceRelayPool implements RelayHandler {
   }
 
   /**
-   * Safely closes a relay and completes all its RxJS subjects to prevent memory leaks.
-   *
+   * Safely closes a relay, optionally awaiting the close handshake (bounded), and completes
+   * all its RxJS subjects to prevent memory leaks.
    */
-  private safelyCloseRelay(relay: Relay): void {
+  private async safelyCloseRelay(
+    relay: Relay,
+    opts?: { awaitClose?: boolean },
+  ): Promise<void> {
     try {
-      // Call the native close method first
-      relay.close();
+      let closePromise: Promise<unknown> | undefined;
+
+      const closeTimeoutMs = Math.min(
+        this.pingTimeoutMs,
+        ApplesauceRelayPool.DISCONNECT_CLOSE_TIMEOUT_MS,
+      );
+
+      if (opts?.awaitClose && relay.connected) {
+        // Subscribe first to avoid missing a synchronous emission.
+        closePromise = firstValueFrom(
+          relay.close$.pipe(take(1), timeout(closeTimeoutMs)),
+        );
+      }
 
       // Collect all subjects to clean up in a single pass
       const subjects: (
@@ -131,6 +148,18 @@ export class ApplesauceRelayPool implements RelayHandler {
           }
         ).receivedAuthRequiredForEvent,
       ];
+
+      // Call close, then optionally wait for the close handshake to finish.
+      // This helps Node exit cleanly by avoiding dangling websocket handles.
+      try {
+        relay.close();
+      } catch {
+        // ignore
+      }
+
+      if (closePromise) {
+        await closePromise.catch(() => undefined);
+      }
 
       // Complete all subjects
       subjects.forEach((s) => this.completeSubjectSafely(s));
@@ -352,15 +381,24 @@ export class ApplesauceRelayPool implements RelayHandler {
   async disconnect(): Promise<void> {
     this.destroy$.next();
     this.destroy$.complete();
+
+    // If a rebuild is in flight, await it (bounded) so we don't leave timers/subscriptions
+    // created during rebuild alive past disconnect.
+    if (this.rebuildInFlight) {
+      await Promise.race([
+        this.rebuildInFlight.catch(() => undefined),
+        sleep(ApplesauceRelayPool.DISCONNECT_CLOSE_TIMEOUT_MS),
+      ]);
+    }
     this.unsubscribe();
 
     // Clean up relay observers
     for (const sub of this.relayObservers) sub.unsubscribe();
     this.relayObservers = [];
 
-    // Safely close all relays and complete their subjects
+    // Close all relays and await close handshake (bounded by pingTimeoutMs).
     for (const relay of this.relays) {
-      this.safelyCloseRelay(relay);
+      await this.safelyCloseRelay(relay, { awaitClose: true });
     }
     this.relays = [];
     this.relayGroup = new RelayGroup([]);
@@ -538,9 +576,9 @@ export class ApplesauceRelayPool implements RelayHandler {
       for (const sub of this.relayObservers) sub.unsubscribe();
       this.relayObservers = [];
 
-      // Safely close old relays and complete their subjects to prevent memory leaks
+      // Best-effort close old relays; rebuild must not block on network teardown.
       for (const relay of this.relays) {
-        this.safelyCloseRelay(relay);
+        void this.safelyCloseRelay(relay);
       }
 
       // Stop current subscriptions (preserve descriptors for replay)

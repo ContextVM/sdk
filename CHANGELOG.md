@@ -1,5 +1,15 @@
 # @contextvm/sdk
 
+## 0.2.9
+
+### Patch Changes
+
+- fix(relay): ensure relay close handshake completes on disconnect
+
+The disconnection process now waits for the relay close handshake (with a bounded timeout) to ensure clean shutdown and prevent memory leaks. The `safelyCloseRelay` method is now async and can optionally wait for the close handshake. The `disconnect` method also waits for any in-flight rebuild (with a timeout) before proceeding.
+
+Additionally, tests have been updated to reflect the new async behavior and a new test verifies that disconnect waits for the close$ emission.
+
 ## 0.2.8
 
 ### Patch Changes
