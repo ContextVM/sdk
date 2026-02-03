@@ -1,4 +1,7 @@
-import { type JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js';
+import {
+  isInitializeRequest,
+  type JSONRPCMessage,
+} from '@modelcontextprotocol/sdk/types.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import {
   NostrServerTransport,
@@ -41,14 +44,9 @@ export interface NostrMCPGatewayOptions {
 
 /**
  * The main gateway class that orchestrates communication between Nostr clients
- * and a local MCP server. It acts as a bridge, receiving MCP requests via Nostr
- * events and forwarding them to the local MCP server, then publishing the
- * responses back to Nostr. All request/response correlation is handled by the
- * NostrServerTransport, making this a simple message forwarder.
- * @param options - Configuration options for the gateway
- * @param options.mcpClientTransport - The MCP client transport (e.g., StdioServerTransport)
- *   used to connect to and communicate with the original MCP server
- * @param options.nostrTransportOptions - Configuration options for the Nostr server transport
+ * and a local MCP server. Acts as a bridge, receiving MCP requests via Nostr
+ * events and forwarding them to the MCP server. Supports both single-client
+ * and per-client transport modes for stateful MCP connections.
  */
 export class NostrMCPGateway {
   private readonly mcpClientTransport: Transport | undefined;
@@ -66,6 +64,9 @@ export class NostrMCPGateway {
   private readonly handleServerCloseBound: () => void;
   private isRunning = false;
 
+  /**
+   * @param options - Configuration options for the gateway
+   */
   constructor(options: NostrMCPGatewayOptions) {
     this.mcpClientTransport = options.mcpClientTransport;
     this.createMcpClientTransport = options.createMcpClientTransport;
@@ -130,17 +131,31 @@ export class NostrMCPGateway {
       this.mcpClientTransport.send(message).catch(this.handleServerErrorBound);
     };
 
-    this.nostrServerTransport.onmessageWithContext = (
+    this.nostrServerTransport.onmessageWithContext = async (
       message: JSONRPCMessage,
       ctx: { clientPubkey: ClientPubkey },
     ) => {
+      // Close existing transport on re-initialization to prevent "already initialized"
+      // errors with stateful transports (e.g., Streamable HTTP).
+      if (isInitializeRequest(message)) {
+        await this.closeClientTransport(ctx.clientPubkey);
+      }
+
       logger.debug('Received message from Nostr (context):', {
         clientPubkey: ctx.clientPubkey,
         message,
       });
-      this.getOrCreateClientTransport(ctx.clientPubkey)
-        .then((transport) => transport.send(message))
-        .catch(this.handleServerErrorBound);
+
+      try {
+        const transport = await this.getOrCreateClientTransport(
+          ctx.clientPubkey,
+        );
+        await transport.send(message);
+      } catch (error) {
+        this.handleServerErrorBound(
+          error instanceof Error ? error : new Error(String(error)),
+        );
+      }
     };
     this.nostrServerTransport.onerror = this.handleNostrErrorBound;
     this.nostrServerTransport.onclose = this.handleNostrCloseBound;
@@ -212,6 +227,10 @@ export class NostrMCPGateway {
     }
   }
 
+  /**
+   * Closes and cleans up the MCP transport for a specific client.
+   * Handles both active transports and in-flight creation promises.
+   */
   private async closeClientTransport(
     clientPubkey: ClientPubkey,
   ): Promise<void> {
