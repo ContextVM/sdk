@@ -1,5 +1,16 @@
 # @contextvm/sdk
 
+## 0.3.2
+
+### Patch Changes
+
+- fix(gateway): recreate transport on client re-initialization
+
+  When an initialize request is received, close any existing transport
+  for the client to prevent "already initialized" errors with stateful
+  transports (e.g., Streamable HTTP). Adds closeClientTransport helper
+  for proper cleanup.
+
 ## 0.3.1
 
 ### Patch Changes

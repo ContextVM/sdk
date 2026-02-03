@@ -158,4 +158,40 @@ describe('NostrMCPGateway per-client MCP routing', () => {
 
     await gateway.stop();
   }, 20000);
+
+  test('should recreate transport on client re-initialization', async () => {
+    const { gateway, getCreatedCount } = await createGateway({
+      maxSessions: 10,
+    });
+
+    const client1 = new Client({ name: 'reconnect-client', version: '1.0.0' });
+
+    // First connection and initialization.
+    await client1.connect(createClientTransport(client1PrivateKey));
+    const tools1 = await client1.listTools();
+    expect(tools1.tools.map((t) => t.name)).toContain('add');
+
+    // Get the initial transport creation count.
+    const initialCreatedCount = getCreatedCount();
+
+    // Close the connection.
+    await client1.close();
+    await sleep(100);
+
+    // Reconnect the same client - should trigger a new transport creation
+    // for the initialization request.
+    const client1Reconnect = new Client({
+      name: 'reconnect-client',
+      version: '1.0.0',
+    });
+    await client1Reconnect.connect(createClientTransport(client1PrivateKey));
+    const tools2 = await client1Reconnect.listTools();
+    expect(tools2.tools.map((t) => t.name)).toContain('add');
+
+    // Verify that a new transport was created for the re-initialization.
+    expect(getCreatedCount()).toBe(initialCreatedCount + 1);
+
+    await client1Reconnect.close();
+    await gateway.stop();
+  }, 20000);
 });
