@@ -16,6 +16,7 @@ import type { NostrEvent } from 'nostr-tools';
 import { bytesToHex, hexToBytes } from 'nostr-tools/utils';
 import { TEST_PRIVATE_KEY } from '../__mocks__/fixtures.js';
 import {
+  CTXVM_MESSAGES_KIND,
   INITIALIZE_METHOD,
   PROMPTS_LIST_KIND,
   RESOURCES_LIST_KIND,
@@ -723,6 +724,81 @@ describe('NostrServerTransport', () => {
       }
     }
 
+    await server.close();
+    await relayPool.disconnect();
+  }, 15000);
+
+  test('should send correlated notifications (with e tag) via sendNotification()', async () => {
+    const serverPrivateKey = bytesToHex(generateSecretKey());
+    const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
+
+    const clientPrivateKey = bytesToHex(generateSecretKey());
+    const clientPublicKey = getPublicKey(hexToBytes(clientPrivateKey));
+
+    const server = new McpServer({
+      name: 'Test Server',
+      version: '1.0.0',
+    });
+
+    const serverTransport = new NostrServerTransport({
+      signer: new PrivateKeySigner(serverPrivateKey),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      encryptionMode: EncryptionMode.DISABLED,
+    });
+    await server.connect(serverTransport);
+
+    // Establish a session by connecting a real client transport.
+    const client = new Client({ name: 'Notify Client', version: '1.0.0' });
+    const clientTransport = new NostrClientTransport({
+      signer: new PrivateKeySigner(clientPrivateKey),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      serverPubkey: serverPublicKey,
+      encryptionMode: EncryptionMode.DISABLED,
+    });
+    await client.connect(clientTransport);
+    await sleep(200);
+
+    // Observe outgoing events from server.
+    const observedEvents: NostrEvent[] = [];
+    const relayPool = new ApplesauceRelayPool([relayUrl]);
+    await relayPool.connect();
+    await relayPool.subscribe(
+      [{ kinds: [CTXVM_MESSAGES_KIND], authors: [serverPublicKey] }],
+      (event) => {
+        observedEvents.push(event);
+      },
+    );
+
+    const correlatedEventId = 'f'.repeat(64);
+    await serverTransport.sendNotification(
+      clientPublicKey,
+      {
+        jsonrpc: '2.0',
+        method: 'notifications/payment_required',
+        params: { amount: 1, pay_req: 'test', pmi: 'test' },
+      },
+      correlatedEventId,
+    );
+    await sleep(150);
+
+    const sent = observedEvents.find((ev) => {
+      try {
+        const msg = JSON.parse(ev.content) as { method?: string };
+        return msg.method === 'notifications/payment_required';
+      } catch {
+        return false;
+      }
+    });
+
+    expect(sent).toBeDefined();
+    expect(
+      sent!.tags.some((t) => t[0] === 'e' && t[1] === correlatedEventId),
+    ).toBe(true);
+    expect(
+      sent!.tags.some((t) => t[0] === 'p' && t[1] === clientPublicKey),
+    ).toBe(true);
+
+    await client.close();
     await server.close();
     await relayPool.disconnect();
   }, 15000);

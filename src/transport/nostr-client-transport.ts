@@ -4,6 +4,8 @@ import {
   type JSONRPCMessage,
   isJSONRPCRequest,
   isJSONRPCNotification,
+  isJSONRPCResultResponse,
+  isJSONRPCErrorResponse,
   type JSONRPCResponse,
 } from '@modelcontextprotocol/sdk/types.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
@@ -280,16 +282,6 @@ export class NostrClientTransport
         }
       }
 
-      if (eTag && !this.correlationStore.hasPendingRequest(eTag)) {
-        this.logger.warn('Received response for unknown/expired request', {
-          eventId: nostrEvent.id,
-          eTag,
-          reason:
-            'Request not found in pending set - may be duplicate or late response',
-        });
-        return;
-      }
-
       const mcpMessage = this.convertNostrEventToMcpMessage(nostrEvent);
 
       if (!mcpMessage) {
@@ -300,11 +292,45 @@ export class NostrClientTransport
         return;
       }
 
-      if (eTag) {
+      // Message classification MUST be based on JSON-RPC type, not on the presence of an `e` tag.
+      // CEP-8 notifications are correlated (include `e`) but are still notifications.
+      if (
+        isJSONRPCResultResponse(mcpMessage) ||
+        isJSONRPCErrorResponse(mcpMessage)
+      ) {
+        if (!eTag) {
+          this.logger.warn(
+            'Received JSON-RPC response without correlation `e` tag',
+            {
+              eventId: nostrEvent.id,
+            },
+          );
+          return;
+        }
+
+        if (!this.correlationStore.hasPendingRequest(eTag)) {
+          this.logger.warn('Received response for unknown/expired request', {
+            eventId: nostrEvent.id,
+            eTag,
+            reason:
+              'Request not found in pending set - may be duplicate or late response',
+          });
+          return;
+        }
+
         this.handleResponse(eTag, mcpMessage);
-      } else {
-        this.handleNotification(mcpMessage);
+        return;
       }
+
+      if (isJSONRPCNotification(mcpMessage)) {
+        this.handleNotification(mcpMessage);
+        return;
+      }
+
+      this.logger.warn('Received unsupported JSON-RPC message type', {
+        eventId: nostrEvent.id,
+        hasETag: !!eTag,
+      });
     } catch (error) {
       this.logger.error('Error handling incoming Nostr event', {
         error: error instanceof Error ? error.message : String(error),
