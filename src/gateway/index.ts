@@ -264,6 +264,12 @@ export class NostrMCPGateway {
     clientPubkey: ClientPubkey,
     transport: Transport,
   ): Promise<void> {
+    // Detach event handlers before closing to prevent expected cleanup errors
+    // (e.g., SSE stream aborts) from being logged as errors.
+    transport.onmessage = () => {};
+    transport.onerror = () => {};
+    transport.onclose = () => {};
+
     try {
       const maybeTerminable = transport as SessionTerminationCapableTransport;
       await maybeTerminable.terminateSession?.();
