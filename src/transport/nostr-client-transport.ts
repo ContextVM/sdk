@@ -37,6 +37,12 @@ export interface NostrTransportOptions extends BaseNostrTransportOptions {
   isStateless?: boolean;
   /** Log level for the transport */
   logLevel?: LogLevel;
+
+  /**
+   * Optional hook to inject extra Nostr tags for outbound events.
+   * Useful for CEPs that require protocol tags (e.g., `pmi`).
+   */
+  outboundTagHook?: (message: JSONRPCMessage) => string[][];
 }
 
 /**
@@ -61,6 +67,10 @@ export class NostrClientTransport
   private readonly statelessHandler: StatelessModeHandler;
   /** Whether stateless mode is enabled */
   private readonly isStateless: boolean;
+  /** Optional hook for injecting outbound tags */
+  private readonly outboundTagHook:
+    | ((message: JSONRPCMessage) => string[][])
+    | undefined;
   /** The server's initialize event, if received */
   private serverInitializeEvent: NostrEvent | undefined;
 
@@ -79,6 +89,7 @@ export class NostrClientTransport
 
     this.serverPubkey = options.serverPubkey;
     this.isStateless = options.isStateless ?? false;
+    this.outboundTagHook = options.outboundTagHook;
     this.correlationStore = new ClientCorrelationStore({
       maxPendingRequests: DEFAULT_LRU_SIZE,
       onRequestEvicted: (eventId) => {
@@ -177,7 +188,10 @@ export class NostrClientTransport
    * @returns The ID of the published Nostr event
    */
   private async sendRequest(message: JSONRPCMessage): Promise<string> {
-    const tags = this.createRecipientTags(this.serverPubkey);
+    const tags = [
+      ...this.createRecipientTags(this.serverPubkey),
+      ...(this.outboundTagHook?.(message) ?? []),
+    ];
 
     return await this.sendMcpMessage(
       message,

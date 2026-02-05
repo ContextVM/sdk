@@ -11,7 +11,7 @@ The goal is to keep payments **optional** and **pluggable**, avoid coupling paym
 
 ## Key insights from the current SDK
 
-### 1) Client transport currently mis-routes correlated notifications
+### 1) Client transport currently mis-routes correlated notifications (done)
 
 The SDK client transport routes _any_ event with an `e` tag as a response, and only events without `e` as notifications. See the routing decision in [`NostrClientTransport.processIncomingEvent()`](../../../ts-sdk/src/transport/nostr-client-transport.ts:223).
 
@@ -97,6 +97,18 @@ export interface PaymentProcessor {
 }
 ```
 
+## Integration decision: middleware-first (locked)
+
+Payments are implemented as a middleware layer around message flow.
+
+- Transports remain responsible for Nostr <-> JSON-RPC conversion, correlation, encryption, and routing.
+- The payments layer is responsible for:
+  - Detecting priced capability invocations.
+  - Emitting CEP-8 `notifications/payment_required` / `notifications/payment_accepted`.
+  - Gating forwarding to the underlying MCP server until payment is verified.
+
+This keeps payments optional and modular, and avoids coupling payment-rail details into transports.
+
 Notes:
 
 - Both sides treat `pay_req` as **opaque**.
@@ -155,6 +167,8 @@ Payments should be handled as an optional middleware around `Transport.onmessage
 - Execute the handler.
 - Optionally wait for `notifications/payment_accepted` as a signed receipt.
 
+For development-cycle testing, we will provide a `FakePaymentHandler` that simulates wallet behavior using a delay, but does not publish any protocol messages.
+
 #### Server middleware responsibilities
 
 - Detect that a request targets a priced capability.
@@ -163,6 +177,43 @@ Payments should be handled as an optional middleware around `Transport.onmessage
 - Verify settlement using the selected `PaymentProcessor`.
 - Emit `notifications/payment_accepted` (also correlated by `e`).
 - Only then forward the request to the underlying MCP server.
+
+For development-cycle testing, we will provide a `FakePaymentProcessor` that simulates invoice issuance and settlement using delays.
+
+### Implementation notes (post-implementation)
+
+During implementation we made a few wiring changes to keep the public API clean and avoid transport-private mutation in tests:
+
+1) **Server inbound middleware is now a chain**
+
+- The server transport supports multiple inbound middlewares, executed in registration order.
+- This enables a clean wrapper-style API where payments are attached after transport construction.
+
+2) **`withServerPayments()` is the supported attachment API**
+
+Instead of passing a single payments middleware into the `NostrServerTransport` constructor and dealing with transport self-references, we attach payments using:
+
+```ts
+const transport = new NostrServerTransport({ /* normal options */ });
+withServerPayments(transport, { processors, pricedCapabilities });
+```
+
+3) **Payments middleware depends on a minimal notification sender**
+
+`createServerPaymentsMiddleware()` depends on a minimal interface (a correlated notification sender) rather than the entire server transport type. This reduces coupling and keeps the payments layer reusable.
+
+4) **Client PMI advertisement is implemented via `outboundTagHook`**
+
+To support CEP-8 PMI discovery, clients can advertise supported PMIs using the existing `outboundTagHook` option on the Nostr client transport. A helper is provided to build these `pmi` tags from the handler list.
+
+### Security + performance guardrails (locked)
+
+For priced requests, the SDK MUST fail closed:
+
+1. **No unpaid forwarding:** a priced request MUST NOT be forwarded to the underlying MCP server until payment is verified.
+2. **Gate at the forwarding seam:** the payment gate MUST wrap the code path that calls the underlying server transport (so the underlying server cannot respond to unpaid requests).
+3. **Bounded pending-payment state:** track pending payments with bounded memory (LRU) and TTL to mitigate spam/DoS.
+4. **Idempotency by request event id:** retries of the same request event id MUST NOT result in multiple charges.
 
 ## PMI selection and prioritization
 
@@ -175,14 +226,23 @@ This matches CEP-8 guidance and keeps behavior deterministic.
 
 ## Plan of record (implementation sequence)
 
-1. **Transport fix:** support correlated notifications on the client.
+1. **Transport fix:** support correlated notifications on the client. (done)
 2. **Extensibility:** add outbound tag hook on the client transport.
 3. **Payment middleware (server):** implement processor registry + flow that emits `payment_required`, verifies, emits `payment_accepted`, then forwards.
 4. **Payment middleware (client):** implement handler registry + flow that executes handler on `payment_required`, and optionally observes `payment_accepted`.
 5. **Tests:**
-   - unit: correlated notification routing in the client transport
-   - integration: paid request flow end-to-end using a mock payment processor/handler (no real LN/Cashu needed)
+    - unit: correlated notification routing in the client transport
+    - integration: paid request flow end-to-end using a mock payment processor/handler (no real LN/Cashu needed)
 6. **First real PMI module:** implement one concrete rail (e.g., `bitcoin-lightning-bolt11`) behind the interfaces.
+
+### Server-side pricing configuration (locked)
+
+For this SDK iteration, priced capabilities are configured server-side using a list/map keyed by a method + optional name pattern, consistent with existing `excludedCapabilities` configuration:
+
+- `method`: JSON-RPC method (example: `tools/call`)
+- `name` (optional): capability name (example: `add`)
+
+The middleware converts this internal representation to CEP-8 capability identifiers (e.g., `tool:add`) when emitting `cap` tags in announcements/list responses.
 
 ## Testing approach (what “done” looks like)
 

@@ -4,3 +4,6 @@
 [submodule "applesauce"]
 	path = applesauce
 	url = https://github.com/hzrd149/applesauce.git
+[submodule "contextvm-docs"]
+	path = contextvm-docs
+	url = https://github.com/ContextVM/contextvm-docs

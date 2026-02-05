@@ -63,7 +63,23 @@ export interface NostrServerTransportOptions extends BaseNostrTransportOptions {
     clientPubkey: string;
     session: ClientSession;
   }) => void | Promise<void>;
+
+  /**
+   * Optional inbound middleware hook to gate or transform messages before they are
+   * forwarded to MCP server code via `onmessage` / `onmessageWithContext`.
+   */
+  inboundMiddleware?: (
+    message: JSONRPCMessage,
+    ctx: { clientPubkey: string },
+    forward: (message: JSONRPCMessage) => Promise<void>,
+  ) => Promise<void>;
 }
+
+export type InboundMiddlewareFn = (
+  message: JSONRPCMessage,
+  ctx: { clientPubkey: string; clientPmis?: readonly string[] },
+  forward: (message: JSONRPCMessage) => Promise<void>,
+) => Promise<void>;
 
 /**
  * A server-side transport layer for CTXVM that uses Nostr events for communication.
@@ -94,11 +110,15 @@ export class NostrServerTransport
         session: ClientSession;
       }) => void | Promise<void>)
     | undefined;
+  private readonly inboundMiddlewares: InboundMiddlewareFn[] = [];
 
   constructor(options: NostrServerTransportOptions) {
     super('nostr-server-transport', options);
     this.injectClientPubkey = options.injectClientPubkey ?? false;
     this.onClientSessionEvicted = options.onClientSessionEvicted;
+    if (options.inboundMiddleware) {
+      this.inboundMiddlewares.push(options.inboundMiddleware);
+    }
 
     // Initialize authorization policy
     this.authorizationPolicy = new AuthorizationPolicy({
@@ -166,6 +186,15 @@ export class NostrServerTransport
         this.relayHandler.subscribe(filters, onEvent),
       logger: this.logger,
     });
+  }
+
+  /**
+   * Adds an inbound middleware function.
+   *
+   * Middleware runs in the order it is added.
+   */
+  public addInboundMiddleware(middleware: InboundMiddlewareFn): void {
+    this.inboundMiddlewares.push(middleware);
   }
 
   /**
@@ -641,9 +670,45 @@ export class NostrServerTransport
         this.handleIncomingNotification(event.pubkey, mcpMessage);
       }
 
-      this.onmessage?.(mcpMessage);
-      this.onmessageWithContext?.(mcpMessage, {
+      const forward = async (msg: JSONRPCMessage): Promise<void> => {
+        this.onmessage?.(msg);
+        this.onmessageWithContext?.(msg, {
+          clientPubkey: event.pubkey,
+        });
+      };
+
+      const clientPmis = event.tags
+        .filter((tag) => tag[0] === 'pmi' && typeof tag[1] === 'string')
+        .map((tag) => tag[1] as string);
+      const ctx = {
         clientPubkey: event.pubkey,
+        clientPmis: clientPmis.length > 0 ? clientPmis : undefined,
+      };
+      const middlewares = this.inboundMiddlewares;
+
+      const dispatch = async (
+        index: number,
+        msg: JSONRPCMessage,
+      ): Promise<void> => {
+        const mw = middlewares[index];
+        if (!mw) {
+          await forward(msg);
+          return;
+        }
+        await mw(msg, ctx, async (nextMsg) => {
+          await dispatch(index + 1, nextMsg);
+        });
+      };
+
+      void dispatch(0, mcpMessage).catch((err: unknown) => {
+        this.logger.error('Error in inboundMiddleware chain', {
+          error: err instanceof Error ? err.message : String(err),
+          eventId: event.id,
+          pubkey: event.pubkey,
+        });
+        this.onerror?.(
+          err instanceof Error ? err : new Error('inboundMiddleware failed'),
+        );
       });
     } catch (error) {
       this.logger.error('Error in authorizeAndProcessEvent', {
