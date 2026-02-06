@@ -215,12 +215,32 @@ For priced requests, the SDK MUST fail closed:
 3. **Bounded pending-payment state:** track pending payments with bounded memory (LRU) and TTL to mitigate spam/DoS.
 4. **Idempotency by request event id:** retries of the same request event id MUST NOT result in multiple charges.
 
+## Pricing + PMI advertisement (CEP-8 discovery)
+
+The SDK supports CEP-8 discovery via Nostr event tags:
+
+- `cap` tags are derived from the server's `pricedCapabilities` configuration (method + name -> CEP-8 capability identifier).
+- `pmi` tags are derived from the server's configured `PaymentProcessor` list.
+
+These tags are included in:
+
+- Public server announcement events (initialize result event)
+- Capability list events (`tools/list`, `resources/list`, `resources/templates/list`, `prompts/list`) when those list methods are available
+
+Implementation touchpoints:
+
+- Pricing tag generation: [`createCapTagsFromPricedCapabilities()`](../src/payments/cap-tags.ts:13)
+- PMI tag generation: [`createPmiTagsFromProcessors()`](../src/payments/pmi-tags.ts:24)
+- Announcement/list tagging: [`AnnouncementManager.getAnnouncementMapping()`](../src/transport/nostr-server/announcement-manager.ts:194)
+
 ## PMI selection and prioritization
 
 Recommended selection strategy:
 
 1. If the request includes one or more `pmi` tags, select the first PMI (client priority order) that the server supports.
 2. Otherwise (no PMI advertised), the server MAY emit multiple `payment_required` notifications, but the SDK SHOULD default to emitting a single method if possible to reduce invoice churn.
+
+**SDK policy (current):** when the client advertises no PMIs, the server selects the first configured processor (server preference order) and emits a single `notifications/payment_required`.
 
 This matches CEP-8 guidance and keeps behavior deterministic.
 

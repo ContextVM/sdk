@@ -8,6 +8,7 @@ import {
   ServerMiddlewareFn,
   isJsonRpcRequest,
 } from './types.js';
+import { LruCache } from '../core/utils/lru-cache.js';
 
 export interface ServerPaymentsOptions {
   processors: readonly PaymentProcessor[];
@@ -17,23 +18,65 @@ export interface ServerPaymentsOptions {
    * @default 60_000
    */
   paymentTtlMs?: number;
+
+  /**
+   * Maximum number of concurrent pending-payment request ids to track.
+   *
+   * This is a DoS/memory-safety guardrail.
+   * @default 1000
+   */
+  maxPendingPayments?: number;
+}
+
+function purgeExpiredPending(params: {
+  pending: LruCache<{ expiresAtMs: number }>;
+  nowMs: number;
+  maxToCheck: number;
+}): void {
+  let checked = 0;
+  for (const [key, value] of params.pending.entries()) {
+    if (checked >= params.maxToCheck) {
+      break;
+    }
+    checked += 1;
+    if (value.expiresAtMs <= params.nowMs) {
+      params.pending.delete(key);
+    }
+  }
 }
 
 function matchPricedCapability(
   message: JSONRPCRequest,
   priced: readonly PricedCapability[],
 ): PricedCapability | undefined {
-  if (message.method !== 'tools/call') {
-    return undefined;
-  }
-  const name = (message.params as { name?: unknown } | undefined)?.name;
-  const toolName = typeof name === 'string' ? name : undefined;
+  const capabilityName = getCapabilityNameForPricing(message);
 
   return priced.find((p) => {
     if (p.method !== message.method) return false;
     if (p.name === undefined) return true;
-    return p.name === toolName;
+    return p.name === capabilityName;
   });
+}
+
+function getCapabilityNameForPricing(message: JSONRPCRequest): string | undefined {
+  const params = message.params as Record<string, unknown> | undefined;
+
+  switch (message.method) {
+    case 'tools/call': {
+      const name = params?.name;
+      return typeof name === 'string' ? name : undefined;
+    }
+    case 'prompts/get': {
+      const name = params?.name;
+      return typeof name === 'string' ? name : undefined;
+    }
+    case 'resources/read': {
+      const uri = params?.uri;
+      return typeof uri === 'string' ? uri : undefined;
+    }
+    default:
+      return undefined;
+  }
 }
 
 function createPaymentRequiredNotification(params: {
@@ -77,7 +120,9 @@ export function createServerPaymentsMiddleware(params: {
   );
 
   const paymentTtlMs = options.paymentTtlMs ?? 60_000;
-  const pending = new Map<string, { expiresAtMs: number }>();
+  const pending = new LruCache<{ expiresAtMs: number }>(
+    options.maxPendingPayments ?? 1000,
+  );
 
   return async (message, ctx, forward) => {
     // Only gate requests. Never interfere with notifications.
@@ -94,6 +139,10 @@ export function createServerPaymentsMiddleware(params: {
 
     const requestEventId = String(message.id);
     const now = Date.now();
+
+    // Opportunistic cleanup so one-shot spam doesn't accumulate until reuse.
+    purgeExpiredPending({ pending, nowMs: now, maxToCheck: 25 });
+
     const existing = pending.get(requestEventId);
     if (existing && existing.expiresAtMs > now) {
       // Duplicate request event id: idempotency guard. Do not double-charge.

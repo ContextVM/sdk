@@ -135,6 +135,108 @@ describe('NostrServerTransport', () => {
     await relayPool.disconnect();
   }, 5000);
 
+  test('should include server PMI and cap tags in announcement and tools list events when payments are configured', async () => {
+    const { withServerPayments, FakePaymentProcessor } = await import(
+      '../payments/index.js'
+    );
+
+    const serverPrivateKey = bytesToHex(generateSecretKey());
+    const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
+
+    const server = new McpServer({ name: 'Paid Server', version: '1.0.0' });
+    server.registerTool(
+      'add',
+      {
+        title: 'Addition Tool',
+        description: 'Add two numbers',
+        inputSchema: { a: z.number(), b: z.number() },
+      },
+      async ({ a, b }) => ({
+        content: [{ type: 'text', text: String(a + b) }],
+      }),
+    );
+
+    const transport = new NostrServerTransport({
+      signer: new PrivateKeySigner(serverPrivateKey),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      isPublicServer: true,
+      serverInfo: { name: 'Paid Server' },
+      encryptionMode: EncryptionMode.DISABLED,
+    });
+
+    withServerPayments(transport, {
+      processors: [
+        new FakePaymentProcessor({ pmi: 'pmi:B', verifyDelayMs: 1 }),
+        new FakePaymentProcessor({ pmi: 'pmi:C', verifyDelayMs: 1 }),
+      ],
+      pricedCapabilities: [
+        {
+          method: 'tools/call',
+          name: 'add',
+          amount: 123,
+          currencyUnit: 'sats',
+        },
+      ],
+    });
+
+    await server.connect(transport);
+
+    const relayPool = new ApplesauceRelayPool([relayUrl]);
+    await relayPool.connect();
+
+    const events: NostrEvent[] = [];
+    await relayPool.subscribe(
+      [
+        {
+          kinds: [
+            SERVER_ANNOUNCEMENT_KIND,
+            TOOLS_LIST_KIND,
+            RESOURCES_LIST_KIND,
+            RESOURCETEMPLATES_LIST_KIND,
+            PROMPTS_LIST_KIND,
+          ],
+          authors: [serverPublicKey],
+        },
+      ],
+      (event) => {
+        events.push(event);
+      },
+    );
+
+    await sleep(350);
+
+    const announcement = events.find((ev) => ev.kind === SERVER_ANNOUNCEMENT_KIND);
+    expect(announcement).toBeDefined();
+    expect(announcement!.tags).toEqual(
+      expect.arrayContaining([
+        ['pmi', 'pmi:B'],
+        ['pmi', 'pmi:C'],
+        ['cap', 'tool:add', '123', 'sats'],
+      ]),
+    );
+
+    const toolsList = events.find((ev) => ev.kind === TOOLS_LIST_KIND);
+    expect(toolsList).toBeDefined();
+    expect(toolsList!.tags).toEqual(
+      expect.arrayContaining([['cap', 'tool:add', '123', 'sats']]),
+    );
+
+    // Only assert list kinds the test server can actually respond to.
+    // Some MCP server instances may not implement resources/templates/list.
+    // If present, it should include pricing tags.
+    const resourceTemplatesList = events.find(
+      (ev) => ev.kind === RESOURCETEMPLATES_LIST_KIND,
+    );
+    if (resourceTemplatesList) {
+      expect(resourceTemplatesList.tags).toEqual(
+        expect.arrayContaining([['cap', 'tool:add', '123', 'sats']]),
+      );
+    }
+
+    await server.close();
+    await relayPool.disconnect();
+  }, 15000);
+
   test('should allow connection for allowed public keys', async () => {
     const serverPrivateKey = TEST_PRIVATE_KEY;
     const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));

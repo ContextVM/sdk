@@ -156,6 +156,17 @@ Transport specifics that matter for payment integration:
 - The server transport rewrites inbound request ids to the request Nostr event id in [`NostrServerTransport.handleIncomingRequest()`](../../../ts-sdk/src/transport/nostr-server-transport.ts:282).
 - The client transport must correctly support correlated notifications (notifications that include an `e` tag) in [`NostrClientTransport.processIncomingEvent()`](../../../ts-sdk/src/transport/nostr-client-transport.ts:223).
 
+## CEP-8 discovery surface (advertising `cap` + `pmi`)
+
+When payments are configured on the server:
+
+- Server announcement events include:
+  - `pmi` tags for each configured server-side processor (PMI discovery)
+  - `cap` tags derived from `pricedCapabilities` (pricing discovery)
+- Capability list events (tools/resources/templates/prompts list kinds) include `cap` tags.
+
+These tags enable clients to discover pricing and supported payment rails before attempting a paid call.
+
 ## Example: PMI advertisement from handler array
 
 The handler array can be used to derive outbound `pmi` tags:

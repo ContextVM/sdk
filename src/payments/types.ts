@@ -26,6 +26,17 @@ export interface PricedCapability extends PricedCapabilityPattern {
   description?: string;
 }
 
+/** Nostr `cap` tag as defined by CEP-8. */
+export type CapTag = [
+  'cap',
+  capabilityIdentifier: string,
+  price: string,
+  currencyUnit: string,
+];
+
+/** Nostr `pmi` tag as defined by CEP-8. */
+export type PmiTag = ['pmi', pmi: string];
+
 /** A CEP-8 payment-required notification (JSON-RPC notification). */
 export type PaymentRequiredNotification = JSONRPCNotification & {
   method: 'notifications/payment_required';

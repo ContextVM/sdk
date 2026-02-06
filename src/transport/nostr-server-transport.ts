@@ -178,6 +178,8 @@ export class NostrServerTransport
     this.announcementManager = new AnnouncementManager({
       serverInfo: options.serverInfo,
       encryptionMode: this.encryptionMode,
+      extraCommonTags: [],
+      pricingTags: [],
       onSendMessage: (message) => this.onmessage?.(message),
       onPublishEvent: (event) => this.publishEvent(event),
       onSignEvent: (eventTemplate) => this.signer.signEvent(eventTemplate),
@@ -186,6 +188,24 @@ export class NostrServerTransport
         this.relayHandler.subscribe(filters, onEvent),
       logger: this.logger,
     });
+  }
+
+  /**
+   * Sets extra tags to include in server announcement + initialize response events.
+   *
+   * Intended for optional protocol extensions (e.g. CEP-8 PMI discovery).
+   */
+  public setAnnouncementExtraTags(tags: string[][]): void {
+    this.announcementManager.setExtraCommonTags(tags);
+  }
+
+  /**
+   * Sets pricing tags to include in server announcement + tools list announcement events.
+   *
+   * Intended for CEP-8 `cap` tag pricing advertisement.
+   */
+  public setAnnouncementPricingTags(tags: string[][]): void {
+    this.announcementManager.setPricingTags(tags);
   }
 
   /**
