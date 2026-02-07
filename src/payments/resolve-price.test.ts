@@ -1,0 +1,190 @@
+import { describe, expect, test } from 'bun:test';
+import type { JSONRPCRequest } from '@modelcontextprotocol/sdk/types.js';
+import { createServerPaymentsMiddleware } from './server-payments.js';
+
+describe('resolvePrice (server payments)', () => {
+  test('uses resolvePrice quote amount + merges meta into payment_required._meta (quote wins)', async () => {
+    const processor = {
+      pmi: 'fake',
+      async createPaymentRequired(params: {
+        amount: number;
+        description?: string;
+        requestEventId: string;
+        clientPubkey: string;
+      }) {
+        return {
+          amount: params.amount,
+          pay_req: 'pay_req',
+          description: params.description,
+          pmi: 'fake',
+          ttl: 300,
+          _meta: { source: 'processor', overlap: 'processor' },
+        };
+      },
+      async verifyPayment() {
+        return { receipt: 'ok' };
+      },
+    };
+
+    const pricedCapabilities = [
+      {
+        method: 'tools/call',
+        name: 'add',
+        amount: 1,
+        currencyUnit: 'test',
+        description: 'listed',
+      },
+    ] as const;
+
+    const ctx: { clientPubkey: string; clientPmis?: readonly string[] } = {
+      clientPubkey: 'test-client',
+    };
+
+    const sent: Array<{ notification: unknown; requestEventId: string }> = [];
+    const sender = {
+      async sendNotification(
+        _clientPubkey: string,
+        notification: unknown,
+        requestEventId: string,
+      ): Promise<void> {
+        sent.push({ notification, requestEventId });
+      },
+    };
+
+    const mw = createServerPaymentsMiddleware({
+      sender,
+      options: {
+        processors: [processor],
+        pricedCapabilities: [...pricedCapabilities],
+        resolvePrice: async ({
+          capability,
+          request,
+          clientPubkey,
+          requestEventId,
+        }) => {
+          expect(clientPubkey).toBe('test-client');
+          expect(capability.name).toBe('add');
+          expect(request.method).toBe('tools/call');
+          expect(requestEventId).toBe('event-id');
+          return {
+            amount: 123,
+            description: 'quoted',
+            meta: { source: 'quote', overlap: 'quote' },
+          };
+        },
+      },
+    });
+
+    const message: JSONRPCRequest = {
+      jsonrpc: '2.0',
+      id: 'event-id',
+      method: 'tools/call',
+      params: { name: 'add', arguments: { a: 1, b: 2 } },
+    };
+
+    const forward = async () => {
+      // no-op
+    };
+
+    await mw(message, ctx, forward);
+
+    const paymentRequired = sent.find(
+      (x) =>
+        typeof x.notification === 'object' &&
+        x.notification !== null &&
+        (x.notification as { method?: string }).method ===
+          'notifications/payment_required',
+    );
+    expect(paymentRequired).toBeDefined();
+
+    const pr = paymentRequired!.notification as {
+      params: {
+        amount: number;
+        description?: string;
+        _meta?: Record<string, unknown>;
+      };
+    };
+    expect(pr.params.amount).toBe(123);
+    expect(pr.params.description).toBe('quoted');
+    expect(pr.params._meta).toEqual({
+      source: 'quote',
+      overlap: 'quote',
+    });
+  });
+
+  test('does not add _meta when neither processor nor quote provide meta', async () => {
+    const processor = {
+      pmi: 'fake',
+      async createPaymentRequired(params: {
+        amount: number;
+        description?: string;
+        requestEventId: string;
+        clientPubkey: string;
+      }) {
+        return {
+          amount: params.amount,
+          pay_req: 'pay_req',
+          description: params.description,
+          pmi: 'fake',
+        };
+      },
+      async verifyPayment() {
+        return { receipt: 'ok' };
+      },
+    };
+
+    const pricedCapabilities = [
+      {
+        method: 'tools/call',
+        name: 'add',
+        amount: 1,
+        currencyUnit: 'test',
+      },
+    ] as const;
+
+    const ctx: { clientPubkey: string; clientPmis?: readonly string[] } = {
+      clientPubkey: 'test-client',
+    };
+
+    let paymentRequired: unknown;
+    const sender = {
+      async sendNotification(
+        _clientPubkey: string,
+        notification: unknown,
+      ): Promise<void> {
+        if (
+          typeof notification === 'object' &&
+          notification !== null &&
+          (notification as { method?: string }).method ===
+            'notifications/payment_required'
+        ) {
+          paymentRequired = notification;
+        }
+      },
+    };
+
+    const mw = createServerPaymentsMiddleware({
+      sender,
+      options: {
+        processors: [processor],
+        pricedCapabilities: [...pricedCapabilities],
+        resolvePrice: async () => ({ amount: 2 }),
+      },
+    });
+
+    const message: JSONRPCRequest = {
+      jsonrpc: '2.0',
+      id: 'event-id',
+      method: 'tools/call',
+      params: { name: 'add', arguments: { a: 1, b: 2 } },
+    };
+
+    await mw(message, ctx, async () => {
+      // no-op
+    });
+
+    expect(paymentRequired).toBeDefined();
+    const pr = paymentRequired as { params: { _meta?: unknown } };
+    expect(pr.params._meta).toBeUndefined();
+  });
+});

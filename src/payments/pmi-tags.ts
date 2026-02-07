@@ -2,8 +2,7 @@ import {
   isJSONRPCRequest,
   type JSONRPCMessage,
 } from '@modelcontextprotocol/sdk/types.js';
-import type { PaymentHandler } from './types.js';
-import type { PaymentProcessor, PmiTag } from './types.js';
+import type { PaymentHandler, PaymentProcessor, PmiTag } from './types.js';
 
 /**
  * Builds Nostr `pmi` tags for a set of handlers.

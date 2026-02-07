@@ -20,6 +20,11 @@ export interface PricedCapabilityPattern {
 export interface PricedCapability extends PricedCapabilityPattern {
   /** Amount requested for this invocation. Unit interpretation is implementation-defined. */
   amount: number;
+  /**
+   * Optional upper bound for variable pricing. When set, `cap` tag uses range format
+   * `"<amount>-<maxAmount>"` (CEP-8).
+   */
+  maxAmount?: number;
   /** Currency/unit label for display and `cap` tag advertisement (example: `sats`). */
   currencyUnit: string;
   /** Optional human-readable description for the payment request. */
@@ -45,6 +50,7 @@ export type PaymentRequiredNotification = JSONRPCNotification & {
     pay_req: string;
     pmi: string;
     description?: string;
+    /** Time-to-live in seconds (CEP-8). */
     ttl?: number;
     _meta?: Record<string, unknown>;
   };
@@ -95,6 +101,28 @@ export interface PaymentProcessorVerifyParams {
   clientPubkey: string;
 }
 
+export type ResolvePriceResult = {
+  /** Final amount to charge for this specific invocation. */
+  amount: number;
+  /** Optional override for the payment request description. */
+  description?: string;
+  /** Optional transparency metadata attached to `payment_required.params._meta`. */
+  meta?: Record<string, unknown>;
+};
+
+/**
+ * Server-side callback for dynamic pricing.
+ *
+ * Note: `cap` tags are a discovery surface; this callback determines the final quote
+ * used when emitting `notifications/payment_required`.
+ */
+export type ResolvePriceFn = (params: {
+  capability: PricedCapability;
+  request: JSONRPCRequest;
+  clientPubkey: string;
+  requestEventId: string;
+}) => Promise<ResolvePriceResult>;
+
 /**
  * Server-side module that can issue and verify payments for a single PMI.
  */
@@ -108,6 +136,7 @@ export interface PaymentProcessor {
     pay_req: string;
     description?: string;
     pmi: string;
+    /** Time-to-live in seconds (CEP-8). */
     ttl?: number;
     _meta?: Record<string, unknown>;
   }>;

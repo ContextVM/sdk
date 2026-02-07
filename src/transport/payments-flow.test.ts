@@ -31,6 +31,7 @@ import {
   withClientPayments,
   withServerPayments,
 } from '../payments/index.js';
+import type { PaymentProcessor } from '../payments/types.js';
 
 function capturePaymentRequiredPmi(
   message: JSONRPCMessage,
@@ -469,7 +470,13 @@ describe('payments fake flow (transport-level)', () => {
   test('idempotency: duplicate request event id does not double-charge', async () => {
     const processor = new FakePaymentProcessor({ verifyDelayMs: 1 });
     let verifyCalls = 0;
+    let createCalls = 0;
+    const originalCreate = processor.createPaymentRequired.bind(processor);
     const originalVerify = processor.verifyPayment.bind(processor);
+    processor.createPaymentRequired = async (params) => {
+      createCalls += 1;
+      return await originalCreate(params);
+    };
     processor.verifyPayment = async (params) => {
       verifyCalls += 1;
       return await originalVerify(params);
@@ -518,8 +525,82 @@ describe('payments fake flow (transport-level)', () => {
 
     await Promise.all([mw(message, ctx, forward), mw(message, ctx, forward)]);
 
+    expect(createCalls).toBe(1);
     expect(verifyCalls).toBe(1);
     expect(forwarded).toBe(1);
     expect(notificationsSent).toBeGreaterThanOrEqual(1);
+  }, 20000);
+
+  test('verification timeout clears pending state (ttl-based)', async () => {
+    const processor: PaymentProcessor = {
+      pmi: 'fake',
+      async createPaymentRequired(params) {
+        return {
+          amount: params.amount,
+          pay_req: `fake:${params.requestEventId}:${params.clientPubkey}:${params.amount}`,
+          description: params.description,
+          pmi: 'fake',
+          ttl: 1,
+        };
+      },
+      async verifyPayment() {
+        return await new Promise(() => {
+          // never resolves
+        });
+      },
+    };
+
+    const pricedCapabilities = [
+      {
+        method: 'tools/call',
+        name: 'add',
+        amount: 1,
+        currencyUnit: 'test',
+        description: 'test payment',
+      },
+    ] as const;
+
+    const ctx: { clientPubkey: string; clientPmis?: readonly string[] } = {
+      clientPubkey: 'test-client',
+    };
+
+    const sender = {
+      async sendNotification(): Promise<void> {
+        // no-op
+      },
+    };
+    const mw = createServerPaymentsMiddleware({
+      sender,
+      options: {
+        processors: [processor],
+        pricedCapabilities: [...pricedCapabilities],
+      },
+    });
+
+    const message: JSONRPCRequest = {
+      jsonrpc: '2.0',
+      id: 'same-event-id-timeout',
+      method: 'tools/call',
+      params: { name: 'add', arguments: { a: 1, b: 2 } },
+    };
+
+    let forwarded = 0;
+    const forward = async () => {
+      forwarded += 1;
+    };
+
+    const startedAt = Date.now();
+    await expect(mw(message, ctx, forward)).rejects.toThrow(
+      /verifyPayment timed out/,
+    );
+    const elapsed = Date.now() - startedAt;
+    expect(elapsed).toBeGreaterThanOrEqual(900);
+    expect(elapsed).toBeLessThan(3000);
+    expect(forwarded).toBe(0);
+
+    // Retry should not be black-holed: it should attempt again and time out again.
+    await expect(mw(message, ctx, forward)).rejects.toThrow(
+      /verifyPayment timed out/,
+    );
   }, 20000);
 });

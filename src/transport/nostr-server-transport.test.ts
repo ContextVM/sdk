@@ -33,6 +33,8 @@ import {
   isJSONRPCRequest,
   JSONRPCMessage,
 } from '@modelcontextprotocol/sdk/types.js';
+import { withServerPayments } from '../payments/server-transport-payments.js';
+import { FakePaymentProcessor } from '../payments/fake-payment-processor.js';
 
 const baseRelayPort = 7790; // Use a different port to avoid conflicts
 const relayUrl = `ws://localhost:${baseRelayPort}`;
@@ -136,10 +138,6 @@ describe('NostrServerTransport', () => {
   }, 5000);
 
   test('should include server PMI and cap tags in announcement and tools list events when payments are configured', async () => {
-    const { withServerPayments, FakePaymentProcessor } = await import(
-      '../payments/index.js'
-    );
-
     const serverPrivateKey = bytesToHex(generateSecretKey());
     const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
 
@@ -205,7 +203,9 @@ describe('NostrServerTransport', () => {
 
     await sleep(350);
 
-    const announcement = events.find((ev) => ev.kind === SERVER_ANNOUNCEMENT_KIND);
+    const announcement = events.find(
+      (ev) => ev.kind === SERVER_ANNOUNCEMENT_KIND,
+    );
     expect(announcement).toBeDefined();
     expect(announcement!.tags).toEqual(
       expect.arrayContaining([

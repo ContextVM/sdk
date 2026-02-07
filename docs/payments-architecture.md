@@ -156,6 +156,102 @@ Transport specifics that matter for payment integration:
 - The server transport rewrites inbound request ids to the request Nostr event id in [`NostrServerTransport.handleIncomingRequest()`](../../../ts-sdk/src/transport/nostr-server-transport.ts:282).
 - The client transport must correctly support correlated notifications (notifications that include an `e` tag) in [`NostrClientTransport.processIncomingEvent()`](../../../ts-sdk/src/transport/nostr-client-transport.ts:223).
 
+## Dynamic pricing (design: `resolvePrice` callback)
+
+CEP-8 `cap` tags are a **discovery/reference** surface, not a binding quote. This SDK supports advertising fixed prices and ranges (e.g. `100-1000`) via `cap` tags, but the **final charged amount** is determined when the server emits `notifications/payment_required`.
+
+Key insight:
+
+- Dynamic pricing must be computed at the **server-side middleware seam** (the forwarding gate), because it is the only layer that (a) sees the incoming JSON-RPC request and (b) controls when `payment_required` is issued and when the request is forwarded.
+
+### Requirements
+
+- Preserve the middleware-first integration decision.
+- Keep server `PaymentProcessor` modules rail-focused (issue + verify payments for a PMI), not business-logic focused.
+- Keep API surface minimal and developer experience flexible.
+
+### Proposed extension point
+
+Add an optional `resolvePrice` callback to server payments configuration.
+
+Conceptual signature:
+
+```ts
+type ResolvePriceFn = (params: {
+  capability: PricedCapability;
+  request: JSONRPCRequest;
+  clientPubkey: string;
+  requestEventId: string;
+}) => Promise<{
+  amount: number;
+  description?: string;
+  /** Optional transparency metadata attached to `payment_required.params._meta`. */
+  meta?: Record<string, unknown>;
+}>;
+```
+
+Notes:
+
+- `cap` tags (including ranges) remain discovery/reference.
+- The callback returns a **final quote** for this specific request.
+- For PMIs like `bitcoin-lightning-bolt11`, the settlement currency is implicitly sats/msats as encoded by the invoice; if your business pricing is in USD, perform USD→sats conversion inside `resolvePrice` and optionally include FX details in `meta`.
+- `meta` is optional and intentionally unconstrained.
+
+### Configuration example (conceptual)
+
+```ts
+withServerPayments(transport, {
+  processors: [lnBolt11Processor],
+  pricedCapabilities: [
+    {
+      method: 'tools/call',
+      name: 'analyze',
+      amount: 100,
+      maxAmount: 1000,
+      currencyUnit: 'usd', // reference/discovery
+    },
+  ],
+
+  resolvePrice: async ({ capability, request, clientPubkey }) => {
+    const tier = await lookupTier(clientPubkey);
+    const tokens = estimateTokens(request);
+    const usd = computeUsdPrice({ tier, tokens, minUsd: 0.25, maxUsd: 2.50 });
+    const sats = await convertUsdToSats(usd);
+
+    return {
+      amount: sats, // final settlement quote for LN
+      description: capability.description,
+      meta: {
+        tier,
+        tokens,
+        display: { amount: usd, currencyUnit: 'usd' },
+      },
+    };
+  },
+});
+```
+
+### How it works under the hood (conceptual)
+
+Pricing is applied before invoice creation in the server payments middleware (see the current gate in [`createServerPaymentsMiddleware()`](../src/payments/server-payments.ts:140)):
+
+```ts
+const priced = matchPricedCapability(request, pricedCapabilities);
+
+const quote = resolvePrice
+  ? await resolvePrice({ capability: priced, request, clientPubkey })
+  : { amount: priced.amount, description: priced.description };
+
+const paymentRequired = await processor.createPaymentRequired({
+  amount: quote.amount,
+  description: quote.description,
+  requestEventId,
+  clientPubkey,
+});
+
+// When emitting payment_required, `_meta` may include quote.meta (optional).
+```
+
 ## CEP-8 discovery surface (advertising `cap` + `pmi`)
 
 When payments are configured on the server:

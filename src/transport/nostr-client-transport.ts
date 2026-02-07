@@ -56,6 +56,10 @@ export class NostrClientTransport
 {
   /** Public event handlers required by the Transport interface */
   public onmessage?: (message: JSONRPCMessage) => void;
+  public onmessageWithContext?: (
+    message: JSONRPCMessage,
+    ctx: { eventId: string; correlatedEventId?: string },
+  ) => void;
   public onclose?: () => void;
   public onerror?: (error: Error) => void;
 
@@ -337,7 +341,7 @@ export class NostrClientTransport
       }
 
       if (isJSONRPCNotification(mcpMessage)) {
-        this.handleNotification(mcpMessage);
+        this.handleNotification(nostrEvent.id, eTag ?? undefined, mcpMessage);
         return;
       }
 
@@ -405,7 +409,11 @@ export class NostrClientTransport
    * Handles notification messages by validating and forwarding them.
    * @param mcpMessage - The JSON-RPC notification message
    */
-  private handleNotification(mcpMessage: JSONRPCMessage): void {
+  private handleNotification(
+    eventId: string,
+    correlatedEventId: string | undefined,
+    mcpMessage: JSONRPCMessage,
+  ): void {
     try {
       const result = NotificationSchema.safeParse(mcpMessage);
       if (!result.success) {
@@ -416,6 +424,10 @@ export class NostrClientTransport
         return;
       }
       this.onmessage?.(mcpMessage);
+      this.onmessageWithContext?.(mcpMessage, {
+        eventId,
+        correlatedEventId,
+      });
     } catch (error) {
       this.logger.error('Failed to handle incoming notification', {
         error: error instanceof Error ? error.message : String(error),

@@ -31,6 +31,20 @@ describe('createCapTagsFromPricedCapabilities()', () => {
     ]);
   });
 
+  test('uses range price format when maxAmount is provided', () => {
+    const tags = createCapTagsFromPricedCapabilities([
+      {
+        method: 'tools/call',
+        name: 'add',
+        amount: 100,
+        maxAmount: 1000,
+        currencyUnit: 'sats',
+      },
+    ]);
+
+    expect(tags).toEqual([['cap', 'tool:add', '100-1000', 'sats']]);
+  });
+
   test('skips unsupported methods and unnamed capabilities', () => {
     const tags = createCapTagsFromPricedCapabilities([
       {
@@ -49,4 +63,3 @@ describe('createCapTagsFromPricedCapabilities()', () => {
     expect(tags).toEqual([]);
   });
 });
-

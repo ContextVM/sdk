@@ -5,17 +5,27 @@ import {
   PaymentProcessor,
   PaymentRequiredNotification,
   PricedCapability,
+  ResolvePriceFn,
   ServerMiddlewareFn,
   isJsonRpcRequest,
 } from './types.js';
 import { LruCache } from '../core/utils/lru-cache.js';
+import { withTimeout } from '../core/utils/utils.js';
 
 export interface ServerPaymentsOptions {
   processors: readonly PaymentProcessor[];
   pricedCapabilities: readonly PricedCapability[];
+
+  /** Optional dynamic pricing callback used to compute a per-request quote. */
+  resolvePrice?: ResolvePriceFn;
   /**
    * Maximum time to keep a request in pending-payment state.
-   * @default 60_000
+   *
+   * Note: if the payment request includes a CEP-8 `ttl` (seconds), the effective
+   * verification timeout will be derived from that TTL. This option is primarily
+   * a memory/DoS guardrail.
+   *
+   * @default 300_000
    */
   paymentTtlMs?: number;
 
@@ -28,8 +38,8 @@ export interface ServerPaymentsOptions {
   maxPendingPayments?: number;
 }
 
-function purgeExpiredPending(params: {
-  pending: LruCache<{ expiresAtMs: number }>;
+function purgeExpiredPending<T extends { expiresAtMs: number }>(params: {
+  pending: LruCache<T>;
   nowMs: number;
   maxToCheck: number;
 }): void {
@@ -45,6 +55,25 @@ function purgeExpiredPending(params: {
   }
 }
 
+type PendingPaymentState = {
+  expiresAtMs: number;
+  inFlight: Promise<void>;
+};
+
+function getVerificationTimeoutMs(params: {
+  ttlSeconds: number | undefined;
+}): number {
+  // CEP-8 TTL is in seconds. If TTL is absent, default is 5 minutes.
+  const ttlSeconds = params.ttlSeconds;
+  if (ttlSeconds === undefined) {
+    return 5 * 60 * 1000;
+  }
+  if (!Number.isFinite(ttlSeconds) || ttlSeconds <= 0) {
+    return 5 * 60 * 1000;
+  }
+  return Math.floor(ttlSeconds * 1000);
+}
+
 function matchPricedCapability(
   message: JSONRPCRequest,
   priced: readonly PricedCapability[],
@@ -58,7 +87,9 @@ function matchPricedCapability(
   });
 }
 
-function getCapabilityNameForPricing(message: JSONRPCRequest): string | undefined {
+function getCapabilityNameForPricing(
+  message: JSONRPCRequest,
+): string | undefined {
   const params = message.params as Record<string, unknown> | undefined;
 
   switch (message.method) {
@@ -119,8 +150,8 @@ export function createServerPaymentsMiddleware(params: {
     options.processors.map((p) => [p.pmi, p] as const),
   );
 
-  const paymentTtlMs = options.paymentTtlMs ?? 60_000;
-  const pending = new LruCache<{ expiresAtMs: number }>(
+  const paymentTtlMs = options.paymentTtlMs ?? 300_000;
+  const pending = new LruCache<PendingPaymentState>(
     options.maxPendingPayments ?? 1000,
   );
 
@@ -145,13 +176,14 @@ export function createServerPaymentsMiddleware(params: {
 
     const existing = pending.get(requestEventId);
     if (existing && existing.expiresAtMs > now) {
-      // Duplicate request event id: idempotency guard. Do not double-charge.
+      // Duplicate request event id: await the in-flight work deterministically.
+      // This avoids double-charge races and avoids black-holing duplicates.
+      await existing.inFlight;
       return;
     }
 
-    pending.set(requestEventId, { expiresAtMs: now + paymentTtlMs });
-
-    try {
+    // IMPORTANT: set pending state synchronously before any await to make idempotency atomic.
+    const inFlight = (async (): Promise<void> => {
       const clientPmis = ctx.clientPmis;
 
       const chosenPmi = clientPmis
@@ -169,12 +201,29 @@ export function createServerPaymentsMiddleware(params: {
       const processor =
         processorsByPmi.get(chosenProcessor.pmi) ?? chosenProcessor;
 
+      const quote = options.resolvePrice
+        ? await options.resolvePrice({
+            capability: priced,
+            request: message,
+            clientPubkey: ctx.clientPubkey,
+            requestEventId,
+          })
+        : { amount: priced.amount, description: priced.description };
+
       const paymentRequired = await processor.createPaymentRequired({
-        amount: priced.amount,
-        description: priced.description,
+        amount: quote.amount,
+        description: quote.description,
         requestEventId,
         clientPubkey: ctx.clientPubkey,
       });
+
+      const mergedMeta =
+        quote.meta === undefined && paymentRequired._meta === undefined
+          ? undefined
+          : {
+              ...(paymentRequired._meta ?? {}),
+              ...(quote.meta ?? {}),
+            };
 
       const requiredNotification = createPaymentRequiredNotification({
         amount: paymentRequired.amount,
@@ -182,7 +231,7 @@ export function createServerPaymentsMiddleware(params: {
         pmi: paymentRequired.pmi,
         description: paymentRequired.description,
         ttl: paymentRequired.ttl,
-        _meta: paymentRequired._meta,
+        _meta: mergedMeta,
       });
 
       await sender.sendNotification(
@@ -191,11 +240,18 @@ export function createServerPaymentsMiddleware(params: {
         requestEventId,
       );
 
-      const verified = await processor.verifyPayment({
-        pay_req: paymentRequired.pay_req,
-        requestEventId,
-        clientPubkey: ctx.clientPubkey,
+      const verifyTimeoutMs = getVerificationTimeoutMs({
+        ttlSeconds: paymentRequired.ttl,
       });
+      const verified = await withTimeout(
+        processor.verifyPayment({
+          pay_req: paymentRequired.pay_req,
+          requestEventId,
+          clientPubkey: ctx.clientPubkey,
+        }),
+        verifyTimeoutMs,
+        'verifyPayment timed out',
+      );
 
       const acceptedNotification = createPaymentAcceptedNotification({
         amount: paymentRequired.amount,
@@ -211,6 +267,16 @@ export function createServerPaymentsMiddleware(params: {
       );
 
       await forward(message);
+    })();
+
+    const state: PendingPaymentState = {
+      expiresAtMs: now + paymentTtlMs,
+      inFlight,
+    };
+    pending.set(requestEventId, state);
+
+    try {
+      await inFlight;
     } finally {
       pending.delete(requestEventId);
     }

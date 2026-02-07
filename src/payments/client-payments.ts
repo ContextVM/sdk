@@ -5,6 +5,13 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { PaymentHandler, PaymentRequiredNotification } from './types.js';
 
+type TransportWithOptionalContext = Transport & {
+  onmessageWithContext?: (
+    message: JSONRPCMessage,
+    ctx: { eventId: string; correlatedEventId?: string },
+  ) => void;
+};
+
 export interface ClientPaymentsOptions {
   handlers: readonly PaymentHandler[];
 }
@@ -29,11 +36,53 @@ export function withClientPayments(
     options.handlers.map((h) => [h.pmi, h] as const),
   );
 
+  // Prevent double-paying if relays or servers deliver duplicate payment_required notifications.
+  const inFlightPayReqs = new Set<string>();
+
   let onmessage: ((message: JSONRPCMessage) => void) | undefined;
   let onerror: ((error: Error) => void) | undefined;
   let onclose: (() => void) | undefined;
 
-  const wrapped: Transport = {
+  async function maybeHandlePaymentRequired(
+    message: JSONRPCMessage,
+    requestEventId: string,
+  ): Promise<void> {
+    if (!isPaymentRequiredNotification(message)) {
+      return;
+    }
+    const handler = handlersByPmi.get(message.params.pmi);
+    if (!handler) {
+      return;
+    }
+
+    const req = {
+      amount: message.params.amount,
+      pay_req: message.params.pay_req,
+      description: message.params.description,
+      requestEventId,
+    };
+
+    const canHandle = handler.canHandle ? await handler.canHandle(req) : true;
+    if (!canHandle) {
+      return;
+    }
+
+    // Best-effort client-side dedupe keyed by pay_req.
+    if (inFlightPayReqs.has(message.params.pay_req)) {
+      return;
+    }
+
+    inFlightPayReqs.add(message.params.pay_req);
+    try {
+      await handler.handle(req);
+    } finally {
+      inFlightPayReqs.delete(message.params.pay_req);
+    }
+  }
+
+  const transportWithContext = transport as TransportWithOptionalContext;
+
+  const wrapped: TransportWithOptionalContext = {
     get onmessage() {
       return onmessage;
     },
@@ -56,36 +105,32 @@ export function withClientPayments(
     async start(): Promise<void> {
       transport.onmessage = (message: JSONRPCMessage) => {
         // Best-effort: execute handler asynchronously, but never block delivery.
-        void (async () => {
-          if (isPaymentRequiredNotification(message)) {
-            const handler = handlersByPmi.get(message.params.pmi);
-            if (!handler) {
-              return;
-            }
-
-            const req = {
-              amount: message.params.amount,
-              pay_req: message.params.pay_req,
-              description: message.params.description,
-              requestEventId: 'unknown',
-            };
-
-            const canHandle = handler.canHandle
-              ? await handler.canHandle(req)
-              : true;
-            if (!canHandle) {
-              return;
-            }
-
-            await handler.handle(req);
-          }
-        })().catch((err: unknown) => {
-          const error = err instanceof Error ? err : new Error(String(err));
-          onerror?.(error);
-        });
+        void maybeHandlePaymentRequired(message, 'unknown').catch(
+          (err: unknown) => {
+            const error = err instanceof Error ? err : new Error(String(err));
+            onerror?.(error);
+          },
+        );
 
         onmessage?.(message);
       };
+
+      // If underlying transport supports correlation context, use it to pass requestEventId.
+      if ('onmessageWithContext' in transportWithContext) {
+        transportWithContext.onmessageWithContext = (
+          message: JSONRPCMessage,
+          ctx: { eventId: string; correlatedEventId?: string },
+        ) => {
+          const requestEventId = ctx.correlatedEventId ?? 'unknown';
+          void maybeHandlePaymentRequired(message, requestEventId).catch(
+            (err: unknown) => {
+              const error = err instanceof Error ? err : new Error(String(err));
+              onerror?.(error);
+            },
+          );
+        };
+      }
+
       transport.onerror = (err: Error) => onerror?.(err);
       transport.onclose = () => onclose?.();
       await transport.start();

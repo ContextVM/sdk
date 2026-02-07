@@ -19,7 +19,12 @@ export function createCapTagsFromPricedCapabilities(
       return [];
     }
 
-    return [['cap', capabilityIdentifier, String(cap.amount), cap.currencyUnit]];
+    const price =
+      cap.maxAmount !== undefined
+        ? `${cap.amount}-${cap.maxAmount}`
+        : String(cap.amount);
+
+    return [['cap', capabilityIdentifier, price, cap.currencyUnit]];
   });
 }
 
