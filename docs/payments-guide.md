@@ -20,10 +20,22 @@ The payment flow works as follows:
 
 ## Server Setup
 
+### Amounts and units (discovery vs settlement)
+
+CEP-8 separates **price discovery** from **settlement**:
+
+- `pricedCapabilities[].amount` and `currencyUnit` are what you advertise in `cap` tags (what users see as the “menu price”).
+- The actual settlement mechanism is determined by the selected PMI.
+- `pay_req` is intentionally opaque: it encodes whatever the chosen payment rail needs (e.g. a Lightning invoice, a checkout session URL, a Cashu token request).
+
+Because of this, `currencyUnit` does not have to match the final settlement unit.
+
+Example: you can advertise `usd`, then use `resolvePrice` to convert into sats before creating a Lightning invoice.
+
 ### 1. Define Priced Capabilities
 
 ```typescript
-import { PricedCapability } from './src/payments/types.js';
+import type { PricedCapability } from '@contextvm/sdk/payments';
 
 const pricedCapabilities: PricedCapability[] = [
   {
@@ -45,7 +57,8 @@ const pricedCapabilities: PricedCapability[] = [
     name: 'variablePricing',
     amount: 100,
     maxAmount: 1000,
-    currencyUnit: 'sats',
+    currencyUnit: 'usd',
+    description: 'Advertised in USD; final settlement determined by PMI',
   },
 ];
 ```
@@ -53,7 +66,7 @@ const pricedCapabilities: PricedCapability[] = [
 ### 2. Implement a Payment Processor
 
 ```typescript
-import { PaymentProcessor } from './src/payments/types.js';
+import type { PaymentProcessor } from '@contextvm/sdk/payments';
 
 class LightningProcessor implements PaymentProcessor {
   readonly pmi = 'bitcoin-lightning-bolt11';
@@ -82,11 +95,16 @@ class LightningProcessor implements PaymentProcessor {
 }
 ```
 
+If you want a ready-to-use Lightning rail, the SDK ships:
+
+- `LnBolt11NwcPaymentProcessor` (server)
+- `LnBolt11NwcPaymentHandler` (client)
+
 ### 3. Attach Payments to Server Transport
 
 ```typescript
-import { NostrServerTransport } from './src/transport/nostr-server-transport.js';
-import { withServerPayments } from './src/payments/server-transport-payments.js';
+import { NostrServerTransport } from '@contextvm/sdk/transport';
+import { withServerPayments } from '@contextvm/sdk/payments';
 
 const transport = new NostrServerTransport({
   signer,
@@ -101,15 +119,13 @@ withServerPayments(transport, {
   paymentTtlMs: 300_000, // 5 minutes default
 
   // Optional: dynamic per-request pricing (final quote used for payment_required).
-  resolvePrice: async ({ capability, request, clientPubkey, requestEventId }) => {
-    // Example: charge more for larger inputs or based on client tier.
-    // `capability.amount` remains the advertised/reference price.
-    const amount = capability.amount;
-    return {
-      amount,
-      description: capability.description,
-      meta: { clientPubkey, method: request.method },
-    };
+  resolvePrice: async ({ capability }) => {
+    // Example: advertised in USD, settled over Lightning.
+    if (capability.currencyUnit === 'usd') {
+      const satsPerUsd = 10_000;
+      return { amount: Math.max(1, Math.round(capability.amount * satsPerUsd)) };
+    }
+    return { amount: capability.amount };
   },
 });
 
@@ -121,7 +137,7 @@ await transport.start();
 ### 1. Implement a Payment Handler
 
 ```typescript
-import { PaymentHandler } from './src/payments/types.js';
+import type { PaymentHandler } from '@contextvm/sdk/payments';
 
 class LightningHandler implements PaymentHandler {
   readonly pmi = 'bitcoin-lightning-bolt11';
@@ -142,8 +158,8 @@ class LightningHandler implements PaymentHandler {
 ### 2. Attach Payments to Client Transport
 
 ```typescript
-import { NostrClientTransport } from './src/transport/nostr-client-transport.js';
-import { withClientPayments } from './src/payments/client-payments.js';
+import { NostrClientTransport } from '@contextvm/sdk/transport';
+import { withClientPayments } from '@contextvm/sdk/payments';
 
 const baseTransport = new NostrClientTransport({
   signer,
@@ -176,6 +192,8 @@ PMIs identify payment methods. Common examples:
 - `bitcoin-onchain` - Bitcoin on-chain addresses
 - `fake` - Test processor for development
 
+PMI selection is a matching mechanism: a payment can only proceed if client and server share at least one PMI.
+
 ### Correlation
 
 All payment notifications include an `e` tag referencing the original request event ID. This enables:
@@ -199,8 +217,7 @@ The client wrapper automatically deduplicates concurrent `payment_required` noti
 Use the fake processor and handler for development:
 
 ```typescript
-import { FakePaymentProcessor } from './src/payments/fake-payment-processor.js';
-import { FakePaymentHandler } from './src/payments/fake-payment-handler.js';
+import { FakePaymentProcessor, FakePaymentHandler } from '@contextvm/sdk/payments';
 
 // Server
 withServerPayments(transport, {
@@ -216,6 +233,6 @@ const transport = withClientPayments(baseTransport, {
 
 ## Reference
 
-- [CEP-8 Specification](./cep-8.md)
-- [Payments Architecture](./payments-architecture.md)
-- Type definitions: [`src/payments/types.ts`](../src/payments/types.ts)
+- CEP-8 specification
+- Payments architecture notes
+- Payments type definitions (PaymentHandler, PaymentProcessor, PricedCapability)
