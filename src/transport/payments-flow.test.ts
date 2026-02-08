@@ -26,7 +26,6 @@ import type { NostrEvent } from 'nostr-tools';
 import {
   FakePaymentHandler,
   FakePaymentProcessor,
-  createClientPmiOutboundTagHook,
   createServerPaymentsMiddleware,
   withClientPayments,
   withServerPayments,
@@ -164,7 +163,6 @@ describe('payments fake flow (transport-level)', () => {
       relayHandler: new ApplesauceRelayPool([relayUrl]),
       serverPubkey: serverPublicKey,
       encryptionMode: EncryptionMode.DISABLED,
-      outboundTagHook: createClientPmiOutboundTagHook(handlers),
     });
     const paidClientTransport = withClientPayments(clientTransport, {
       handlers,
@@ -253,7 +251,6 @@ describe('payments fake flow (transport-level)', () => {
       relayHandler: new ApplesauceRelayPool([relayUrl]),
       serverPubkey: serverPublicKey,
       encryptionMode: EncryptionMode.DISABLED,
-      outboundTagHook: createClientPmiOutboundTagHook(handlers),
     });
 
     // CEP-8: ensure PMI tags are actually published on the initialize request.
@@ -357,7 +354,6 @@ describe('payments fake flow (transport-level)', () => {
       relayHandler: new ApplesauceRelayPool([relayUrl]),
       serverPubkey: serverPublicKey,
       encryptionMode: EncryptionMode.DISABLED,
-      outboundTagHook: createClientPmiOutboundTagHook(handlers),
     });
 
     let observedPaymentPmi: string | undefined;

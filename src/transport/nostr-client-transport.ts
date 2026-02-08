@@ -37,12 +37,6 @@ export interface NostrTransportOptions extends BaseNostrTransportOptions {
   isStateless?: boolean;
   /** Log level for the transport */
   logLevel?: LogLevel;
-
-  /**
-   * Optional hook to inject extra Nostr tags for outbound events.
-   * Useful for CEPs that require protocol tags (e.g., `pmi`).
-   */
-  outboundTagHook?: (message: JSONRPCMessage) => string[][];
 }
 
 /**
@@ -71,10 +65,8 @@ export class NostrClientTransport
   private readonly statelessHandler: StatelessModeHandler;
   /** Whether stateless mode is enabled */
   private readonly isStateless: boolean;
-  /** Optional hook for injecting outbound tags */
-  private readonly outboundTagHook:
-    | ((message: JSONRPCMessage) => string[][])
-    | undefined;
+  /** Optional list of client-supported PMIs (ordered by preference). */
+  private clientPmis: readonly string[] | undefined;
   /** The server's initialize event, if received */
   private serverInitializeEvent: NostrEvent | undefined;
 
@@ -93,7 +85,6 @@ export class NostrClientTransport
 
     this.serverPubkey = options.serverPubkey;
     this.isStateless = options.isStateless ?? false;
-    this.outboundTagHook = options.outboundTagHook;
     this.correlationStore = new ClientCorrelationStore({
       maxPendingRequests: DEFAULT_LRU_SIZE,
       onRequestEvicted: (eventId) => {
@@ -101,6 +92,15 @@ export class NostrClientTransport
       },
     });
     this.statelessHandler = new StatelessModeHandler();
+  }
+
+  /**
+   * Sets the client PMI preference list used for CEP-8 discovery/negotiation.
+   *
+   * Intended to be called by payments wrappers (e.g. `withClientPayments()`).
+   */
+  public setClientPmis(pmis: readonly string[]): void {
+    this.clientPmis = pmis;
   }
 
   /**
@@ -192,10 +192,14 @@ export class NostrClientTransport
    * @returns The ID of the published Nostr event
    */
   private async sendRequest(message: JSONRPCMessage): Promise<string> {
-    const tags = [
-      ...this.createRecipientTags(this.serverPubkey),
-      ...(this.outboundTagHook?.(message) ?? []),
-    ];
+    const isRequest = isJSONRPCRequest(message);
+
+    const pmiTags: string[][] =
+      isRequest && this.clientPmis
+        ? this.clientPmis.map((pmi) => ['pmi', pmi] as string[])
+        : [];
+
+    const tags = [...this.createRecipientTags(this.serverPubkey), ...pmiTags];
 
     return await this.sendMcpMessage(
       message,
@@ -205,9 +209,8 @@ export class NostrClientTransport
       undefined,
       (eventId) => {
         this.correlationStore.registerRequest(eventId, {
-          originalRequestId: isJSONRPCRequest(message) ? message.id : null,
-          isInitialize:
-            isJSONRPCRequest(message) && message.method === INITIALIZE_METHOD,
+          originalRequestId: isRequest ? message.id : null,
+          isInitialize: isRequest && message.method === INITIALIZE_METHOD,
         });
       },
     );

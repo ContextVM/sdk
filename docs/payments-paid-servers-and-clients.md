@@ -190,27 +190,25 @@ The client config mirrors the server:
 ### 1) Configure the NWC handler
 
 ```ts
-import {
-  LnBolt11NwcPaymentHandler,
-  createClientPmiOutboundTagHook,
-  withClientPayments,
-} from '@contextvm/sdk/payments';
-import { NostrClientTransport } from '@contextvm/sdk/transport';
+ import {
+   LnBolt11NwcPaymentHandler,
+   withClientPayments,
+ } from '@contextvm/sdk/payments';
+ import { NostrClientTransport } from '@contextvm/sdk/transport';
 
 const handler = new LnBolt11NwcPaymentHandler({
   nwcConnectionString: process.env.NWC_CLIENT_CONNECTION!,
 });
 
-const baseTransport = new NostrClientTransport({
-  signer,
-  relayHandler,
-  serverPubkey,
-  outboundTagHook: createClientPmiOutboundTagHook([handler]),
-});
+ const baseTransport = new NostrClientTransport({
+   signer,
+   relayHandler,
+   serverPubkey,
+ });
 
-const paidTransport = withClientPayments(baseTransport, {
-  handlers: [handler],
-});
+ const paidTransport = withClientPayments(baseTransport, {
+   handlers: [handler],
+ });
 ```
 
 Once connected, calls like `client.callTool({ name: 'add', arguments: { ... } })` will automatically pay when required.

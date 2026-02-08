@@ -3,6 +3,7 @@ import {
   isJSONRPCNotification,
   type JSONRPCMessage,
 } from '@modelcontextprotocol/sdk/types.js';
+import { NostrClientTransport } from '../transport/nostr-client-transport.js';
 import { PaymentHandler, PaymentRequiredNotification } from './types.js';
 
 type TransportWithOptionalContext = Transport & {
@@ -32,6 +33,12 @@ export function withClientPayments(
   transport: Transport,
   options: ClientPaymentsOptions,
 ): Transport {
+  // Ensure CEP-8 discovery/negotiation: when using Nostr transports, always advertise
+  // supported PMIs derived from the handler list (preference order = handler order).
+  if (transport instanceof NostrClientTransport) {
+    transport.setClientPmis(options.handlers.map((h) => h.pmi));
+  }
+
   const handlersByPmi = new Map(
     options.handlers.map((h) => [h.pmi, h] as const),
   );

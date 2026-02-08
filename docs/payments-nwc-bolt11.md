@@ -233,7 +233,7 @@ Timeout policy:
 
 1. Construct [`NostrClientTransport`](src/transport/nostr-client-transport.ts:1).
 2. Wrap with [`withClientPayments()`](src/payments/client-payments.ts:31) using `LnBolt11NwcPaymentHandler`.
-3. Advertise PMI tags using [`createClientPmiOutboundTagHook()`](src/payments/pmi-tags.ts:34).
+3. PMI discovery tags are advertised automatically when payments are enabled.
 
 ### Server
 

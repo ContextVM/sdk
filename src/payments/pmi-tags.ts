@@ -1,7 +1,3 @@
-import {
-  isJSONRPCRequest,
-  type JSONRPCMessage,
-} from '@modelcontextprotocol/sdk/types.js';
 import type { PaymentHandler, PaymentProcessor, PmiTag } from './types.js';
 
 /**
@@ -26,20 +22,5 @@ export function createPmiTagsFromProcessors(
   return processors.map((p) => ['pmi', p.pmi]);
 }
 
-/**
- * Creates an outboundTagHook for NostrClientTransport that advertises supported PMIs.
- *
- * The hook only injects tags for JSON-RPC requests.
- */
-export function createClientPmiOutboundTagHook(
-  handlers: readonly PaymentHandler[],
-): (message: JSONRPCMessage) => string[][] {
-  const tags = createPmiTagsFromHandlers(handlers);
-
-  return (message) => {
-    if (!isJSONRPCRequest(message)) {
-      return [];
-    }
-    return tags;
-  };
-}
+// NOTE: PMI advertisement is handled internally by `withClientPayments()` when using
+// `NostrClientTransport`. Keep tag generation helpers for discovery surfaces.

@@ -19,11 +19,7 @@ import { NostrClientTransport } from '../transport/nostr-client-transport.js';
 import { NostrServerTransport } from '../transport/nostr-server-transport.js';
 import { CTXVM_MESSAGES_KIND } from '../core/index.js';
 import type { NostrEvent } from 'nostr-tools';
-import {
-  createClientPmiOutboundTagHook,
-  withClientPayments,
-  withServerPayments,
-} from './index.js';
+import { withClientPayments, withServerPayments } from './index.js';
 import { LnBolt11NwcPaymentHandler } from './handlers/ln-bolt11-nwc-payment-handler.js';
 import { LnBolt11NwcPaymentProcessor } from './processors/ln-bolt11-nwc-payment-processor.js';
 
@@ -182,7 +178,6 @@ describe('nwc paid capability e2e (skipped by default)', () => {
         relayHandler: new ApplesauceRelayPool([relayUrl]),
         serverPubkey: serverPublicKey,
         encryptionMode: EncryptionMode.DISABLED,
-        outboundTagHook: createClientPmiOutboundTagHook(handlers),
       });
 
       const paidClientTransport = withClientPayments(clientTransport, {
@@ -295,7 +290,6 @@ describe('nwc paid capability e2e (skipped by default)', () => {
         relayHandler: new ApplesauceRelayPool([relayUrl]),
         serverPubkey: serverPublicKey,
         encryptionMode: EncryptionMode.DISABLED,
-        outboundTagHook: createClientPmiOutboundTagHook(handlers),
       });
 
       const paidClientTransport = withClientPayments(clientTransport, {

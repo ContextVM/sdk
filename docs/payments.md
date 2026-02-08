@@ -147,7 +147,7 @@ type OutboundTagHook = (msg: JSONRPCMessage) => string[][];
 // In sendRequest():
 const tags = [
   ...createRecipientTags(serverPubkey),
-  ...(outboundTagHook?.(message) ?? []),
+  // PMI tags are injected automatically when using `withClientPayments()`.
 ];
 ```
 
@@ -202,9 +202,9 @@ withServerPayments(transport, { processors, pricedCapabilities });
 
 `createServerPaymentsMiddleware()` depends on a minimal interface (a correlated notification sender) rather than the entire server transport type. This reduces coupling and keeps the payments layer reusable.
 
-4) **Client PMI advertisement is implemented via `outboundTagHook`**
+4) **Client PMI advertisement is automatic when payments are enabled**
 
-To support CEP-8 PMI discovery, clients can advertise supported PMIs using the existing `outboundTagHook` option on the Nostr client transport. A helper is provided to build these `pmi` tags from the handler list.
+To support CEP-8 PMI discovery, the SDK advertises supported PMIs on outbound client requests whenever you wrap a `NostrClientTransport` with [`withClientPayments()`](src/payments/client-payments.ts:31). PMI tags are derived from the handler list and preserve handler order as client preference.
 
 ### Security + performance guardrails (locked)
 
