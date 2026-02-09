@@ -11,4 +11,6 @@ export * from './nip47/connection.js';
 export * from './nip47/nwc-client.js';
 export * from './nip47/types.js';
 export * from './handlers/ln-bolt11-nwc-payment-handler.js';
+export * from './handlers/ln-bolt11-lnbits-payment-handler.js';
 export * from './processors/ln-bolt11-nwc-payment-processor.js';
+export * from './processors/ln-bolt11-lnbits-payment-processor.js';
