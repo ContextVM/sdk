@@ -45,8 +45,7 @@ export class LnBolt11LnbitsPaymentProcessor implements PaymentProcessor {
     this.lnbitsApiKey = options.lnbitsApiKey;
     this.lnbitsBasicAuth = options.lnbitsBasicAuth;
     this.ttlSeconds = options.ttlSeconds ?? 300;
-    this.invoiceExpirySeconds =
-      options.invoiceExpirySeconds ?? this.ttlSeconds;
+    this.invoiceExpirySeconds = options.invoiceExpirySeconds ?? this.ttlSeconds;
     this.pollIntervalMs = options.pollIntervalMs ?? 1500;
     this.logger = createLogger('payments/lnbits-processor');
   }
@@ -75,7 +74,9 @@ export class LnBolt11LnbitsPaymentProcessor implements PaymentProcessor {
     const body = JSON.stringify({
       out: false,
       amount: params.amount,
-      memo: params.description ?? `CVM payment: ${params.requestEventId.slice(0, 8)}`,
+      memo:
+        params.description ??
+        `CVM payment: ${params.requestEventId.slice(0, 8)}`,
       expiry: this.invoiceExpirySeconds,
     });
 
@@ -162,14 +163,11 @@ export class LnBolt11LnbitsPaymentProcessor implements PaymentProcessor {
    * only receives pay_req. We decode it via LNbits decode endpoint.
    */
   private async getPaymentHashFromInvoice(bolt11: string): Promise<string> {
-    const response = await fetch(
-      `${this.lnbitsUrl}/api/v1/payments/decode`,
-      {
-        method: 'POST',
-        headers: this.buildHeaders(),
-        body: JSON.stringify({ data: bolt11 }),
-      },
-    );
+    const response = await fetch(`${this.lnbitsUrl}/api/v1/payments/decode`, {
+      method: 'POST',
+      headers: this.buildHeaders(),
+      body: JSON.stringify({ data: bolt11 }),
+    });
 
     if (response.ok) {
       const decoded = (await response.json()) as { payment_hash?: string };

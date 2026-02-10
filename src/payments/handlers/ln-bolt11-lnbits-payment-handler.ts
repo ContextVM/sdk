@@ -52,9 +52,7 @@ export class LnBolt11LnbitsPaymentHandler implements PaymentHandler {
 
     if (!response.ok) {
       const text = await response.text();
-      throw new Error(
-        `LNbits pay_invoice failed: ${response.status} ${text}`,
-      );
+      throw new Error(`LNbits pay_invoice failed: ${response.status} ${text}`);
     }
 
     const result = (await response.json()) as {
