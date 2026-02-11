@@ -108,4 +108,142 @@ describe('withClientPayments()', () => {
 
     expect(handleCalls).toBe(1);
   });
+
+  test('ignores payment_required notifications for unsupported PMI', async () => {
+    let handleCalls = 0;
+
+    const baseTransport: TransportWithContext = {
+      onmessage: undefined,
+      onmessageWithContext: undefined,
+      onerror: undefined,
+      onclose: undefined,
+      async start(): Promise<void> {},
+      async send(): Promise<void> {},
+      async close(): Promise<void> {},
+    };
+
+    const paid = withClientPayments(baseTransport, {
+      handlers: [
+        {
+          pmi: 'supported',
+          async handle(): Promise<void> {
+            handleCalls += 1;
+          },
+        },
+      ],
+    }) as TransportWithContext;
+
+    await paid.start();
+
+    const paymentRequired: JSONRPCMessage = {
+      jsonrpc: '2.0',
+      method: 'notifications/payment_required',
+      params: { amount: 1, pay_req: 'x', pmi: 'unsupported' },
+    };
+
+    baseTransport.onmessageWithContext?.(paymentRequired, {
+      eventId: 'evt',
+      correlatedEventId: 'req-id',
+    });
+
+    await new Promise((r) => setTimeout(r, 0));
+    expect(handleCalls).toBe(0);
+  });
+
+  test('does not pay when canHandle returns false', async () => {
+    let handleCalls = 0;
+
+    const baseTransport: TransportWithContext = {
+      onmessage: undefined,
+      onmessageWithContext: undefined,
+      onerror: undefined,
+      onclose: undefined,
+      async start(): Promise<void> {},
+      async send(): Promise<void> {},
+      async close(): Promise<void> {},
+    };
+
+    const paid = withClientPayments(baseTransport, {
+      handlers: [
+        {
+          pmi: 'fake',
+          async canHandle(): Promise<boolean> {
+            return false;
+          },
+          async handle(): Promise<void> {
+            handleCalls += 1;
+          },
+        },
+      ],
+    }) as TransportWithContext;
+
+    await paid.start();
+
+    const paymentRequired: JSONRPCMessage = {
+      jsonrpc: '2.0',
+      method: 'notifications/payment_required',
+      params: { amount: 1, pay_req: 'x', pmi: 'fake' },
+    };
+
+    baseTransport.onmessageWithContext?.(paymentRequired, {
+      eventId: 'evt',
+      correlatedEventId: 'req-id',
+    });
+
+    await new Promise((r) => setTimeout(r, 0));
+    expect(handleCalls).toBe(0);
+  });
+
+  test('handler errors call onerror but do not block message delivery', async () => {
+    const observed: JSONRPCMessage[] = [];
+    const errors: Error[] = [];
+
+    const baseTransport: TransportWithContext = {
+      onmessage: undefined,
+      onmessageWithContext: undefined,
+      onerror: undefined,
+      onclose: undefined,
+      async start(): Promise<void> {},
+      async send(): Promise<void> {},
+      async close(): Promise<void> {},
+    };
+
+    const paid = withClientPayments(baseTransport, {
+      handlers: [
+        {
+          pmi: 'fake',
+          async handle(): Promise<void> {
+            throw new Error('wallet failed');
+          },
+        },
+      ],
+    }) as TransportWithContext;
+
+    paid.onmessage = (msg) => {
+      observed.push(msg);
+    };
+    paid.onerror = (err) => {
+      errors.push(err);
+    };
+
+    await paid.start();
+
+    const paymentRequired: JSONRPCMessage = {
+      jsonrpc: '2.0',
+      method: 'notifications/payment_required',
+      params: { amount: 1, pay_req: 'x', pmi: 'fake' },
+    };
+
+    baseTransport.onmessageWithContext?.(paymentRequired, {
+      eventId: 'evt',
+      correlatedEventId: 'req-id',
+    });
+
+    // Message should be delivered synchronously (handler is best-effort async).
+    expect(observed).toEqual([paymentRequired]);
+
+    await new Promise((r) => setTimeout(r, 0));
+    expect(errors).toHaveLength(1);
+    expect(errors[0]?.message).toMatch(/wallet failed/);
+  });
 });

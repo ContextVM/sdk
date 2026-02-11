@@ -296,6 +296,94 @@ describe('payments fake flow (transport-level)', () => {
     await mcpServer.close();
   }, 20000);
 
+  test('client publishes PMI tags on non-initialize paid requests (stateless paid call)', async () => {
+    const serverSK = generateSecretKey();
+    const serverPrivateKey = bytesToHex(serverSK);
+    const serverPublicKey = getPublicKey(serverSK);
+
+    const mcpServer = new McpServer({ name: 'paid-server', version: '1.0.0' });
+    mcpServer.registerTool(
+      'add',
+      {
+        title: 'Addition Tool',
+        description: 'Add two numbers',
+        inputSchema: { a: z.number(), b: z.number() },
+      },
+      async ({ a, b }: { a: number; b: number }) => ({
+        content: [{ type: 'text' as const, text: String(a + b) }],
+      }),
+    );
+
+    const processor = new FakePaymentProcessor({ verifyDelayMs: 1 });
+    const pricedCapabilities = [
+      {
+        method: 'tools/call',
+        name: 'add',
+        amount: 1,
+        currencyUnit: 'test',
+        description: 'test payment',
+      },
+    ] as const;
+
+    const serverTransport = withServerPayments(
+      new NostrServerTransport({
+        signer: new PrivateKeySigner(serverPrivateKey),
+        relayHandler: new ApplesauceRelayPool([relayUrl]),
+        encryptionMode: EncryptionMode.DISABLED,
+      }),
+      {
+        processors: [processor],
+        pricedCapabilities: [...pricedCapabilities],
+      },
+    );
+
+    await mcpServer.connect(serverTransport);
+
+    const clientSK = generateSecretKey();
+    const clientPrivateKey = bytesToHex(clientSK);
+    const clientPubkey = getPublicKey(clientSK);
+    const handlers = [new FakePaymentHandler({ pmi: 'pmi:A', delayMs: 1 })];
+
+    const clientTransport = new NostrClientTransport({
+      signer: new PrivateKeySigner(clientPrivateKey),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      serverPubkey: serverPublicKey,
+      encryptionMode: EncryptionMode.DISABLED,
+    });
+
+    const paidClientTransport = withClientPayments(clientTransport, {
+      handlers,
+    });
+    const client = new Client({ name: 'paid-client', version: '1.0.0' });
+
+    // Ensure PMI tags are published on stateless paid requests (not just initialize).
+    const callEventPromise = captureNextCtxvmEvent({
+      relayUrl,
+      authors: [clientPubkey],
+      where: (event) => {
+        if (!event.content.includes('"method":"tools/call"')) {
+          return false;
+        }
+        return event.tags.some((t) => t[0] === 'pmi' && t[1] === 'pmi:A');
+      },
+      timeoutMs: 4000,
+    });
+
+    await client.connect(paidClientTransport);
+
+    await client.callTool({
+      name: 'add',
+      arguments: { a: 1, b: 2 },
+    });
+
+    const callEvent = await callEventPromise;
+    const pmiTags = callEvent.tags.filter((t) => t[0] === 'pmi');
+    expect(pmiTags).toEqual([['pmi', 'pmi:A']]);
+
+    await client.close();
+    await mcpServer.close();
+  }, 20000);
+
   test('PMI selection: falls back to server order when no intersection', async () => {
     const serverSK = generateSecretKey();
     const serverPrivateKey = bytesToHex(serverSK);
@@ -526,6 +614,220 @@ describe('payments fake flow (transport-level)', () => {
     expect(forwarded).toBe(1);
     expect(notificationsSent).toBeGreaterThanOrEqual(1);
   }, 20000);
+
+  test('emits payment_accepted correlated to request id after verify and before forward', async () => {
+    const events: string[] = [];
+    const processor: PaymentProcessor = {
+      pmi: 'fake',
+      async createPaymentRequired(params) {
+        events.push('create');
+        return {
+          amount: params.amount,
+          pay_req: 'fake-invoice',
+          description: params.description,
+          pmi: 'fake',
+        };
+      },
+      async verifyPayment() {
+        events.push('verify:start');
+        await new Promise((r) => setTimeout(r, 10));
+        events.push('verify:end');
+        return { _meta: { settled: true } };
+      },
+    };
+
+    const pricedCapabilities = [
+      {
+        method: 'tools/call',
+        name: 'add',
+        amount: 1,
+        currencyUnit: 'test',
+        description: 'test payment',
+      },
+    ] as const;
+
+    const ctx: { clientPubkey: string; clientPmis?: readonly string[] } = {
+      clientPubkey: 'test-client',
+    };
+
+    const notifications: Array<{ method: string; correlatedEventId: string }> =
+      [];
+    const sender = {
+      async sendNotification(
+        _clientPubkey: string,
+        notification: JSONRPCMessage,
+        correlatedEventId: string,
+      ): Promise<void> {
+        if (!('method' in notification)) {
+          throw new Error('Expected notification to have method');
+        }
+        notifications.push({
+          method: String(notification.method),
+          correlatedEventId,
+        });
+        events.push(`notify:${String(notification.method)}`);
+      },
+    };
+
+    const mw = createServerPaymentsMiddleware({
+      sender,
+      options: {
+        processors: [processor],
+        pricedCapabilities: [...pricedCapabilities],
+      },
+    });
+
+    const message: JSONRPCRequest = {
+      jsonrpc: '2.0',
+      id: 'req-123',
+      method: 'tools/call',
+      params: { name: 'add', arguments: { a: 1, b: 2 } },
+    };
+
+    const forward = async (): Promise<void> => {
+      events.push('forward');
+    };
+
+    await mw(message, ctx, forward);
+
+    expect(notifications.map((n) => [n.method, n.correlatedEventId])).toEqual([
+      ['notifications/payment_required', 'req-123'],
+      ['notifications/payment_accepted', 'req-123'],
+    ]);
+
+    expect(events).toEqual([
+      'create',
+      'notify:notifications/payment_required',
+      'verify:start',
+      'verify:end',
+      'notify:notifications/payment_accepted',
+      'forward',
+    ]);
+  });
+
+  test('fail-closed: createPaymentRequired throwing prevents forwarding', async () => {
+    const processor: PaymentProcessor = {
+      pmi: 'fake',
+      async createPaymentRequired(): Promise<never> {
+        throw new Error('create failed');
+      },
+      async verifyPayment() {
+        return { _meta: { settled: true } };
+      },
+    };
+
+    const pricedCapabilities = [
+      {
+        method: 'tools/call',
+        name: 'add',
+        amount: 1,
+        currencyUnit: 'test',
+        description: 'test payment',
+      },
+    ] as const;
+
+    const ctx: { clientPubkey: string; clientPmis?: readonly string[] } = {
+      clientPubkey: 'test-client',
+    };
+
+    let forwarded = 0;
+    const sender = {
+      async sendNotification(): Promise<void> {
+        // no-op
+      },
+    };
+    const mw = createServerPaymentsMiddleware({
+      sender,
+      options: {
+        processors: [processor],
+        pricedCapabilities: [...pricedCapabilities],
+      },
+    });
+
+    const message: JSONRPCRequest = {
+      jsonrpc: '2.0',
+      id: 'req-create-fail',
+      method: 'tools/call',
+      params: { name: 'add', arguments: { a: 1, b: 2 } },
+    };
+
+    const forward = async (): Promise<void> => {
+      forwarded += 1;
+    };
+
+    expect(mw(message, ctx, forward)).rejects.toThrow(/create failed/);
+    expect(forwarded).toBe(0);
+  });
+
+  test('fail-closed: verifyPayment rejecting prevents forwarding', async () => {
+    const processor: PaymentProcessor = {
+      pmi: 'fake',
+      async createPaymentRequired(params) {
+        return {
+          amount: params.amount,
+          pay_req: 'fake-invoice',
+          description: params.description,
+          pmi: 'fake',
+        };
+      },
+      async verifyPayment(): Promise<never> {
+        throw new Error('verify failed');
+      },
+    };
+
+    const pricedCapabilities = [
+      {
+        method: 'tools/call',
+        name: 'add',
+        amount: 1,
+        currencyUnit: 'test',
+        description: 'test payment',
+      },
+    ] as const;
+
+    const ctx: { clientPubkey: string; clientPmis?: readonly string[] } = {
+      clientPubkey: 'test-client',
+    };
+
+    let forwarded = 0;
+    let acceptedSent = 0;
+    const sender = {
+      async sendNotification(
+        _clientPubkey: string,
+        notification: JSONRPCMessage,
+      ): Promise<void> {
+        if (
+          'method' in notification &&
+          notification.method === 'notifications/payment_accepted'
+        ) {
+          acceptedSent += 1;
+        }
+      },
+    };
+
+    const mw = createServerPaymentsMiddleware({
+      sender,
+      options: {
+        processors: [processor],
+        pricedCapabilities: [...pricedCapabilities],
+      },
+    });
+
+    const message: JSONRPCRequest = {
+      jsonrpc: '2.0',
+      id: 'req-verify-fail',
+      method: 'tools/call',
+      params: { name: 'add', arguments: { a: 1, b: 2 } },
+    };
+
+    const forward = async (): Promise<void> => {
+      forwarded += 1;
+    };
+
+    await expect(mw(message, ctx, forward)).rejects.toThrow(/verify failed/);
+    expect(forwarded).toBe(0);
+    expect(acceptedSent).toBe(0);
+  });
 
   test('verification timeout clears pending state (ttl-based)', async () => {
     const processor: PaymentProcessor = {

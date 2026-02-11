@@ -1,4 +1,4 @@
-import type { Filter, NostrEvent } from 'nostr-tools';
+import type { EventTemplate, Filter, NostrEvent } from 'nostr-tools';
 import { kinds, nip04 } from 'nostr-tools';
 import { finalizeEvent } from 'nostr-tools/pure';
 import { hexToBytes } from 'nostr-tools/utils';
@@ -100,7 +100,7 @@ export class NwcClient {
             ? [['expiration', String(params.expirationSeconds)]]
             : []),
         ],
-      } satisfies Omit<NostrEvent, 'id' | 'sig' | 'pubkey'>;
+      } satisfies EventTemplate;
 
       const signedRequest = finalizeEvent(eventTemplate, clientSecretKey);
 

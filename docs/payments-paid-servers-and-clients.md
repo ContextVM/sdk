@@ -233,7 +233,7 @@ The real power of CEP-8 is that you can plug in any settlement mechanism without
 Implement a processor that can:
 
 - Create a settlement request (`pay_req`) for a quote.
-- Verify settlement later and produce an optional receipt.
+- Verify settlement later and produce optional metadata in `_meta`.
 
 Example sketch (pseudo-code):
 
@@ -252,8 +252,8 @@ class CreditCardProcessor {
   }
 
   async verifyPayment({ pay_req }) {
-    const receipt = await waitForSessionPaid(pay_req);
-    return { receipt };
+    const sessionId = await waitForSessionPaid(pay_req);
+    return { _meta: { session_id: sessionId } };
   }
 }
 ```

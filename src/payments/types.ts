@@ -42,6 +42,12 @@ export type CapTag = [
 /** Nostr `pmi` tag as defined by CEP-8. */
 export type PmiTag = ['pmi', pmi: string];
 
+/** Nostr `direct_payment` tag as defined by CEP-8 (optional bearer-asset optimization). */
+export type DirectPaymentTag = ['direct_payment', pmi: string, payload: string];
+
+/** Nostr `change` tag as defined by CEP-8 (optional settlement artifact for bearer-asset methods). */
+export type ChangeTag = ['change', pmi: string, payload: string];
+
 /** A CEP-8 payment-required notification (JSON-RPC notification). */
 export type PaymentRequiredNotification = JSONRPCNotification & {
   method: 'notifications/payment_required';
@@ -63,6 +69,16 @@ export type PaymentAcceptedNotification = JSONRPCNotification & {
     amount: number;
     pmi: string;
     _meta?: Record<string, unknown>;
+  };
+};
+
+/** A CEP-8 payment-rejected notification (JSON-RPC notification). */
+export type PaymentRejectedNotification = JSONRPCNotification & {
+  method: 'notifications/payment_rejected';
+  params: {
+    pmi: string;
+    amount?: number;
+    message?: string;
   };
 };
 

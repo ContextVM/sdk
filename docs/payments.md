@@ -93,7 +93,7 @@ export interface PaymentProcessor {
     pay_req: string;
     requestEventId: string;
     clientPubkey: string;
-  }): Promise<{ receipt?: string }>;
+  }): Promise<{ _meta?: Record<string, unknown> }>;
 }
 ```
 
