@@ -62,25 +62,26 @@ export function withClientPayments(
       return;
     }
 
-    const req = {
-      amount: message.params.amount,
-      pay_req: message.params.pay_req,
-      description: message.params.description,
-      requestEventId,
-    };
-
-    const canHandle = handler.canHandle ? await handler.canHandle(req) : true;
-    if (!canHandle) {
-      return;
-    }
-
     // Best-effort client-side dedupe keyed by pay_req.
+    // IMPORTANT: claim synchronously before any await to avoid double-pay races.
     if (inFlightPayReqs.has(message.params.pay_req)) {
       return;
     }
 
     inFlightPayReqs.add(message.params.pay_req);
     try {
+      const req = {
+        amount: message.params.amount,
+        pay_req: message.params.pay_req,
+        description: message.params.description,
+        requestEventId,
+      };
+
+      const canHandle = handler.canHandle ? await handler.canHandle(req) : true;
+      if (!canHandle) {
+        return;
+      }
+
       await handler.handle(req);
     } finally {
       inFlightPayReqs.delete(message.params.pay_req);
@@ -135,6 +136,9 @@ export function withClientPayments(
               onerror?.(error);
             },
           );
+
+          // Keep message delivery consistent with the plain `onmessage` path.
+          onmessage?.(message);
         };
       }
 

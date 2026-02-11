@@ -128,7 +128,6 @@ function createPaymentRequiredNotification(params: {
 function createPaymentAcceptedNotification(params: {
   amount: number;
   pmi: string;
-  receipt?: string;
   _meta?: Record<string, unknown>;
 }): PaymentAcceptedNotification {
   return {
@@ -243,20 +242,23 @@ export function createServerPaymentsMiddleware(params: {
       const verifyTimeoutMs = getVerificationTimeoutMs({
         ttlSeconds: paymentRequired.ttl,
       });
+      const effectiveTimeoutMs = Math.min(verifyTimeoutMs, paymentTtlMs);
+
+      const controller = new AbortController();
       const verified = await withTimeout(
         processor.verifyPayment({
           pay_req: paymentRequired.pay_req,
           requestEventId,
           clientPubkey: ctx.clientPubkey,
+          abortSignal: controller.signal,
         }),
-        verifyTimeoutMs,
+        effectiveTimeoutMs,
         'verifyPayment timed out',
-      );
+      ).finally(() => controller.abort());
 
       const acceptedNotification = createPaymentAcceptedNotification({
         amount: paymentRequired.amount,
         pmi: paymentRequired.pmi,
-        receipt: verified.receipt,
         _meta: verified._meta,
       });
 

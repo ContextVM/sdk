@@ -62,7 +62,6 @@ export type PaymentAcceptedNotification = JSONRPCNotification & {
   params: {
     amount: number;
     pmi: string;
-    receipt?: string;
     _meta?: Record<string, unknown>;
   };
 };
@@ -99,6 +98,9 @@ export interface PaymentProcessorVerifyParams {
   pay_req: string;
   requestEventId: string;
   clientPubkey: string;
+
+  /** Optional abort signal to stop verification early (timeout, shutdown, etc). */
+  abortSignal?: AbortSignal;
 }
 
 export type ResolvePriceResult = {
@@ -144,7 +146,7 @@ export interface PaymentProcessor {
   /** Wait for and/or verify settlement for a previously issued pay_req */
   verifyPayment(
     params: PaymentProcessorVerifyParams,
-  ): Promise<{ receipt?: string; _meta?: Record<string, unknown> }>;
+  ): Promise<{ _meta?: Record<string, unknown> }>;
 }
 
 export interface ServerPaymentsContext {

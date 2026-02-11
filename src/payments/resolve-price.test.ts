@@ -22,7 +22,7 @@ describe('resolvePrice (server payments)', () => {
         };
       },
       async verifyPayment() {
-        return { receipt: 'ok' };
+        return { _meta: { ok: true } };
       },
     };
 
@@ -129,7 +129,7 @@ describe('resolvePrice (server payments)', () => {
         };
       },
       async verifyPayment() {
-        return { receipt: 'ok' };
+        return {};
       },
     };
 

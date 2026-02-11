@@ -46,7 +46,7 @@ describe('nwc integration (skipped by default)', () => {
         clientPubkey: '0'.repeat(64),
       });
 
-      expect(typeof verified.receipt).toBe('string');
+      expect(verified._meta).toBeDefined();
     },
     60_000,
   );

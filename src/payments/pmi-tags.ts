@@ -7,7 +7,7 @@ import type { PaymentHandler, PaymentProcessor, PmiTag } from './types.js';
  */
 export function createPmiTagsFromHandlers(
   handlers: readonly PaymentHandler[],
-): string[][] {
+): PmiTag[] {
   return handlers.map((h) => ['pmi', h.pmi]);
 }
 

@@ -119,13 +119,17 @@ export class LnBolt11LnbitsPaymentProcessor implements PaymentProcessor {
 
   public async verifyPayment(
     params: PaymentProcessorVerifyParams,
-  ): Promise<{ receipt?: string; _meta?: Record<string, unknown> }> {
+  ): Promise<{ _meta?: Record<string, unknown> }> {
     // We need the payment hash to check status. Derive it from the invoice
     // by first looking it up via the decoded invoice endpoint, or by checking
     // all recent payments. The simplest approach: decode the bolt11 to get the hash.
     const paymentHash = await this.getPaymentHashFromInvoice(params.pay_req);
 
     while (true) {
+      if (params.abortSignal?.aborted) {
+        throw new Error('verifyPayment aborted');
+      }
+
       const response = await fetch(
         `${this.lnbitsUrl}/api/v1/payments/${paymentHash}`,
         {
@@ -144,7 +148,7 @@ export class LnBolt11LnbitsPaymentProcessor implements PaymentProcessor {
         });
 
         if (result.paid) {
-          return { receipt: paymentHash };
+          return { _meta: { payment_hash: paymentHash } };
         }
       } else {
         this.logger.debug('Payment check request failed', {

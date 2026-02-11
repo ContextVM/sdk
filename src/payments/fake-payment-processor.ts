@@ -50,6 +50,6 @@ export class FakePaymentProcessor implements PaymentProcessor {
     await new Promise<void>((resolve) =>
       setTimeout(resolve, this.verifyDelayMs),
     );
-    return { receipt: 'fake-receipt' };
+    return { _meta: { settled: true } };
   }
 }

@@ -83,8 +83,8 @@ export class LnBolt11NwcPaymentProcessor implements PaymentProcessor {
       return result.payment_hash;
     }
 
-    // Some wallets do not provide `payment_hash` on lookup results. Still produce a receipt string
-    // for CEP-8 correlation.
+    // Some wallets do not provide `payment_hash` on lookup results. Still produce a stable
+    // settlement identifier string for correlation.
     const settledAt =
       typeof result?.settled_at === 'number' ? result.settled_at : undefined;
     return `settled:${requestEventId}${settledAt ? `:${settledAt}` : ''}`;
@@ -136,10 +136,14 @@ export class LnBolt11NwcPaymentProcessor implements PaymentProcessor {
 
   public async verifyPayment(
     params: PaymentProcessorVerifyParams,
-  ): Promise<{ receipt?: string }> {
+  ): Promise<{ _meta?: Record<string, unknown> }> {
     // Note: server-payments middleware already bounds overall time by the `ttl` it emitted.
     // We still keep this loop tight and predictable.
     while (true) {
+      if (params.abortSignal?.aborted) {
+        throw new Error('verifyPayment aborted');
+      }
+
       const response = await this.nwc.request({
         method: 'lookup_invoice',
         resultType: 'lookup_invoice',
@@ -167,13 +171,12 @@ export class LnBolt11NwcPaymentProcessor implements PaymentProcessor {
         });
 
         if (this.isSettledInvoice(result)) {
-          // Prefer payment_hash as receipt (avoid exposing preimages).
-          return {
-            receipt: this.getReceiptFromInvoiceResult({
-              result,
-              requestEventId: params.requestEventId,
-            }),
-          };
+          // Prefer payment_hash as a stable identifier (avoid exposing preimages).
+          const paymentHash = this.getReceiptFromInvoiceResult({
+            result,
+            requestEventId: params.requestEventId,
+          });
+          return { _meta: { payment_hash: paymentHash } };
         }
 
         const state = result?.state;
