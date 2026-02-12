@@ -16,6 +16,7 @@ import type { NostrEvent } from 'nostr-tools';
 import { bytesToHex, hexToBytes } from 'nostr-tools/utils';
 import { TEST_PRIVATE_KEY } from '../__mocks__/fixtures.js';
 import {
+  CTXVM_MESSAGES_KIND,
   INITIALIZE_METHOD,
   PROMPTS_LIST_KIND,
   RESOURCES_LIST_KIND,
@@ -32,6 +33,8 @@ import {
   isJSONRPCRequest,
   JSONRPCMessage,
 } from '@modelcontextprotocol/sdk/types.js';
+import { withServerPayments } from '../payments/server-transport-payments.js';
+import { FakePaymentProcessor } from '../payments/fake-payment-processor.js';
 
 const baseRelayPort = 7790; // Use a different port to avoid conflicts
 const relayUrl = `ws://localhost:${baseRelayPort}`;
@@ -133,6 +136,106 @@ describe('NostrServerTransport', () => {
     await server.close();
     await relayPool.disconnect();
   }, 5000);
+
+  test('should include server PMI and cap tags in announcement and tools list events when payments are configured', async () => {
+    const serverPrivateKey = bytesToHex(generateSecretKey());
+    const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
+
+    const server = new McpServer({ name: 'Paid Server', version: '1.0.0' });
+    server.registerTool(
+      'add',
+      {
+        title: 'Addition Tool',
+        description: 'Add two numbers',
+        inputSchema: { a: z.number(), b: z.number() },
+      },
+      async ({ a, b }) => ({
+        content: [{ type: 'text', text: String(a + b) }],
+      }),
+    );
+
+    const transport = new NostrServerTransport({
+      signer: new PrivateKeySigner(serverPrivateKey),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      isPublicServer: true,
+      serverInfo: { name: 'Paid Server' },
+      encryptionMode: EncryptionMode.DISABLED,
+    });
+
+    withServerPayments(transport, {
+      processors: [
+        new FakePaymentProcessor({ pmi: 'pmi:B', verifyDelayMs: 1 }),
+        new FakePaymentProcessor({ pmi: 'pmi:C', verifyDelayMs: 1 }),
+      ],
+      pricedCapabilities: [
+        {
+          method: 'tools/call',
+          name: 'add',
+          amount: 123,
+          currencyUnit: 'sats',
+        },
+      ],
+    });
+
+    await server.connect(transport);
+
+    const relayPool = new ApplesauceRelayPool([relayUrl]);
+    await relayPool.connect();
+
+    const events: NostrEvent[] = [];
+    await relayPool.subscribe(
+      [
+        {
+          kinds: [
+            SERVER_ANNOUNCEMENT_KIND,
+            TOOLS_LIST_KIND,
+            RESOURCES_LIST_KIND,
+            RESOURCETEMPLATES_LIST_KIND,
+            PROMPTS_LIST_KIND,
+          ],
+          authors: [serverPublicKey],
+        },
+      ],
+      (event) => {
+        events.push(event);
+      },
+    );
+
+    await sleep(350);
+
+    const announcement = events.find(
+      (ev) => ev.kind === SERVER_ANNOUNCEMENT_KIND,
+    );
+    expect(announcement).toBeDefined();
+    expect(announcement!.tags).toEqual(
+      expect.arrayContaining([
+        ['pmi', 'pmi:B'],
+        ['pmi', 'pmi:C'],
+        ['cap', 'tool:add', '123', 'sats'],
+      ]),
+    );
+
+    const toolsList = events.find((ev) => ev.kind === TOOLS_LIST_KIND);
+    expect(toolsList).toBeDefined();
+    expect(toolsList!.tags).toEqual(
+      expect.arrayContaining([['cap', 'tool:add', '123', 'sats']]),
+    );
+
+    // Only assert list kinds the test server can actually respond to.
+    // Some MCP server instances may not implement resources/templates/list.
+    // If present, it should include pricing tags.
+    const resourceTemplatesList = events.find(
+      (ev) => ev.kind === RESOURCETEMPLATES_LIST_KIND,
+    );
+    if (resourceTemplatesList) {
+      expect(resourceTemplatesList.tags).toEqual(
+        expect.arrayContaining([['cap', 'tool:add', '123', 'sats']]),
+      );
+    }
+
+    await server.close();
+    await relayPool.disconnect();
+  }, 15000);
 
   test('should allow connection for allowed public keys', async () => {
     const serverPrivateKey = TEST_PRIVATE_KEY;
@@ -723,6 +826,81 @@ describe('NostrServerTransport', () => {
       }
     }
 
+    await server.close();
+    await relayPool.disconnect();
+  }, 15000);
+
+  test('should send correlated notifications (with e tag) via sendNotification()', async () => {
+    const serverPrivateKey = bytesToHex(generateSecretKey());
+    const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
+
+    const clientPrivateKey = bytesToHex(generateSecretKey());
+    const clientPublicKey = getPublicKey(hexToBytes(clientPrivateKey));
+
+    const server = new McpServer({
+      name: 'Test Server',
+      version: '1.0.0',
+    });
+
+    const serverTransport = new NostrServerTransport({
+      signer: new PrivateKeySigner(serverPrivateKey),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      encryptionMode: EncryptionMode.DISABLED,
+    });
+    await server.connect(serverTransport);
+
+    // Establish a session by connecting a real client transport.
+    const client = new Client({ name: 'Notify Client', version: '1.0.0' });
+    const clientTransport = new NostrClientTransport({
+      signer: new PrivateKeySigner(clientPrivateKey),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      serverPubkey: serverPublicKey,
+      encryptionMode: EncryptionMode.DISABLED,
+    });
+    await client.connect(clientTransport);
+    await sleep(200);
+
+    // Observe outgoing events from server.
+    const observedEvents: NostrEvent[] = [];
+    const relayPool = new ApplesauceRelayPool([relayUrl]);
+    await relayPool.connect();
+    await relayPool.subscribe(
+      [{ kinds: [CTXVM_MESSAGES_KIND], authors: [serverPublicKey] }],
+      (event) => {
+        observedEvents.push(event);
+      },
+    );
+
+    const correlatedEventId = 'f'.repeat(64);
+    await serverTransport.sendNotification(
+      clientPublicKey,
+      {
+        jsonrpc: '2.0',
+        method: 'notifications/payment_required',
+        params: { amount: 1, pay_req: 'test', pmi: 'test' },
+      },
+      correlatedEventId,
+    );
+    await sleep(150);
+
+    const sent = observedEvents.find((ev) => {
+      try {
+        const msg = JSON.parse(ev.content) as { method?: string };
+        return msg.method === 'notifications/payment_required';
+      } catch {
+        return false;
+      }
+    });
+
+    expect(sent).toBeDefined();
+    expect(
+      sent!.tags.some((t) => t[0] === 'e' && t[1] === correlatedEventId),
+    ).toBe(true);
+    expect(
+      sent!.tags.some((t) => t[0] === 'p' && t[1] === clientPublicKey),
+    ).toBe(true);
+
+    await client.close();
     await server.close();
     await relayPool.disconnect();
   }, 15000);

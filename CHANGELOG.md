@@ -1,5 +1,49 @@
 # @contextvm/sdk
 
+## 0.4.2
+
+### Patch Changes
+
+- feat(payments): add payments exports and logging
+
+This commit adds the payments module to the package exports, including
+subpaths, making it available for import. It also adds logging to the client
+and server payment flows for better observability.
+
+## 0.4.1
+
+### Patch Changes
+
+- feat(transport): capture list response envelopes and attach pricing tags
+
+  This change enables the client to access CEP-8 cap tags (pricing) from list responses without fetching announcement events.
+
+  The server now attaches pricing tags to list responses, and the client captures the event envelopes to expose them. This allows consumers to inspect Nostr tags (e.g. CEP-8 `cap` tags) that are not present in the JSON-RPC payload.
+
+## 0.4.0
+
+### Minor Changes
+
+- feat(payments): implement CEP-8 invoice-based payment flow
+  - Add server-side payment gating middleware (createServerPaymentsMiddleware)
+  - Add client-side payment handler wrapper (withClientPayments)
+  - Implement PMI discovery and selection (client preference wins)
+  - Add correlated notifications (payment_required, payment_accepted)
+  - Support dynamic pricing via resolvePrice callback
+  - Add CEP-8 cap tags for capability pricing advertisement
+  - Add CEP-8 pmi tags for payment method identification
+  - Implement idempotency by request event id
+  - Add TTL-based verification timeout handling
+  - Implement fail-closed error handling for payment operations
+  - Add fake payment processor/handler for testing
+  - Add comprehensive tests for payment flow, PMI selection, idempotency,
+    client edge cases, and error handling
+  - Remove unused createPmiTagsFromHandlers helper
+
+### Patch Changes
+
+- 9432fad: fix(gateway): detach event handlers before closing transport
+
 ## 0.3.2
 
 ### Patch Changes

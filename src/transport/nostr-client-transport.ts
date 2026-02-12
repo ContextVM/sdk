@@ -1,9 +1,15 @@
 import {
   InitializeResultSchema,
+  ListPromptsResultSchema,
+  ListResourcesResultSchema,
+  ListResourceTemplatesResultSchema,
+  ListToolsResultSchema,
   NotificationSchema,
   type JSONRPCMessage,
   isJSONRPCRequest,
   isJSONRPCNotification,
+  isJSONRPCResultResponse,
+  isJSONRPCErrorResponse,
   type JSONRPCResponse,
 } from '@modelcontextprotocol/sdk/types.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
@@ -48,6 +54,10 @@ export class NostrClientTransport
 {
   /** Public event handlers required by the Transport interface */
   public onmessage?: (message: JSONRPCMessage) => void;
+  public onmessageWithContext?: (
+    message: JSONRPCMessage,
+    ctx: { eventId: string; correlatedEventId?: string },
+  ) => void;
   public onclose?: () => void;
   public onerror?: (error: Error) => void;
 
@@ -59,8 +69,19 @@ export class NostrClientTransport
   private readonly statelessHandler: StatelessModeHandler;
   /** Whether stateless mode is enabled */
   private readonly isStateless: boolean;
+  /** Optional list of client-supported PMIs (ordered by preference). */
+  private clientPmis: readonly string[] | undefined;
   /** The server's initialize event, if received */
   private serverInitializeEvent: NostrEvent | undefined;
+
+  /** The latest server tools/list response event envelope, if received. */
+  private serverToolsListEvent: NostrEvent | undefined;
+  /** The latest server prompts/list response event envelope, if received. */
+  private serverPromptsListEvent: NostrEvent | undefined;
+  /** The latest server resources/list response event envelope, if received. */
+  private serverResourcesListEvent: NostrEvent | undefined;
+  /** The latest server resources/templates/list response event envelope, if received. */
+  private serverResourceTemplatesListEvent: NostrEvent | undefined;
 
   /**
    * Creates a new NostrClientTransport instance.
@@ -84,6 +105,15 @@ export class NostrClientTransport
       },
     });
     this.statelessHandler = new StatelessModeHandler();
+  }
+
+  /**
+   * Sets the client PMI preference list used for CEP-8 discovery/negotiation.
+   *
+   * Intended to be called by payments wrappers (e.g. `withClientPayments()`).
+   */
+  public setClientPmis(pmis: readonly string[]): void {
+    this.clientPmis = pmis;
   }
 
   /**
@@ -175,7 +205,14 @@ export class NostrClientTransport
    * @returns The ID of the published Nostr event
    */
   private async sendRequest(message: JSONRPCMessage): Promise<string> {
-    const tags = this.createRecipientTags(this.serverPubkey);
+    const isRequest = isJSONRPCRequest(message);
+
+    const pmiTags: string[][] =
+      isRequest && this.clientPmis
+        ? this.clientPmis.map((pmi) => ['pmi', pmi] as string[])
+        : [];
+
+    const tags = [...this.createRecipientTags(this.serverPubkey), ...pmiTags];
 
     return await this.sendMcpMessage(
       message,
@@ -185,9 +222,8 @@ export class NostrClientTransport
       undefined,
       (eventId) => {
         this.correlationStore.registerRequest(eventId, {
-          originalRequestId: isJSONRPCRequest(message) ? message.id : null,
-          isInitialize:
-            isJSONRPCRequest(message) && message.method === INITIALIZE_METHOD,
+          originalRequestId: isRequest ? message.id : null,
+          isInitialize: isRequest && message.method === INITIALIZE_METHOD,
         });
       },
     );
@@ -280,16 +316,6 @@ export class NostrClientTransport
         }
       }
 
-      if (eTag && !this.correlationStore.hasPendingRequest(eTag)) {
-        this.logger.warn('Received response for unknown/expired request', {
-          eventId: nostrEvent.id,
-          eTag,
-          reason:
-            'Request not found in pending set - may be duplicate or late response',
-        });
-        return;
-      }
-
       const mcpMessage = this.convertNostrEventToMcpMessage(nostrEvent);
 
       if (!mcpMessage) {
@@ -300,11 +326,63 @@ export class NostrClientTransport
         return;
       }
 
-      if (eTag) {
+      // Message classification MUST be based on JSON-RPC type, not on the presence of an `e` tag.
+      // CEP-8 notifications are correlated (include `e`) but are still notifications.
+      if (
+        isJSONRPCResultResponse(mcpMessage) ||
+        isJSONRPCErrorResponse(mcpMessage)
+      ) {
+        if (!eTag) {
+          this.logger.warn(
+            'Received JSON-RPC response without correlation `e` tag',
+            {
+              eventId: nostrEvent.id,
+            },
+          );
+          return;
+        }
+
+        if (!this.correlationStore.hasPendingRequest(eTag)) {
+          this.logger.warn('Received response for unknown/expired request', {
+            eventId: nostrEvent.id,
+            eTag,
+            reason:
+              'Request not found in pending set - may be duplicate or late response',
+          });
+          return;
+        }
+
+        // Capture outer Nostr event envelope for capability list JSON-RPC responses.
+        // This allows consumers to inspect Nostr tags (e.g. CEP-8 `cap` tags)
+        // that are not present in the JSON-RPC payload.
+        if (isJSONRPCResultResponse(mcpMessage)) {
+          const result = mcpMessage.result;
+          if (ListToolsResultSchema.safeParse(result).success) {
+            this.serverToolsListEvent = nostrEvent;
+          } else if (ListResourcesResultSchema.safeParse(result).success) {
+            this.serverResourcesListEvent = nostrEvent;
+          } else if (
+            ListResourceTemplatesResultSchema.safeParse(result).success
+          ) {
+            this.serverResourceTemplatesListEvent = nostrEvent;
+          } else if (ListPromptsResultSchema.safeParse(result).success) {
+            this.serverPromptsListEvent = nostrEvent;
+          }
+        }
+
         this.handleResponse(eTag, mcpMessage);
-      } else {
-        this.handleNotification(mcpMessage);
+        return;
       }
+
+      if (isJSONRPCNotification(mcpMessage)) {
+        this.handleNotification(nostrEvent.id, eTag ?? undefined, mcpMessage);
+        return;
+      }
+
+      this.logger.warn('Received unsupported JSON-RPC message type', {
+        eventId: nostrEvent.id,
+        hasETag: !!eTag,
+      });
     } catch (error) {
       this.logger.error('Error handling incoming Nostr event', {
         error: error instanceof Error ? error.message : String(error),
@@ -327,6 +405,26 @@ export class NostrClientTransport
    */
   public getServerInitializeEvent(): NostrEvent | undefined {
     return this.serverInitializeEvent;
+  }
+
+  /** Gets the server's most recently observed tools/list event envelope, if any. */
+  public getServerToolsListEvent(): NostrEvent | undefined {
+    return this.serverToolsListEvent;
+  }
+
+  /** Gets the server's most recently observed resources/list event envelope, if any. */
+  public getServerResourcesListEvent(): NostrEvent | undefined {
+    return this.serverResourcesListEvent;
+  }
+
+  /** Gets the server's most recently observed resources/templates/list event envelope, if any. */
+  public getServerResourceTemplatesListEvent(): NostrEvent | undefined {
+    return this.serverResourceTemplatesListEvent;
+  }
+
+  /** Gets the server's most recently observed prompts/list event envelope, if any. */
+  public getServerPromptsListEvent(): NostrEvent | undefined {
+    return this.serverPromptsListEvent;
   }
 
   /**
@@ -365,7 +463,11 @@ export class NostrClientTransport
    * Handles notification messages by validating and forwarding them.
    * @param mcpMessage - The JSON-RPC notification message
    */
-  private handleNotification(mcpMessage: JSONRPCMessage): void {
+  private handleNotification(
+    eventId: string,
+    correlatedEventId: string | undefined,
+    mcpMessage: JSONRPCMessage,
+  ): void {
     try {
       const result = NotificationSchema.safeParse(mcpMessage);
       if (!result.success) {
@@ -376,6 +478,10 @@ export class NostrClientTransport
         return;
       }
       this.onmessage?.(mcpMessage);
+      this.onmessageWithContext?.(mcpMessage, {
+        eventId,
+        correlatedEventId,
+      });
     } catch (error) {
       this.logger.error('Failed to handle incoming notification', {
         error: error instanceof Error ? error.message : String(error),
@@ -398,6 +504,10 @@ export class NostrClientTransport
       correlationStore: this.correlationStore,
       statelessHandler: this.statelessHandler,
       serverInitializeEvent: this.serverInitializeEvent,
+      serverToolsListEvent: this.serverToolsListEvent,
+      serverResourcesListEvent: this.serverResourcesListEvent,
+      serverResourceTemplatesListEvent: this.serverResourceTemplatesListEvent,
+      serverPromptsListEvent: this.serverPromptsListEvent,
     };
   }
 }

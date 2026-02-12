@@ -1,6 +1,6 @@
 {
   "name": "@contextvm/sdk",
-  "version": "0.3.2",
+  "version": "0.4.2",
   "description": "CtxVM SDK for JavaScript/TypeScript",
   "license": "LGPL-3.0-1",
   "author": "ContextVM",
@@ -63,6 +63,14 @@
     "./transport": {
       "types": "./dist/esm/transport/index.d.ts",
       "default": "./dist/esm/transport/index.js"
+    },
+    "./payments": {
+      "types": "./dist/esm/payments/index.d.ts",
+      "default": "./dist/esm/payments/index.js"
+    },
+    "./payments/*": {
+      "types": "./dist/esm/payments/*.d.ts",
+      "default": "./dist/esm/payments/*.js"
     }
   },
   "types": "./dist/esm/index.d.ts",

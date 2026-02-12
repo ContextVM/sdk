@@ -51,6 +51,12 @@ export interface AnnouncementManagerOptions {
   serverInfo?: ServerInfo;
   /** Encryption mode for determining tag inclusion */
   encryptionMode: EncryptionMode;
+
+  /** Optional extra tags to include in server announcement + initialize response events (e.g. `pmi`). */
+  extraCommonTags?: string[][];
+
+  /** Optional capability pricing tags to include in announcement + capability list events (e.g. `cap`). */
+  pricingTags?: string[][];
   /** Callback to send a message to the MCP server */
   onSendMessage: (message: JSONRPCMessage) => void;
   /** Callback to publish a Nostr event */
@@ -96,6 +102,8 @@ interface AnnouncementMapping {
 export class AnnouncementManager {
   private readonly serverInfo?: ServerInfo;
   private readonly encryptionMode: EncryptionMode;
+  private extraCommonTags: string[][];
+  private pricingTags: string[][];
   private readonly onSendMessage: (message: JSONRPCMessage) => void;
   private readonly onPublishEvent: (event: NostrEvent) => Promise<void>;
   private readonly onSignEvent: (
@@ -116,12 +124,42 @@ export class AnnouncementManager {
   constructor(options: AnnouncementManagerOptions) {
     this.serverInfo = options.serverInfo;
     this.encryptionMode = options.encryptionMode;
+    this.extraCommonTags = options.extraCommonTags ?? [];
+    this.pricingTags = options.pricingTags ?? [];
     this.onSendMessage = options.onSendMessage;
     this.onPublishEvent = options.onPublishEvent;
     this.onSignEvent = options.onSignEvent;
     this.onGetPublicKey = options.onGetPublicKey;
     this.onSubscribe = options.onSubscribe;
     this.logger = options.logger;
+  }
+
+  /**
+   * Updates extra common tags used for announcement and initialize response events.
+   *
+   * This is used as an integration seam for optional protocol extensions (e.g. CEP-8 PMI discovery).
+   */
+  public setExtraCommonTags(tags: string[][]): void {
+    this.extraCommonTags = tags;
+    this.cachedCommonTags = undefined;
+  }
+
+  /**
+   * Updates pricing tags used for announcement and capability list events.
+   *
+   * This is used for CEP-8 capability pricing advertisement (`cap` tags).
+   */
+  public setPricingTags(tags: string[][]): void {
+    this.pricingTags = tags;
+  }
+
+  /**
+   * Returns the currently configured pricing tags.
+   *
+   * Intended for attaching CEP-8 pricing (`cap` tags) to other server-emitted events.
+   */
+  public getPricingTags(): string[][] {
+    return this.pricingTags;
   }
 
   /**
@@ -150,6 +188,10 @@ export class AnnouncementManager {
       commonTags.push([NOSTR_TAGS.SUPPORT_ENCRYPTION]);
     }
 
+    for (const tag of this.extraCommonTags) {
+      commonTags.push(tag);
+    }
+
     this.cachedCommonTags = commonTags;
     return commonTags;
   }
@@ -161,24 +203,37 @@ export class AnnouncementManager {
   private getAnnouncementMapping(): AnnouncementMapping[] {
     const commonTags = this.getCommonTags();
 
+    const pricingTags = this.pricingTags;
+    const serverAnnouncementTags = pricingTags.length
+      ? [...commonTags, ...pricingTags]
+      : commonTags;
+
     return [
       {
         schema: InitializeResultSchema,
         kind: SERVER_ANNOUNCEMENT_KIND,
-        tags: commonTags,
+        tags: serverAnnouncementTags,
       },
-      { schema: ListToolsResultSchema, kind: TOOLS_LIST_KIND, tags: [] },
+      {
+        schema: ListToolsResultSchema,
+        kind: TOOLS_LIST_KIND,
+        tags: pricingTags,
+      },
       {
         schema: ListResourcesResultSchema,
         kind: RESOURCES_LIST_KIND,
-        tags: [],
+        tags: pricingTags,
       },
       {
         schema: ListResourceTemplatesResultSchema,
         kind: RESOURCETEMPLATES_LIST_KIND,
-        tags: [],
+        tags: pricingTags,
       },
-      { schema: ListPromptsResultSchema, kind: PROMPTS_LIST_KIND, tags: [] },
+      {
+        schema: ListPromptsResultSchema,
+        kind: PROMPTS_LIST_KIND,
+        tags: pricingTags,
+      },
     ];
   }
 
