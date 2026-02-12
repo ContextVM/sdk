@@ -1,5 +1,29 @@
 # @contextvm/sdk
 
+## 0.4.0
+
+### Minor Changes
+
+- feat(payments): implement CEP-8 invoice-based payment flow
+  - Add server-side payment gating middleware (createServerPaymentsMiddleware)
+  - Add client-side payment handler wrapper (withClientPayments)
+  - Implement PMI discovery and selection (client preference wins)
+  - Add correlated notifications (payment_required, payment_accepted)
+  - Support dynamic pricing via resolvePrice callback
+  - Add CEP-8 cap tags for capability pricing advertisement
+  - Add CEP-8 pmi tags for payment method identification
+  - Implement idempotency by request event id
+  - Add TTL-based verification timeout handling
+  - Implement fail-closed error handling for payment operations
+  - Add fake payment processor/handler for testing
+  - Add comprehensive tests for payment flow, PMI selection, idempotency,
+    client edge cases, and error handling
+  - Remove unused createPmiTagsFromHandlers helper
+
+### Patch Changes
+
+- 9432fad: fix(gateway): detach event handlers before closing transport
+
 ## 0.3.2
 
 ### Patch Changes

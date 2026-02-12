@@ -187,4 +187,157 @@ describe('resolvePrice (server payments)', () => {
     const pr = paymentRequired as { params: { _meta?: unknown } };
     expect(pr.params._meta).toBeUndefined();
   });
+
+  test('emits payment_rejected when resolvePrice returns reject: true', async () => {
+    const processor = {
+      pmi: 'fake',
+      async createPaymentRequired() {
+        throw new Error('Should not be called');
+      },
+      async verifyPayment() {
+        throw new Error('Should not be called');
+      },
+    };
+
+    const pricedCapabilities = [
+      {
+        method: 'tools/call',
+        name: 'add',
+        amount: 1,
+        currencyUnit: 'test',
+      },
+    ] as const;
+
+    const ctx: { clientPubkey: string; clientPmis?: readonly string[] } = {
+      clientPubkey: 'test-client',
+    };
+
+    const sent: Array<{ notification: unknown; requestEventId: string }> = [];
+    const sender = {
+      async sendNotification(
+        _clientPubkey: string,
+        notification: unknown,
+        requestEventId: string,
+      ): Promise<void> {
+        sent.push({ notification, requestEventId });
+      },
+    };
+
+    let forwardCalled = false;
+    const forward = async () => {
+      forwardCalled = true;
+    };
+
+    const mw = createServerPaymentsMiddleware({
+      sender,
+      options: {
+        processors: [processor],
+        pricedCapabilities: [...pricedCapabilities],
+        resolvePrice: async () => ({
+          reject: true,
+          message: 'Capability already used',
+        }),
+      },
+    });
+
+    const message: JSONRPCRequest = {
+      jsonrpc: '2.0',
+      id: 'event-id',
+      method: 'tools/call',
+      params: { name: 'add', arguments: { a: 1, b: 2 } },
+    };
+
+    await mw(message, ctx, forward);
+
+    // Should emit payment_rejected
+    const paymentRejected = sent.find(
+      (x) =>
+        typeof x.notification === 'object' &&
+        x.notification !== null &&
+        (x.notification as { method?: string }).method ===
+          'notifications/payment_rejected',
+    );
+    expect(paymentRejected).toBeDefined();
+    expect(paymentRejected?.requestEventId).toBe('event-id');
+
+    const pr = paymentRejected!.notification as {
+      params: { pmi: string; amount?: number; message?: string };
+    };
+    expect(pr.params.pmi).toBe('fake');
+    expect(pr.params.amount).toBe(1);
+    expect(pr.params.message).toBe('Capability already used');
+
+    // Should NOT forward the request
+    expect(forwardCalled).toBe(false);
+  });
+
+  test('emits payment_rejected without message when resolvePrice returns reject without message', async () => {
+    const processor = {
+      pmi: 'fake',
+      async createPaymentRequired() {
+        throw new Error('Should not be called');
+      },
+      async verifyPayment() {
+        throw new Error('Should not be called');
+      },
+    };
+
+    const pricedCapabilities = [
+      {
+        method: 'tools/call',
+        name: 'add',
+        amount: 5,
+        currencyUnit: 'test',
+      },
+    ] as const;
+
+    const ctx: { clientPubkey: string; clientPmis?: readonly string[] } = {
+      clientPubkey: 'test-client',
+    };
+
+    const sent: Array<{ notification: unknown; requestEventId: string }> = [];
+    const sender = {
+      async sendNotification(
+        _clientPubkey: string,
+        notification: unknown,
+        requestEventId: string,
+      ): Promise<void> {
+        sent.push({ notification, requestEventId });
+      },
+    };
+
+    const mw = createServerPaymentsMiddleware({
+      sender,
+      options: {
+        processors: [processor],
+        pricedCapabilities: [...pricedCapabilities],
+        resolvePrice: async () => ({ reject: true }),
+      },
+    });
+
+    const message: JSONRPCRequest = {
+      jsonrpc: '2.0',
+      id: 'event-id',
+      method: 'tools/call',
+      params: { name: 'add', arguments: { a: 1, b: 2 } },
+    };
+
+    await mw(message, ctx, async () => {});
+
+    const paymentRejected = sent.find(
+      (x) =>
+        typeof x.notification === 'object' &&
+        x.notification !== null &&
+        (x.notification as { method?: string }).method ===
+          'notifications/payment_rejected',
+    );
+    expect(paymentRejected).toBeDefined();
+
+    const pr = paymentRejected!.notification as {
+      params: { pmi: string; amount?: number; message?: string };
+    };
+    expect(pr.params.pmi).toBe('fake');
+    expect(pr.params.amount).toBe(5);
+    expect(pr.params.message).toBeUndefined();
+  });
 });

@@ -3,8 +3,11 @@ import {
   CorrelatedNotificationSender,
   PaymentAcceptedNotification,
   PaymentProcessor,
+  PaymentRejectedNotification,
   PaymentRequiredNotification,
   PricedCapability,
+  ResolvePriceRejection,
+  ResolvePriceQuote,
   ResolvePriceFn,
   ServerMiddlewareFn,
   isJsonRpcRequest,
@@ -137,6 +140,24 @@ function createPaymentAcceptedNotification(params: {
   };
 }
 
+function createPaymentRejectedNotification(params: {
+  pmi: string;
+  amount?: number;
+  message?: string;
+}): PaymentRejectedNotification {
+  return {
+    jsonrpc: '2.0',
+    method: 'notifications/payment_rejected',
+    params,
+  };
+}
+
+function isResolvePriceRejection(
+  quote: ResolvePriceQuote | ResolvePriceRejection,
+): quote is ResolvePriceRejection {
+  return 'reject' in quote && quote.reject;
+}
+
 /**
  * Creates a server-side middleware that gates priced requests until payment is verified.
  */
@@ -209,66 +230,83 @@ export function createServerPaymentsMiddleware(params: {
           })
         : { amount: priced.amount, description: priced.description };
 
-      const paymentRequired = await processor.createPaymentRequired({
-        amount: quote.amount,
-        description: quote.description,
-        requestEventId,
-        clientPubkey: ctx.clientPubkey,
-      });
+      // Handle rejection: emit payment_rejected and do not forward.
+      if (isResolvePriceRejection(quote)) {
+        const rejectedNotification = createPaymentRejectedNotification({
+          pmi: processor.pmi,
+          amount: priced.amount,
+          message: quote.message,
+        });
 
-      const mergedMeta =
-        quote.meta === undefined && paymentRequired._meta === undefined
-          ? undefined
-          : {
-              ...(paymentRequired._meta ?? {}),
-              ...(quote.meta ?? {}),
-            };
-
-      const requiredNotification = createPaymentRequiredNotification({
-        amount: paymentRequired.amount,
-        pay_req: paymentRequired.pay_req,
-        pmi: paymentRequired.pmi,
-        description: paymentRequired.description,
-        ttl: paymentRequired.ttl,
-        _meta: mergedMeta,
-      });
-
-      await sender.sendNotification(
-        ctx.clientPubkey,
-        requiredNotification,
-        requestEventId,
-      );
-
-      const verifyTimeoutMs = getVerificationTimeoutMs({
-        ttlSeconds: paymentRequired.ttl,
-      });
-      const effectiveTimeoutMs = Math.min(verifyTimeoutMs, paymentTtlMs);
-
-      const controller = new AbortController();
-      const verified = await withTimeout(
-        processor.verifyPayment({
-          pay_req: paymentRequired.pay_req,
+        await sender.sendNotification(
+          ctx.clientPubkey,
+          rejectedNotification,
+          requestEventId,
+        );
+      } else {
+        const resolvedQuote = quote;
+        const paymentRequired = await processor.createPaymentRequired({
+          amount: resolvedQuote.amount,
+          description: resolvedQuote.description,
           requestEventId,
           clientPubkey: ctx.clientPubkey,
-          abortSignal: controller.signal,
-        }),
-        effectiveTimeoutMs,
-        'verifyPayment timed out',
-      ).finally(() => controller.abort());
+        });
 
-      const acceptedNotification = createPaymentAcceptedNotification({
-        amount: paymentRequired.amount,
-        pmi: paymentRequired.pmi,
-        _meta: verified._meta,
-      });
+        const mergedMeta =
+          resolvedQuote.meta === undefined &&
+          paymentRequired._meta === undefined
+            ? undefined
+            : {
+                ...(paymentRequired._meta ?? {}),
+                ...(resolvedQuote.meta ?? {}),
+              };
 
-      await sender.sendNotification(
-        ctx.clientPubkey,
-        acceptedNotification,
-        requestEventId,
-      );
+        const requiredNotification = createPaymentRequiredNotification({
+          amount: paymentRequired.amount,
+          pay_req: paymentRequired.pay_req,
+          pmi: paymentRequired.pmi,
+          description: paymentRequired.description,
+          ttl: paymentRequired.ttl,
+          _meta: mergedMeta,
+        });
 
-      await forward(message);
+        await sender.sendNotification(
+          ctx.clientPubkey,
+          requiredNotification,
+          requestEventId,
+        );
+
+        const verifyTimeoutMs = getVerificationTimeoutMs({
+          ttlSeconds: paymentRequired.ttl,
+        });
+        const effectiveTimeoutMs = Math.min(verifyTimeoutMs, paymentTtlMs);
+
+        const controller = new AbortController();
+        const verified = await withTimeout(
+          processor.verifyPayment({
+            pay_req: paymentRequired.pay_req,
+            requestEventId,
+            clientPubkey: ctx.clientPubkey,
+            abortSignal: controller.signal,
+          }),
+          effectiveTimeoutMs,
+          'verifyPayment timed out',
+        ).finally(() => controller.abort());
+
+        const acceptedNotification = createPaymentAcceptedNotification({
+          amount: paymentRequired.amount,
+          pmi: paymentRequired.pmi,
+          _meta: verified._meta,
+        });
+
+        await sender.sendNotification(
+          ctx.clientPubkey,
+          acceptedNotification,
+          requestEventId,
+        );
+
+        await forward(message);
+      }
     })();
 
     const state: PendingPaymentState = {

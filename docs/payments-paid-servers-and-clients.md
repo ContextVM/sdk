@@ -179,6 +179,40 @@ const paidTransport = withServerPayments(baseTransport, {
 
 Important: the `cap` tags a server advertises are a discovery surface; `resolvePrice` defines what you actually charge.
 
+### 4) Rejecting requests without charging
+
+You can reject a request before asking for payment by returning `{ reject: true, message? }` from `resolvePrice`. This is useful for:
+
+- One-time use capabilities per user
+- Access policy enforcement
+- Quota exceeded scenarios
+
+```ts
+import type { ResolvePriceFn } from '@contextvm/sdk/payments';
+
+// Track usage per user
+const usedCapabilities = new Map<string, Set<string>>();
+
+const resolvePrice: ResolvePriceFn = async ({ capability, clientPubkey }) => {
+  const key = `${clientPubkey}:${capability.method}:${capability.name}`;
+  const userUsed = usedCapabilities.get(clientPubkey) ?? new Set<string>();
+  
+  if (userUsed.has(key)) {
+    return {
+      reject: true,
+      message: 'This capability can only be used once per user'
+    };
+  }
+  
+  userUsed.add(key);
+  usedCapabilities.set(clientPubkey, userUsed);
+  
+  return { amount: capability.amount };
+};
+```
+
+When rejected, the server emits `notifications/payment_rejected` (CEP-21) instead of `notifications/payment_required`, and the request is not forwarded.
+
 ## Client: create a paying client
 
 The client config mirrors the server:

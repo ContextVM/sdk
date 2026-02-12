@@ -178,6 +178,15 @@ For development-cycle testing, we will provide a `FakePaymentHandler` that simul
 - Emit `notifications/payment_accepted` (also correlated by `e`).
 - Only then forward the request to the underlying MCP server.
 
+##### Payment rejection
+
+The server can reject a request before asking for payment by returning `{ reject: true, message? }` from `resolvePrice`. This emits `notifications/payment_rejected` (CEP-21) instead of `payment_required`, and the request is not forwarded.
+
+Common use cases:
+- One-time use capabilities per user
+- Access policy violations
+- Quota exceeded
+
 For development-cycle testing, we will provide a `FakePaymentProcessor` that simulates invoice issuance and settlement using delays.
 
 ### Implementation notes (post-implementation)

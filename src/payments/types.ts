@@ -119,7 +119,7 @@ export interface PaymentProcessorVerifyParams {
   abortSignal?: AbortSignal;
 }
 
-export type ResolvePriceResult = {
+export type ResolvePriceQuote = {
   /** Final amount to charge for this specific invocation. */
   amount: number;
   /** Optional override for the payment request description. */
@@ -127,6 +127,21 @@ export type ResolvePriceResult = {
   /** Optional transparency metadata attached to `payment_required.params._meta`. */
   meta?: Record<string, unknown>;
 };
+
+export type ResolvePriceRejection = {
+  /** Signal that the request should be rejected without asking for payment. */
+  reject: true;
+  /** Optional human-readable message explaining the rejection. */
+  message?: string;
+};
+
+/**
+ * Result of resolvePrice callback.
+ *
+ * - Return a quote object to proceed with payment flow.
+ * - Return a rejection object to emit `payment_rejected` without asking for payment.
+ */
+export type ResolvePriceResult = ResolvePriceQuote | ResolvePriceRejection;
 
 /**
  * Server-side callback for dynamic pricing.
