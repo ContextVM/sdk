@@ -14,6 +14,7 @@ import {
 } from './types.js';
 import { LruCache } from '../core/utils/lru-cache.js';
 import { withTimeout } from '../core/utils/utils.js';
+import { createLogger } from '../core/utils/logger.js';
 
 export interface ServerPaymentsOptions {
   processors: readonly PaymentProcessor[];
@@ -166,6 +167,7 @@ export function createServerPaymentsMiddleware(params: {
   options: ServerPaymentsOptions;
 }): ServerMiddlewareFn {
   const { sender, options } = params;
+  const logger = createLogger('server-payments');
   const processorsByPmi = new Map(
     options.processors.map((p) => [p.pmi, p] as const),
   );
@@ -188,6 +190,13 @@ export function createServerPaymentsMiddleware(params: {
       return;
     }
 
+    logger.debug('priced capability matched', {
+      method: message.method,
+      requestEventId: String(message.id),
+      pricedMethod: priced.method,
+      pricedName: priced.name,
+    });
+
     const requestEventId = String(message.id);
     const now = Date.now();
 
@@ -198,6 +207,9 @@ export function createServerPaymentsMiddleware(params: {
     if (existing && existing.expiresAtMs > now) {
       // Duplicate request event id: await the in-flight work deterministically.
       // This avoids double-charge races and avoids black-holing duplicates.
+      logger.debug('duplicate request event detected, awaiting in-flight', {
+        requestEventId,
+      });
       await existing.inFlight;
       return;
     }
@@ -232,6 +244,13 @@ export function createServerPaymentsMiddleware(params: {
 
       // Handle rejection: emit payment_rejected and do not forward.
       if (isResolvePriceRejection(quote)) {
+        logger.info('payment rejected', {
+          requestEventId,
+          pmi: processor.pmi,
+          amount: priced.amount,
+          reason: quote.message,
+        });
+
         const rejectedNotification = createPaymentRejectedNotification({
           pmi: processor.pmi,
           amount: priced.amount,
@@ -270,6 +289,13 @@ export function createServerPaymentsMiddleware(params: {
           _meta: mergedMeta,
         });
 
+        logger.info('payment required notification sent', {
+          requestEventId,
+          pmi: paymentRequired.pmi,
+          amount: paymentRequired.amount,
+          ttl: paymentRequired.ttl,
+        });
+
         await sender.sendNotification(
           ctx.clientPubkey,
           requiredNotification,
@@ -280,6 +306,12 @@ export function createServerPaymentsMiddleware(params: {
           ttlSeconds: paymentRequired.ttl,
         });
         const effectiveTimeoutMs = Math.min(verifyTimeoutMs, paymentTtlMs);
+
+        logger.debug('verifying payment', {
+          requestEventId,
+          pmi: paymentRequired.pmi,
+          timeoutMs: effectiveTimeoutMs,
+        });
 
         const controller = new AbortController();
         const verified = await withTimeout(
@@ -293,6 +325,12 @@ export function createServerPaymentsMiddleware(params: {
           'verifyPayment timed out',
         ).finally(() => controller.abort());
 
+        logger.info('payment accepted', {
+          requestEventId,
+          pmi: paymentRequired.pmi,
+          amount: paymentRequired.amount,
+        });
+
         const acceptedNotification = createPaymentAcceptedNotification({
           amount: paymentRequired.amount,
           pmi: paymentRequired.pmi,
@@ -304,6 +342,11 @@ export function createServerPaymentsMiddleware(params: {
           acceptedNotification,
           requestEventId,
         );
+
+        logger.debug('forwarding priced request after payment', {
+          requestEventId,
+          method: message.method,
+        });
 
         await forward(message);
       }

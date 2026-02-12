@@ -1,5 +1,15 @@
 # @contextvm/sdk
 
+## 0.4.2
+
+### Patch Changes
+
+- feat(payments): add payments exports and logging
+
+This commit adds the payments module to the package exports, including
+subpaths, making it available for import. It also adds logging to the client
+and server payment flows for better observability.
+
 ## 0.4.1
 
 ### Patch Changes

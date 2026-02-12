@@ -5,6 +5,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { NostrClientTransport } from '../transport/nostr-client-transport.js';
 import { PaymentHandler, PaymentRequiredNotification } from './types.js';
+import { createLogger } from '../core/utils/logger.js';
 
 type TransportWithOptionalContext = Transport & {
   onmessageWithContext?: (
@@ -33,10 +34,15 @@ export function withClientPayments(
   transport: Transport,
   options: ClientPaymentsOptions,
 ): Transport {
+  const logger = createLogger('client-payments');
+
   // Ensure CEP-8 discovery/negotiation: when using Nostr transports, always advertise
   // supported PMIs derived from the handler list (preference order = handler order).
   if (transport instanceof NostrClientTransport) {
     transport.setClientPmis(options.handlers.map((h) => h.pmi));
+    logger.debug('advertised client PMIs', {
+      pmis: options.handlers.map((h) => h.pmi),
+    });
   }
 
   const handlersByPmi = new Map(
@@ -59,12 +65,20 @@ export function withClientPayments(
     }
     const handler = handlersByPmi.get(message.params.pmi);
     if (!handler) {
+      logger.debug('no handler for PMI, ignoring payment_required', {
+        pmi: message.params.pmi,
+        requestEventId,
+      });
       return;
     }
 
     // Best-effort client-side dedupe keyed by pay_req.
     // IMPORTANT: claim synchronously before any await to avoid double-pay races.
     if (inFlightPayReqs.has(message.params.pay_req)) {
+      logger.debug('duplicate pay_req detected, skipping', {
+        payReq: message.params.pay_req.substring(0, 20) + '...',
+        requestEventId,
+      });
       return;
     }
 
@@ -77,12 +91,40 @@ export function withClientPayments(
         requestEventId,
       };
 
+      logger.info('processing payment_required', {
+        requestEventId,
+        pmi: message.params.pmi,
+        amount: message.params.amount,
+      });
+
       const canHandle = handler.canHandle ? await handler.canHandle(req) : true;
       if (!canHandle) {
+        logger.debug('handler declined to handle', {
+          requestEventId,
+          pmi: message.params.pmi,
+        });
         return;
       }
 
+      logger.debug('invoking payment handler', {
+        requestEventId,
+        handler: handler.constructor.name,
+        pmi: message.params.pmi,
+      });
+
       await handler.handle(req);
+
+      logger.info('payment handler completed successfully', {
+        requestEventId,
+        pmi: message.params.pmi,
+      });
+    } catch (error) {
+      logger.error('payment handler failed', {
+        requestEventId,
+        pmi: message.params.pmi,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
     } finally {
       inFlightPayReqs.delete(message.params.pay_req);
     }
