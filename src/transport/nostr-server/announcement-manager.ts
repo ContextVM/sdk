@@ -154,6 +154,15 @@ export class AnnouncementManager {
   }
 
   /**
+   * Returns the currently configured pricing tags.
+   *
+   * Intended for attaching CEP-8 pricing (`cap` tags) to other server-emitted events.
+   */
+  public getPricingTags(): string[][] {
+    return this.pricingTags;
+  }
+
+  /**
    * Generates common tags from server information for use in Nostr events.
    * @returns Array of tag arrays for Nostr events.
    */

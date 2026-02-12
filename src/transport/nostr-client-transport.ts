@@ -1,5 +1,9 @@
 import {
   InitializeResultSchema,
+  ListPromptsResultSchema,
+  ListResourcesResultSchema,
+  ListResourceTemplatesResultSchema,
+  ListToolsResultSchema,
   NotificationSchema,
   type JSONRPCMessage,
   isJSONRPCRequest,
@@ -69,6 +73,15 @@ export class NostrClientTransport
   private clientPmis: readonly string[] | undefined;
   /** The server's initialize event, if received */
   private serverInitializeEvent: NostrEvent | undefined;
+
+  /** The latest server tools/list response event envelope, if received. */
+  private serverToolsListEvent: NostrEvent | undefined;
+  /** The latest server prompts/list response event envelope, if received. */
+  private serverPromptsListEvent: NostrEvent | undefined;
+  /** The latest server resources/list response event envelope, if received. */
+  private serverResourcesListEvent: NostrEvent | undefined;
+  /** The latest server resources/templates/list response event envelope, if received. */
+  private serverResourceTemplatesListEvent: NostrEvent | undefined;
 
   /**
    * Creates a new NostrClientTransport instance.
@@ -339,6 +352,24 @@ export class NostrClientTransport
           return;
         }
 
+        // Capture outer Nostr event envelope for capability list JSON-RPC responses.
+        // This allows consumers to inspect Nostr tags (e.g. CEP-8 `cap` tags)
+        // that are not present in the JSON-RPC payload.
+        if (isJSONRPCResultResponse(mcpMessage)) {
+          const result = mcpMessage.result;
+          if (ListToolsResultSchema.safeParse(result).success) {
+            this.serverToolsListEvent = nostrEvent;
+          } else if (ListResourcesResultSchema.safeParse(result).success) {
+            this.serverResourcesListEvent = nostrEvent;
+          } else if (
+            ListResourceTemplatesResultSchema.safeParse(result).success
+          ) {
+            this.serverResourceTemplatesListEvent = nostrEvent;
+          } else if (ListPromptsResultSchema.safeParse(result).success) {
+            this.serverPromptsListEvent = nostrEvent;
+          }
+        }
+
         this.handleResponse(eTag, mcpMessage);
         return;
       }
@@ -374,6 +405,26 @@ export class NostrClientTransport
    */
   public getServerInitializeEvent(): NostrEvent | undefined {
     return this.serverInitializeEvent;
+  }
+
+  /** Gets the server's most recently observed tools/list event envelope, if any. */
+  public getServerToolsListEvent(): NostrEvent | undefined {
+    return this.serverToolsListEvent;
+  }
+
+  /** Gets the server's most recently observed resources/list event envelope, if any. */
+  public getServerResourcesListEvent(): NostrEvent | undefined {
+    return this.serverResourcesListEvent;
+  }
+
+  /** Gets the server's most recently observed resources/templates/list event envelope, if any. */
+  public getServerResourceTemplatesListEvent(): NostrEvent | undefined {
+    return this.serverResourceTemplatesListEvent;
+  }
+
+  /** Gets the server's most recently observed prompts/list event envelope, if any. */
+  public getServerPromptsListEvent(): NostrEvent | undefined {
+    return this.serverPromptsListEvent;
   }
 
   /**
@@ -453,6 +504,10 @@ export class NostrClientTransport
       correlationStore: this.correlationStore,
       statelessHandler: this.statelessHandler,
       serverInitializeEvent: this.serverInitializeEvent,
+      serverToolsListEvent: this.serverToolsListEvent,
+      serverResourcesListEvent: this.serverResourcesListEvent,
+      serverResourceTemplatesListEvent: this.serverResourceTemplatesListEvent,
+      serverPromptsListEvent: this.serverPromptsListEvent,
     };
   }
 }

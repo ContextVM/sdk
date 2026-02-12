@@ -1,5 +1,15 @@
 # @contextvm/sdk
 
+## 0.4.1
+
+### Patch Changes
+
+- feat(transport): capture list response envelopes and attach pricing tags
+
+  This change enables the client to access CEP-8 cap tags (pricing) from list responses without fetching announcement events.
+
+  The server now attaches pricing tags to list responses, and the client captures the event envelopes to expose them. This allows consumers to inspect Nostr tags (e.g. CEP-8 `cap` tags) that are not present in the JSON-RPC payload.
+
 ## 0.4.0
 
 ### Minor Changes

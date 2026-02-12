@@ -1,5 +1,9 @@
 import {
   InitializeResultSchema,
+  ListPromptsResultSchema,
+  ListResourcesResultSchema,
+  ListResourceTemplatesResultSchema,
+  ListToolsResultSchema,
   isJSONRPCRequest,
   isJSONRPCNotification,
   type JSONRPCMessage,
@@ -418,6 +422,22 @@ export class NostrServerTransport
       commonTags.forEach((tag) => {
         tags.push(tag);
       });
+    }
+
+    // Attach pricing tags to capability list responses so clients can access CEP-8 pricing
+    if (isJSONRPCResultResponse(response)) {
+      const result = response.result;
+      if (
+        ListToolsResultSchema.safeParse(result).success ||
+        ListResourcesResultSchema.safeParse(result).success ||
+        ListResourceTemplatesResultSchema.safeParse(result).success ||
+        ListPromptsResultSchema.safeParse(result).success
+      ) {
+        const pricingTags = this.announcementManager.getPricingTags();
+        pricingTags.forEach((tag) => {
+          tags.push(tag);
+        });
+      }
     }
 
     await this.sendMcpMessage(
