@@ -28,6 +28,7 @@ export const PING_FILTER: Filter = {
 
 /** Subscription intent stored for replay after rebuild */
 type SubscriptionDescriptor = {
+  id: string;
   filters: Filter[];
   onEvent: (event: NostrEvent) => void;
   onEose?: () => void;
@@ -290,7 +291,10 @@ export class ApplesauceRelayPool implements RelayHandler {
    * Publishes a Nostr event to the relay group.
    * @param event - The Nostr event to publish.
    */
-  async publish(event: NostrEvent): Promise<void> {
+  async publish(
+    event: NostrEvent,
+    opts?: { abortSignal?: AbortSignal },
+  ): Promise<void> {
     logger.debug('Publishing event', { eventId: event.id, kind: event.kind });
 
     // NOTE: Publishing is intentionally retried indefinitely.
@@ -299,6 +303,9 @@ export class ApplesauceRelayPool implements RelayHandler {
     let attempt = 0;
 
     while (true) {
+      if (opts?.abortSignal?.aborted) {
+        throw new Error('Publish aborted');
+      }
       attempt += 1;
       try {
         const responses = await this.relayGroup.publish(event, {
@@ -396,18 +403,42 @@ export class ApplesauceRelayPool implements RelayHandler {
     filters: Filter[],
     onEvent: (event: NostrEvent) => void,
     onEose?: () => void,
-  ): Promise<void> {
+  ): Promise<() => void> {
+    const id = `sub:${Date.now()}:${Math.random().toString(16).slice(2)}`;
+
     // Store the descriptor for replay after rebuild
-    this.subscriptionDescriptors.push({ filters, onEvent, onEose });
+    const descriptor: SubscriptionDescriptor = { id, filters, onEvent, onEose };
+    this.subscriptionDescriptors.push(descriptor);
+
     // Start the subscription and store the unsubscribe handle
-    this.activeUnsubscribers.push(
-      this.createSubscription(filters, onEvent, onEose),
-    );
+    const unsubscribe = this.createSubscription(filters, onEvent, onEose);
+    this.activeUnsubscribers.push(unsubscribe);
+
     // Start ping monitor lazily on first subscription
     logger.debug('Starting ping monitor from subscribe', {
       activeUnsubscribers: this.activeUnsubscribers.length,
     });
     this.startPingMonitor();
+
+    // Return a per-subscription unsubscribe that also cleans up replay intent.
+    return (): void => {
+      try {
+        unsubscribe();
+      } finally {
+        this.subscriptionDescriptors = this.subscriptionDescriptors.filter(
+          (d) => d.id !== id,
+        );
+        this.activeUnsubscribers = this.activeUnsubscribers.filter(
+          (u) => u !== unsubscribe,
+        );
+
+        // If nothing is subscribed, stop pinging (otherwise liveness can
+        // incorrectly rebuild a perfectly healthy-but-idle pool).
+        if (this.activeUnsubscribers.length === 0) {
+          this.stopPingMonitor();
+        }
+      }
+    };
   }
 
   /**

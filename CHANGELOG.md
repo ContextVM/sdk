@@ -1,5 +1,24 @@
 # @contextvm/sdk
 
+## 0.4.4
+
+### Patch Changes
+
+- fix: prevent zombie publish loops and add regression tests
+  - ApplesauceRelayPool.publish() now checks abortSignal.aborted in the
+    retry loop to stop infinite retries when upstream timeouts occur
+  - BaseNostrTransport uses AbortController instead of withTimeout() for
+    proper cancellation semantics
+  - RelayHandler.subscribe() returns Promise<() => void> for per-subscription
+    cleanup, fixing NWC subscription leaks
+  - NwcClient.request() cleans up subscriptions on success, timeout, and error
+  - Add regression tests:
+    - applesauce-relay-pool.publish-abort.test.ts: unit test verifying
+      publish() stops retrying when aborted
+    - payments-multi-client-disconnect.e2e.test.ts: e2e test with server
+      and multiple clients, some disconnecting mid-flight, ensuring
+      server remains responsive (no zombie loops)
+
 ## 0.4.3
 
 ### Patch Changes

@@ -42,8 +42,8 @@ export class NwcClient {
   private readonly logger: Logger;
   private connected = false;
 
-  // RelayHandler only exposes a global `unsubscribe()`. To avoid cross-request
-  // interference, we serialize NWC requests per client instance.
+  // NIP-47 is request/response over relays. To avoid cross-request interference,
+  // we serialize NWC requests per client instance.
   private requestQueue: Promise<void> = Promise.resolve();
 
   public constructor(options: NwcClientOptions) {
@@ -104,6 +104,9 @@ export class NwcClient {
 
       const signedRequest = finalizeEvent(eventTemplate, clientSecretKey);
 
+      let settled = false;
+      let unsubscribeResponse: (() => void) | undefined;
+
       const responsePromise = new Promise<NostrEvent>((resolve, reject) => {
         const filters: Filter[] = [
           {
@@ -128,17 +131,46 @@ export class NwcClient {
               eventId: event.id,
               pubkey: event.pubkey,
             });
+            settled = true;
             resolve(event);
           })
-          .catch(reject);
+          .then((unsubscribe) => {
+            // Ensure the subscription is cleaned up when the promise settles.
+            unsubscribeResponse = unsubscribe;
+            if (settled) {
+              unsubscribeResponse();
+            }
+          })
+          .catch((error: unknown) => {
+            settled = true;
+            reject(error);
+          });
       });
+
+      // Also cleanup on timeout/error paths.
+      responsePromise.finally(() => unsubscribeResponse?.());
 
       this.logger.debug('publish request', {
         method: params.method,
         requestId: signedRequest.id,
         encryption: 'nip04',
       });
-      await this.relayHandler.publish(signedRequest);
+      const publishController = new AbortController();
+      const publishTimeout = setTimeout(
+        () => publishController.abort(),
+        this.responseTimeoutMs,
+      );
+      try {
+        await this.relayHandler.publish(signedRequest, {
+          abortSignal: publishController.signal,
+        });
+      } finally {
+        clearTimeout(publishTimeout);
+      }
+
+      if (publishController.signal.aborted) {
+        throw new Error(`NWC publish timed out for ${params.method}`);
+      }
 
       const responseEvent = await withTimeout(
         responsePromise,

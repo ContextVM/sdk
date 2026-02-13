@@ -28,13 +28,16 @@ class MockRelayHandler implements RelayHandler {
     // no-op
   }
 
-  async publish(event: NostrEvent): Promise<void> {
-    this.published.push(event);
+  async publish(_event: NostrEvent): Promise<void> {
+    this.published.push(_event);
   }
 
   async subscribe(filters: Filter[], onEvent: (event: NostrEvent) => void) {
     this.subscribedFilters = filters;
     this.onEvent = onEvent;
+    return () => {
+      this.onEvent = undefined;
+    };
   }
 
   unsubscribe(): void {

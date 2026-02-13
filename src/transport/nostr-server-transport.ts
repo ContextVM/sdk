@@ -189,7 +189,7 @@ export class NostrServerTransport
       onSignEvent: (eventTemplate) => this.signer.signEvent(eventTemplate),
       onGetPublicKey: () => this.getPublicKey(),
       onSubscribe: (filters, onEvent) =>
-        this.relayHandler.subscribe(filters, onEvent),
+        this.relayHandler.subscribe(filters, onEvent).then(() => undefined),
       logger: this.logger,
     });
   }
