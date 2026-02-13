@@ -1,5 +1,11 @@
 # @contextvm/sdk
 
+## 0.4.3
+
+### Patch Changes
+
+- fix: avoid global unsibscribe for nwc-client
+
 ## 0.4.2
 
 ### Patch Changes

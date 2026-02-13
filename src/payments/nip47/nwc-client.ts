@@ -140,48 +140,43 @@ export class NwcClient {
       });
       await this.relayHandler.publish(signedRequest);
 
-      try {
-        const responseEvent = await withTimeout(
-          responsePromise,
-          this.responseTimeoutMs,
-          `NWC response timed out for ${params.method}`,
-        );
+      const responseEvent = await withTimeout(
+        responsePromise,
+        this.responseTimeoutMs,
+        `NWC response timed out for ${params.method}`,
+      );
 
-        // Validate correlation.
-        const eTag = getTagValue(responseEvent.tags as string[][], 'e');
-        if (eTag !== signedRequest.id) {
-          throw new Error('NWC response did not correlate to request');
-        }
-
-        const decrypted = await nip04.decrypt(
-          this.connection.clientSecretKeyHex,
-          responseEvent.pubkey,
-          responseEvent.content,
-        );
-
-        const parsed = JSON.parse(decrypted) as NwcResponse<M, unknown>;
-
-        if (parsed.result_type !== params.resultType) {
-          throw new Error(
-            `Unexpected NWC result_type: ${String(parsed.result_type)} (expected ${params.resultType})`,
-          );
-        }
-
-        if (parsed.error) {
-          return parsed as NwcResponse<M, R>;
-        }
-
-        if (params.responseResultGuard && parsed.result !== null) {
-          if (!params.responseResultGuard(parsed.result)) {
-            throw new Error('Unexpected NWC result shape');
-          }
-        }
-
-        return parsed as NwcResponse<M, R>;
-      } finally {
-        // Best-effort cleanup (RelayHandler has global unsubscribe).
-        this.relayHandler.unsubscribe();
+      // Validate correlation.
+      const eTag = getTagValue(responseEvent.tags as string[][], 'e');
+      if (eTag !== signedRequest.id) {
+        throw new Error('NWC response did not correlate to request');
       }
+
+      const decrypted = await nip04.decrypt(
+        this.connection.clientSecretKeyHex,
+        responseEvent.pubkey,
+        responseEvent.content,
+      );
+
+      const parsed = JSON.parse(decrypted) as NwcResponse<M, unknown>;
+
+      if (parsed.result_type !== params.resultType) {
+        throw new Error(
+          `Unexpected NWC result_type: ${String(parsed.result_type)} (expected ${params.resultType})`,
+        );
+      }
+
+      if (parsed.error) {
+        return parsed as NwcResponse<M, R>;
+      }
+
+      if (params.responseResultGuard && parsed.result !== null) {
+        if (!params.responseResultGuard(parsed.result)) {
+          throw new Error('Unexpected NWC result shape');
+        }
+      }
+
+      return parsed as NwcResponse<M, R>;
     };
 
     const prev = this.requestQueue;
