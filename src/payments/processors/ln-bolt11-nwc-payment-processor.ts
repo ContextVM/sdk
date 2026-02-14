@@ -96,7 +96,7 @@ export class LnBolt11NwcPaymentProcessor implements PaymentProcessor {
     // Keep a floor for legacy configs that rely on a predictable pollIntervalMs.
     const scheduleMs = [500, 750, 1000, 1500, 2500, 4000, 6500, 10_000, 15_000];
 
-    const base = scheduleMs[Math.min(params.attempt, scheduleMs.length - 1)]!;
+    const base = scheduleMs[Math.min(params.attempt, scheduleMs.length - 1)];
     const flooredBase = Math.max(this.pollIntervalMs, base);
 
     // Add small jitter to avoid stampeding on shared relay/wallet infra.
