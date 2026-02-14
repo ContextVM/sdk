@@ -54,4 +54,3 @@ describe('ApplesauceRelayPool publish cancellation (regression)', () => {
     expect(publishAttemptCount).toBe(attemptsAtAbort);
   }, 10_000);
 });
-

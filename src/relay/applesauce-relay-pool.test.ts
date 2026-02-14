@@ -17,12 +17,16 @@ import { Subject } from 'rxjs';
 type TestableApplesauceRelayPool = Omit<ApplesauceRelayPool, 'relayGroup'> & {
   createRelay: (url: string) => Relay;
   rebuild: (reason: string) => void;
-  subscriptionDescriptors: Array<{
-    filters: Filter[];
-    onEvent: (event: NostrEvent) => void;
-    onEose?: () => void;
-  }>;
-  activeUnsubscribers: Array<() => void>;
+  subscriptions: Map<
+    string,
+    {
+      id: string;
+      filters: Filter[];
+      onEvent: (event: NostrEvent) => void;
+      onEose?: () => void;
+      unsubscribe?: () => void;
+    }
+  >;
   rebuildInFlight?: Promise<void>;
 };
 
@@ -94,16 +98,12 @@ function trackCreateRelayCalls(pool: ApplesauceRelayPool): {
 
 /** Gets typed access to internal state for assertions */
 function getInternalState(pool: ApplesauceRelayPool): {
-  subscriptionDescriptors: TestableApplesauceRelayPool['subscriptionDescriptors'];
-  activeUnsubscribers: TestableApplesauceRelayPool['activeUnsubscribers'];
+  subscriptions: TestableApplesauceRelayPool['subscriptions'];
 } {
   const testPool = pool as unknown as TestableApplesauceRelayPool;
   return {
-    get subscriptionDescriptors() {
-      return testPool.subscriptionDescriptors;
-    },
-    get activeUnsubscribers() {
-      return testPool.activeUnsubscribers;
+    get subscriptions() {
+      return testPool.subscriptions;
     },
   };
 }
@@ -554,15 +554,13 @@ describe('ApplesauceRelayPool Integration', () => {
     relayPool.subscribe([{ kinds: [3] }], () => {});
 
     // 4. Verify descriptors and unsubscribers are populated
-    expect(internalState.subscriptionDescriptors.length).toBe(3);
-    expect(internalState.activeUnsubscribers.length).toBe(3);
+    expect(internalState.subscriptions.size).toBe(3);
 
     // 5. Unsubscribe
     relayPool.unsubscribe();
 
     // 6. Verify both are cleaned up
-    expect(internalState.subscriptionDescriptors.length).toBe(0);
-    expect(internalState.activeUnsubscribers.length).toBe(0);
+    expect(internalState.subscriptions.size).toBe(0);
 
     // 7. Cleanup
     await relayPool.disconnect();
@@ -801,7 +799,7 @@ describe('ApplesauceRelayPool Integration', () => {
 
     // 9. Verify descriptors were preserved
     const internalState = getInternalState(relayPool);
-    expect(internalState.subscriptionDescriptors.length).toBeGreaterThan(0);
+    expect(internalState.subscriptions.size).toBeGreaterThan(0);
 
     // 10. Cleanup
     relayPool.unsubscribe();

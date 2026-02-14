@@ -62,6 +62,11 @@ export abstract class BaseNostrTransport {
 
   protected readonly taskQueue: TaskQueue;
 
+  // Transport-level subscription ownership.
+  // Even if the relay handler supports global unsubscribe/disconnect, transports
+  // should explicitly release the specific subscription(s) they create.
+  private readonly subscriptionUnsubscribers = new Set<() => void>();
+
   constructor(module: string, options: BaseNostrTransportOptions) {
     this.signer = options.signer;
     this.relayHandler = Array.isArray(options.relayHandler)
@@ -146,26 +151,49 @@ export abstract class BaseNostrTransport {
     onEvent: (event: NostrEvent) => void | Promise<void>,
   ): Promise<void> {
     try {
-      await this.relayHandler.subscribe(filters, (event) => {
-        this.taskQueue.add(async () => {
-          try {
-            await onEvent(event);
-          } catch (error) {
-            this.logger.error('Error in subscription event handler', {
-              error: error instanceof Error ? error.message : String(error),
-              stack: error instanceof Error ? error.stack : undefined,
-              eventId: event.id,
-              eventKind: event.kind,
-            });
-          }
-        });
-      });
+      const unsubscribe = await this.relayHandler.subscribe(
+        filters,
+        (event) => {
+          this.taskQueue.add(async () => {
+            try {
+              await onEvent(event);
+            } catch (error) {
+              this.logger.error('Error in subscription event handler', {
+                error: error instanceof Error ? error.message : String(error),
+                stack: error instanceof Error ? error.stack : undefined,
+                eventId: event.id,
+                eventKind: event.kind,
+              });
+            }
+          });
+        },
+      );
+
+      this.subscriptionUnsubscribers.add(unsubscribe);
       this.logger.debug('Subscribed to Nostr events', { filters });
     } catch (error) {
       this.logAndRethrowError('Failed to subscribe to Nostr events', error, {
         filters,
       });
     }
+  }
+
+  /**
+   * Unsubscribes all transport-owned relay subscriptions.
+   *
+   * This is intentionally separate from relay disconnect: unsubscribing stops
+   * inbound message processing immediately, while allowing the relay handler to
+   * manage socket teardown independently.
+   */
+  protected unsubscribeAll(): void {
+    for (const unsubscribe of this.subscriptionUnsubscribers) {
+      try {
+        unsubscribe();
+      } catch {
+        // best-effort
+      }
+    }
+    this.subscriptionUnsubscribers.clear();
   }
 
   /**
@@ -242,7 +270,9 @@ export abstract class BaseNostrTransport {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
       try {
-        await this.relayHandler.publish(event, { abortSignal: controller.signal });
+        await this.relayHandler.publish(event, {
+          abortSignal: controller.signal,
+        });
       } finally {
         clearTimeout(timeout);
       }

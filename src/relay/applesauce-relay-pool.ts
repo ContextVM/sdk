@@ -34,6 +34,11 @@ type SubscriptionDescriptor = {
   onEose?: () => void;
 };
 
+type SubscriptionState = SubscriptionDescriptor & {
+  /** Runtime unsubscribe handle for the currently active RxJS subscription (if started). */
+  unsubscribe?: () => void;
+};
+
 /** Configuration options for ApplesauceRelayPool */
 export interface ApplesauceRelayPoolOptions {
   /** Ping frequency in ms (default: 30000) */
@@ -48,8 +53,7 @@ export interface ApplesauceRelayPoolOptions {
 export class ApplesauceRelayPool implements RelayHandler {
   private readonly relayUrls: string[];
   private relayGroup: RelayGroup;
-  private subscriptionDescriptors: SubscriptionDescriptor[] = [];
-  private activeUnsubscribers: Array<() => void> = [];
+  private readonly subscriptions = new Map<string, SubscriptionState>();
 
   // Outbound publish policy
   private static readonly PUBLISH_ATTEMPT_TIMEOUT_MS = 10_000;
@@ -406,35 +410,26 @@ export class ApplesauceRelayPool implements RelayHandler {
   ): Promise<() => void> {
     const id = `sub:${Date.now()}:${Math.random().toString(16).slice(2)}`;
 
-    // Store the descriptor for replay after rebuild
-    const descriptor: SubscriptionDescriptor = { id, filters, onEvent, onEose };
-    this.subscriptionDescriptors.push(descriptor);
-
-    // Start the subscription and store the unsubscribe handle
-    const unsubscribe = this.createSubscription(filters, onEvent, onEose);
-    this.activeUnsubscribers.push(unsubscribe);
+    const state: SubscriptionState = { id, filters, onEvent, onEose };
+    state.unsubscribe = this.createSubscription(filters, onEvent, onEose);
+    this.subscriptions.set(id, state);
 
     // Start ping monitor lazily on first subscription
     logger.debug('Starting ping monitor from subscribe', {
-      activeUnsubscribers: this.activeUnsubscribers.length,
+      activeSubscriptions: this.subscriptions.size,
     });
     this.startPingMonitor();
 
     // Return a per-subscription unsubscribe that also cleans up replay intent.
     return (): void => {
       try {
-        unsubscribe();
+        this.subscriptions.get(id)?.unsubscribe?.();
       } finally {
-        this.subscriptionDescriptors = this.subscriptionDescriptors.filter(
-          (d) => d.id !== id,
-        );
-        this.activeUnsubscribers = this.activeUnsubscribers.filter(
-          (u) => u !== unsubscribe,
-        );
+        this.subscriptions.delete(id);
 
         // If nothing is subscribed, stop pinging (otherwise liveness can
         // incorrectly rebuild a perfectly healthy-but-idle pool).
-        if (this.activeUnsubscribers.length === 0) {
+        if (this.subscriptions.size === 0) {
           this.stopPingMonitor();
         }
       }
@@ -480,8 +475,10 @@ export class ApplesauceRelayPool implements RelayHandler {
     logger.debug('Stopping active subscriptions (preserving descriptors)');
 
     try {
-      for (const unsubscribe of this.activeUnsubscribers) unsubscribe();
-      this.activeUnsubscribers = [];
+      for (const sub of this.subscriptions.values()) {
+        sub.unsubscribe?.();
+        sub.unsubscribe = undefined;
+      }
     } catch (error) {
       logger.error('Error while stopping active subscriptions', { error });
     }
@@ -494,8 +491,10 @@ export class ApplesauceRelayPool implements RelayHandler {
     logger.debug('Unsubscribing from all subscriptions');
 
     try {
-      this.stopActiveSubscriptions();
-      this.subscriptionDescriptors = [];
+      for (const sub of this.subscriptions.values()) {
+        sub.unsubscribe?.();
+      }
+      this.subscriptions.clear();
       // If nothing is subscribed, stop pinging (otherwise liveness can
       // incorrectly rebuild a perfectly healthy-but-idle pool).
       this.stopPingMonitor();
@@ -553,13 +552,13 @@ export class ApplesauceRelayPool implements RelayHandler {
     // If there are no active subscriptions, don't perform liveness checks.
     // applesauce-relay may legitimately close sockets after `keepAlive` when
     // nothing is subscribed, and that should not trigger a rebuild.
-    if (this.activeUnsubscribers.length === 0) {
+    if (this.subscriptions.size === 0) {
       logger.debug('Skipping liveness check: no active subscriptions');
       return;
     }
 
     logger.debug('Running liveness check', {
-      activeUnsubscribers: this.activeUnsubscribers.length,
+      activeSubscriptions: this.subscriptions.size,
       relayCount: this.relays.length,
     });
 
@@ -656,9 +655,11 @@ export class ApplesauceRelayPool implements RelayHandler {
 
       // Replay all stored subscription descriptors
       // Note: New subscriptions added during rebuild will be replayed after this completes
-      for (const desc of this.subscriptionDescriptors) {
-        this.activeUnsubscribers.push(
-          this.createSubscription(desc.filters, desc.onEvent, desc.onEose),
+      for (const sub of this.subscriptions.values()) {
+        sub.unsubscribe = this.createSubscription(
+          sub.filters,
+          sub.onEvent,
+          sub.onEose,
         );
       }
 

@@ -44,7 +44,10 @@ export interface NostrSigner {
 export interface RelayHandler {
   connect(): Promise<void>;
   disconnect(relayUrls?: string[]): Promise<void>;
-  publish(event: NostrEvent, opts?: { abortSignal?: AbortSignal }): Promise<void>;
+  publish(
+    event: NostrEvent,
+    opts?: { abortSignal?: AbortSignal },
+  ): Promise<void>;
   subscribe(
     filters: Filter[],
     onEvent: (event: NostrEvent) => void,

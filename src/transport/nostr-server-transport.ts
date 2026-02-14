@@ -269,6 +269,7 @@ export class NostrServerTransport
       // and clear pending tasks to avoid operating on stale state
       await this.taskQueue.shutdown();
 
+      this.unsubscribeAll();
       await this.disconnect();
       this.sessionStore.clear();
       this.correlationStore.clear();

@@ -154,6 +154,7 @@ export class NostrClientTransport
    */
   public async close(): Promise<void> {
     try {
+      this.unsubscribeAll();
       await this.disconnect();
       this.correlationStore.clear();
       this.onclose?.();
