@@ -94,3 +94,40 @@ export function isHex64(value: string | undefined): value is string {
 export function nowSeconds(): number {
   return Math.floor(Date.now() / 1000);
 }
+
+/**
+ * Sleeps for a specified number of milliseconds, aborting if the abort signal is aborted.
+ */
+export async function sleepWithAbort(params: {
+  ms: number;
+  abortSignal: AbortSignal | undefined;
+}): Promise<void> {
+  if (params.abortSignal?.aborted) {
+    throw new Error('sleep aborted');
+  }
+
+  if (!params.abortSignal) {
+    await sleep(params.ms);
+    return;
+  }
+
+  const abortSignal = params.abortSignal;
+  await new Promise<void>((resolve, reject) => {
+    const onAbort = () => {
+      cleanup();
+      reject(new Error('sleep aborted'));
+    };
+
+    const timeout = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, params.ms);
+
+    const cleanup = () => {
+      clearTimeout(timeout);
+      abortSignal.removeEventListener('abort', onAbort);
+    };
+
+    abortSignal.addEventListener('abort', onAbort, { once: true });
+  });
+}

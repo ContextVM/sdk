@@ -10,8 +10,9 @@ import { NwcClient } from '../nip47/nwc-client.js';
 import type { NwcInvoiceResult, NwcMakeInvoiceParams } from '../nip47/types.js';
 import { ApplesauceRelayPool } from '../../relay/applesauce-relay-pool.js';
 import { createLogger, type Logger } from '../../core/utils/logger.js';
-import { sleep } from '../../core/utils/utils.js';
 import { satsToMsats } from '../nip47/utils.js';
+import { LruCache } from '../../core/utils/lru-cache.js';
+import { sleepWithAbort } from '../../core/utils/utils.js';
 
 export interface LnBolt11NwcPaymentProcessorOptions {
   /** NIP-47 `nostr+walletconnect://...` connection string. */
@@ -27,6 +28,22 @@ export interface LnBolt11NwcPaymentProcessorOptions {
   pollIntervalMs?: number;
   /** Per-request response timeout. @default 60_000 */
   responseTimeoutMs?: number;
+
+  /**
+   * Maximum number of in-flight invoice verifications to dedupe.
+   *
+   * This is a scalability and relay-load guardrail.
+   * @default 5000
+   */
+  maxInFlightVerifications?: number;
+
+  /**
+   * Maximum number of invoice->payment_hash mappings to cache.
+   *
+   * This reduces the need to rely on invoice-string lookups when wallets support payment_hash.
+   * @default 10000
+   */
+  invoiceHashCacheSize?: number;
 }
 
 /**
@@ -40,6 +57,15 @@ export class LnBolt11NwcPaymentProcessor implements PaymentProcessor {
   private readonly invoiceExpirySeconds: number;
   private readonly pollIntervalMs: number;
   private readonly logger: Logger;
+
+  // Dedupe concurrent verifyPayment() calls for the same pay_req to avoid amplifying
+  // relay + wallet load under duplicate delivery.
+  private readonly inFlightVerifications: LruCache<
+    Promise<{ _meta?: Record<string, unknown> }>
+  >;
+
+  // Cache invoice -> payment_hash when wallets provide it.
+  private readonly invoiceHashCache: LruCache<string>;
 
   public constructor(options: LnBolt11NwcPaymentProcessorOptions) {
     const connection = parseNwcConnectionString(options.nwcConnectionString);
@@ -56,6 +82,26 @@ export class LnBolt11NwcPaymentProcessor implements PaymentProcessor {
     this.invoiceExpirySeconds = options.invoiceExpirySeconds ?? this.ttlSeconds;
     this.pollIntervalMs = options.pollIntervalMs ?? 1500;
     this.logger = createLogger('payments/nwc-processor');
+
+    this.inFlightVerifications = new LruCache<
+      Promise<{ _meta?: Record<string, unknown> }>
+    >(options.maxInFlightVerifications ?? 5000);
+    this.invoiceHashCache = new LruCache<string>(
+      options.invoiceHashCacheSize ?? 10000,
+    );
+  }
+
+  private computeNextDelayMs(params: { attempt: number }): number {
+    // Prefer fast early checks (most invoices settle quickly), then back off.
+    // Keep a floor for legacy configs that rely on a predictable pollIntervalMs.
+    const scheduleMs = [500, 750, 1000, 1500, 2500, 4000, 6500, 10_000, 15_000];
+
+    const base = scheduleMs[Math.min(params.attempt, scheduleMs.length - 1)]!;
+    const flooredBase = Math.max(this.pollIntervalMs, base);
+
+    // Add small jitter to avoid stampeding on shared relay/wallet infra.
+    const jitter = Math.floor(Math.random() * 250);
+    return flooredBase + jitter;
   }
 
   private isSettledInvoice(result: NwcInvoiceResult | null): boolean {
@@ -122,6 +168,12 @@ export class LnBolt11NwcPaymentProcessor implements PaymentProcessor {
       throw new Error('NWC make_invoice returned no invoice');
     }
 
+    const paymentHash = (response.result as NwcInvoiceResult | null)
+      ?.payment_hash;
+    if (typeof paymentHash === 'string' && paymentHash.length > 0) {
+      this.invoiceHashCache.set(invoice, paymentHash);
+    }
+
     // Keep TTL simple and predictable. Some providers return non-standard `expires_at`.
     const ttl = this.ttlSeconds;
 
@@ -137,19 +189,39 @@ export class LnBolt11NwcPaymentProcessor implements PaymentProcessor {
   public async verifyPayment(
     params: PaymentProcessorVerifyParams,
   ): Promise<{ _meta?: Record<string, unknown> }> {
+    const existing = this.inFlightVerifications.get(params.pay_req);
+    if (existing) {
+      return await existing;
+    }
+
+    const run = this.verifyPaymentInternal(params).finally(() => {
+      this.inFlightVerifications.delete(params.pay_req);
+    });
+    this.inFlightVerifications.set(params.pay_req, run);
+    return await run;
+  }
+
+  private async verifyPaymentInternal(
+    params: PaymentProcessorVerifyParams,
+  ): Promise<{ _meta?: Record<string, unknown> }> {
     // Note: server-payments middleware already bounds overall time by the `ttl` it emitted.
     // We still keep this loop tight and predictable.
+    let attempt = 0;
     while (true) {
       if (params.abortSignal?.aborted) {
         throw new Error('verifyPayment aborted');
       }
+
+      const cachedPaymentHash = this.invoiceHashCache.get(params.pay_req);
 
       const response = await this.nwc.request({
         method: 'lookup_invoice',
         resultType: 'lookup_invoice',
         request: {
           method: 'lookup_invoice',
-          params: { invoice: params.pay_req },
+          params: cachedPaymentHash
+            ? { payment_hash: cachedPaymentHash }
+            : { invoice: params.pay_req },
         },
       });
 
@@ -170,6 +242,14 @@ export class LnBolt11NwcPaymentProcessor implements PaymentProcessor {
           hasPaymentHash: Boolean(result?.payment_hash),
         });
 
+        if (
+          !cachedPaymentHash &&
+          typeof result?.payment_hash === 'string' &&
+          result.payment_hash.length > 0
+        ) {
+          this.invoiceHashCache.set(params.pay_req, result.payment_hash);
+        }
+
         if (this.isSettledInvoice(result)) {
           // Prefer payment_hash as a stable identifier (avoid exposing preimages).
           const paymentHash = this.getReceiptFromInvoiceResult({
@@ -185,7 +265,9 @@ export class LnBolt11NwcPaymentProcessor implements PaymentProcessor {
         }
       }
 
-      await sleep(this.pollIntervalMs);
+      const delayMs = this.computeNextDelayMs({ attempt });
+      attempt += 1;
+      await sleepWithAbort({ ms: delayMs, abortSignal: params.abortSignal });
     }
   }
 }

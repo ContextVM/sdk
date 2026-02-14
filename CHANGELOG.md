@@ -1,5 +1,21 @@
 # @contextvm/sdk
 
+## 0.4.5
+
+### Patch Changes
+
+- refactor(relay): consolidate subscription state into Map
+- feat(payments): add NIP-57 Lightning Zaps support
+
+  Implement NIP-57 Lightning Zaps for CEP-8 payment processing. This adds:
+  - New `nip57/lnurl` module for LNURL-pay (LUD-16) support
+  - New `nip57/zap-events` module for kind 9734/9735 zap events
+  - New `LnBolt11ZapPaymentProcessor` that issues BOLT11 invoices via LNURL-pay and verifies settlement via zap receipts
+  - Enhanced `LnBolt11NwcPaymentProcessor` with deduplication and caching for concurrent invoice verifications
+  - New `sleepWithAbort` utility function
+
+  Also adds documentation for NIP-57 and removes the `applesauce` submodule reference.
+
 ## 0.4.4
 
 ### Patch Changes
