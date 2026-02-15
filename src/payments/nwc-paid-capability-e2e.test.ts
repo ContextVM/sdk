@@ -138,8 +138,6 @@ describe('nwc paid capability e2e (skipped by default)', () => {
 
       const processor = new LnBolt11NwcPaymentProcessor({
         nwcConnectionString: serverConn,
-        ttlSeconds: 120,
-        pollIntervalMs: 1500,
       });
 
       const serverTransport = withServerPayments(
@@ -237,8 +235,6 @@ describe('nwc paid capability e2e (skipped by default)', () => {
 
       const processor = new LnBolt11NwcPaymentProcessor({
         nwcConnectionString: serverConn,
-        ttlSeconds: 120,
-        pollIntervalMs: 1500,
       });
 
       const serverTransport = withServerPayments(

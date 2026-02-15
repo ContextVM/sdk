@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import type { Filter, NostrEvent } from 'nostr-tools';
-import { nip04 } from 'nostr-tools';
+import { kinds, nip04 } from 'nostr-tools';
 import {
   finalizeEvent,
   generateSecretKey,
@@ -10,8 +10,8 @@ import { bytesToHex } from 'nostr-tools/utils';
 import type { RelayHandler } from '../../core/interfaces.js';
 import type { NwcConnection } from './types.js';
 import {
-  NWC_REQUEST_KIND,
-  NWC_RESPONSE_KIND,
+  NWC_NOTIFICATION_KIND,
+  NWC_NOTIFICATION_LEGACY_KIND,
   NwcClient,
 } from './nwc-client.js';
 
@@ -80,7 +80,7 @@ describe('NwcClient', () => {
     await new Promise<void>((r) => setTimeout(r, 0));
     expect(relayHandler.published.length).toBe(1);
     const requestEvent = relayHandler.published[0];
-    expect(requestEvent.kind).toBe(NWC_REQUEST_KIND);
+    expect(requestEvent.kind).toBe(kinds.NWCWalletRequest);
 
     // Decrypt the request with wallet keys (wallet side) to ensure it is nip04.
     const decryptedRequest = nip04.decrypt(
@@ -105,7 +105,7 @@ describe('NwcClient', () => {
     );
 
     const responseEventTemplate = {
-      kind: NWC_RESPONSE_KIND,
+      kind: kinds.NWCWalletResponse,
       created_at: Math.floor(Date.now() / 1000),
       content: encryptedContent,
       tags: [
@@ -120,5 +120,64 @@ describe('NwcClient', () => {
     expect(resp.error).toBeNull();
     expect(resp.result_type).toBe('pay_invoice');
     expect((resp.result as { preimage: string }).preimage.length).toBe(64);
+  });
+
+  test('subscribes to notification kinds and decrypts nip04 payload', async () => {
+    const clientSecretKey = generateSecretKey();
+    const clientSecretKeyHex = bytesToHex(clientSecretKey);
+    const clientPubkey = getPublicKey(clientSecretKey);
+
+    const walletSecretKey = generateSecretKey();
+    const walletPubkey = getPublicKey(walletSecretKey);
+
+    const relayHandler = new MockRelayHandler();
+    const connection: NwcConnection = {
+      walletPubkey,
+      relays: ['wss://relay.example'],
+      clientSecretKeyHex,
+    };
+
+    const client = new NwcClient({
+      relayHandler,
+      connection,
+      responseTimeoutMs: 5_000,
+    });
+
+    const received: Array<{
+      notification_type: string;
+      notification: unknown;
+    }> = [];
+    await client.subscribeNotifications({
+      onNotification: (p) => received.push(p),
+    });
+
+    // Ensure filters include both kinds.
+    expect(relayHandler.subscribedFilters?.[0]?.kinds).toEqual([
+      NWC_NOTIFICATION_KIND,
+      NWC_NOTIFICATION_LEGACY_KIND,
+    ]);
+
+    const payload = {
+      notification_type: 'payment_received',
+      notification: { payment_hash: 'a'.repeat(64) },
+    };
+    const encryptedContent = nip04.encrypt(
+      bytesToHex(walletSecretKey),
+      clientPubkey,
+      JSON.stringify(payload),
+    );
+
+    relayHandler.emit({
+      kind: NWC_NOTIFICATION_KIND,
+      created_at: Math.floor(Date.now() / 1000),
+      content: encryptedContent,
+      tags: [['p', clientPubkey]],
+      pubkey: walletPubkey,
+      id: 'e'.repeat(64),
+      sig: 'f'.repeat(128),
+    });
+
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expect(received).toEqual([payload]);
   });
 });

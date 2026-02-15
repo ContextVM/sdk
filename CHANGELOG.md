@@ -1,5 +1,22 @@
 # @contextvm/sdk
 
+## 0.4.6
+
+### Patch Changes
+
+- feat(payments): add NIP-47 notification support for payment verification
+
+Add support for NWC notifications (NIP-47) to enable push-based payment
+verification instead of polling. This includes:
+
+- New `fetchInfoNotificationTypes()` and `subscribeNotifications()` methods
+  in NwcClient to query and subscribe to wallet notifications
+- New `enableNotificationVerification` option in LnBolt11NwcPaymentProcessor
+  to control notification-based verification
+- Auto-detection of notification support via wallet info event when option
+  is undefined (best-effort mode)
+- Notification-based verifyPayment that waits for payment_received events
+
 ## 0.4.5
 
 ### Patch Changes

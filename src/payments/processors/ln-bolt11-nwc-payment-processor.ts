@@ -30,6 +30,15 @@ export interface LnBolt11NwcPaymentProcessorOptions {
   responseTimeoutMs?: number;
 
   /**
+   * Controls whether payment verification uses NWC notifications.
+   *
+   * - `false`: always poll using `lookup_invoice`.
+   * - `true`: verify using `payment_received` notifications only.
+   * - `undefined` (default): best-effort auto-detect on first use via the wallet's info event.
+   */
+  enableNotificationVerification?: boolean;
+
+  /**
    * Maximum number of in-flight invoice verifications to dedupe.
    *
    * This is a scalability and relay-load guardrail.
@@ -58,6 +67,15 @@ export class LnBolt11NwcPaymentProcessor implements PaymentProcessor {
   private readonly pollIntervalMs: number;
   private readonly logger: Logger;
 
+  private notificationVerificationEnabled: boolean;
+  private initNotificationsPromise: Promise<void> | undefined;
+
+  private notificationsUnsubscribe: (() => void) | undefined;
+  private readonly notificationWaiters = new Map<
+    string,
+    Array<(paymentHash: string) => void>
+  >();
+
   // Dedupe concurrent verifyPayment() calls for the same pay_req to avoid amplifying
   // relay + wallet load under duplicate delivery.
   private readonly inFlightVerifications: LruCache<
@@ -83,12 +101,52 @@ export class LnBolt11NwcPaymentProcessor implements PaymentProcessor {
     this.pollIntervalMs = options.pollIntervalMs ?? 1500;
     this.logger = createLogger('payments/nwc-processor');
 
+    this.notificationVerificationEnabled =
+      options.enableNotificationVerification ?? false;
+    if (options.enableNotificationVerification === undefined) {
+      this.notificationVerificationEnabled = false;
+      this.initNotificationsPromise = this.initNotificationsBestEffort();
+    }
+
     this.inFlightVerifications = new LruCache<
       Promise<{ _meta?: Record<string, unknown> }>
     >(options.maxInFlightVerifications ?? 5000);
     this.invoiceHashCache = new LruCache<string>(
       options.invoiceHashCacheSize ?? 10000,
     );
+  }
+
+  private async initNotificationsBestEffort(): Promise<void> {
+    try {
+      const types = await this.nwc.fetchInfoNotificationTypes();
+      this.notificationVerificationEnabled = types.has('payment_received');
+    } catch {
+      this.notificationVerificationEnabled = false;
+    }
+  }
+
+  private async ensureInitResolved(): Promise<void> {
+    if (!this.initNotificationsPromise) return;
+    await this.initNotificationsPromise;
+    this.initNotificationsPromise = undefined;
+  }
+
+  private async ensureNotificationsSubscribed(): Promise<void> {
+    if (!this.notificationVerificationEnabled) return;
+    if (this.notificationsUnsubscribe) return;
+    this.notificationsUnsubscribe = await this.nwc.subscribeNotifications({
+      onNotification: (payload) => {
+        if (payload.notification_type !== 'payment_received') return;
+        const paymentHash = (payload.notification as { payment_hash?: unknown })
+          ?.payment_hash;
+        if (typeof paymentHash !== 'string' || paymentHash.length === 0) return;
+
+        const waiters = this.notificationWaiters.get(paymentHash);
+        if (!waiters || waiters.length === 0) return;
+        this.notificationWaiters.delete(paymentHash);
+        for (const w of waiters) w(paymentHash);
+      },
+    });
   }
 
   private computeNextDelayMs(params: { attempt: number }): number {
@@ -189,6 +247,7 @@ export class LnBolt11NwcPaymentProcessor implements PaymentProcessor {
   public async verifyPayment(
     params: PaymentProcessorVerifyParams,
   ): Promise<{ _meta?: Record<string, unknown> }> {
+    await this.ensureInitResolved();
     const existing = this.inFlightVerifications.get(params.pay_req);
     if (existing) {
       return await existing;
@@ -204,6 +263,10 @@ export class LnBolt11NwcPaymentProcessor implements PaymentProcessor {
   private async verifyPaymentInternal(
     params: PaymentProcessorVerifyParams,
   ): Promise<{ _meta?: Record<string, unknown> }> {
+    if (this.notificationVerificationEnabled) {
+      return await this.verifyPaymentWithNotifications(params);
+    }
+
     // Note: server-payments middleware already bounds overall time by the `ttl` it emitted.
     // We still keep this loop tight and predictable.
     let attempt = 0;
@@ -269,5 +332,47 @@ export class LnBolt11NwcPaymentProcessor implements PaymentProcessor {
       attempt += 1;
       await sleepWithAbort({ ms: delayMs, abortSignal: params.abortSignal });
     }
+  }
+
+  private async verifyPaymentWithNotifications(
+    params: PaymentProcessorVerifyParams,
+  ): Promise<{ _meta?: Record<string, unknown> }> {
+    await this.ensureNotificationsSubscribed();
+
+    if (params.abortSignal?.aborted) {
+      throw new Error('verifyPayment aborted');
+    }
+
+    const paymentHash = this.invoiceHashCache.get(params.pay_req);
+    if (!paymentHash) {
+      throw new Error('NWC notification verification requires payment_hash');
+    }
+
+    const got = await new Promise<string>((resolve, reject) => {
+      const existing = this.notificationWaiters.get(paymentHash);
+      const waiters = existing ?? [];
+      waiters.push(resolve);
+      this.notificationWaiters.set(paymentHash, waiters);
+
+      if (!params.abortSignal) return;
+      const abortSignal = params.abortSignal;
+
+      const onAbort = () => {
+        abortSignal.removeEventListener('abort', onAbort);
+
+        // Remove this waiter so future notifications don't leak memory.
+        const current = this.notificationWaiters.get(paymentHash);
+        if (current) {
+          const next = current.filter((w) => w !== resolve);
+          if (next.length === 0) this.notificationWaiters.delete(paymentHash);
+          else this.notificationWaiters.set(paymentHash, next);
+        }
+
+        reject(new Error('verifyPayment aborted'));
+      };
+      abortSignal.addEventListener('abort', onAbort, { once: true });
+    });
+
+    return { _meta: { payment_hash: got } };
   }
 }

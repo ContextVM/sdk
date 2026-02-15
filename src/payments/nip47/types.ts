@@ -1,5 +1,16 @@
 export type NwcEncryptionMode = 'nip44_v2';
 
+export type NwcNotificationType =
+  | 'payment_received'
+  | 'payment_sent'
+  | 'hold_invoice_accepted'
+  | (string & {});
+
+export type NwcNotificationPayload = {
+  notification_type: NwcNotificationType;
+  notification: unknown;
+};
+
 export interface NwcConnection {
   /** Wallet service pubkey (hex). */
   walletPubkey: string;

@@ -1,22 +1,27 @@
 import type { EventTemplate, Filter, NostrEvent } from 'nostr-tools';
 import { kinds, nip04 } from 'nostr-tools';
-import { finalizeEvent } from 'nostr-tools/pure';
+import { finalizeEvent, getPublicKey } from 'nostr-tools/pure';
 import { hexToBytes } from 'nostr-tools/utils';
 import type { RelayHandler } from '../../core/interfaces.js';
 import { createLogger, type Logger } from '../../core/utils/logger.js';
-import type { NwcConnection, NwcRequest, NwcResponse } from './types.js';
-import { withTimeout } from '../../core/utils/utils.js';
+import type {
+  NwcConnection,
+  NwcNotificationPayload,
+  NwcRequest,
+  NwcResponse,
+} from './types.js';
+import {
+  getTagValue,
+  getTagValues,
+  withTimeout,
+} from '../../core/utils/utils.js';
 
-export const NWC_INFO_KIND = kinds.NWCWalletInfo;
-export const NWC_REQUEST_KIND = kinds.NWCWalletRequest;
-export const NWC_RESPONSE_KIND = kinds.NWCWalletResponse;
+// Per NIP-47.
+export const NWC_NOTIFICATION_KIND = 23197;
+export const NWC_NOTIFICATION_LEGACY_KIND = 23196;
 
 function nowSeconds(): number {
   return Math.floor(Date.now() / 1000);
-}
-
-function getTagValue(tags: string[][], name: string): string | undefined {
-  return tags.find((t) => t[0] === name)?.[1];
 }
 
 export interface NwcClientOptions {
@@ -59,6 +64,107 @@ export class NwcClient {
     this.connected = true;
   }
 
+  public async fetchInfoNotificationTypes(): Promise<ReadonlySet<string>> {
+    await this.connect();
+
+    let unsubscribe: (() => void) | undefined;
+    let settled = false;
+
+    const promise = new Promise<ReadonlySet<string>>((resolve, reject) => {
+      const filters: Filter[] = [
+        {
+          kinds: [kinds.NWCWalletInfo],
+          authors: [this.connection.walletPubkey],
+          limit: 1,
+        },
+      ];
+
+      void this.relayHandler
+        .subscribe(
+          filters,
+          (event) => {
+            settled = true;
+            const tags = event.tags as string[][];
+            const raw = getTagValues(tags, 'notifications').join(' ');
+            const types = raw
+              .split(/\s+/)
+              .map((t) => t.trim())
+              .filter(Boolean);
+            resolve(new Set(types));
+          },
+          () => {
+            if (settled) return;
+            settled = true;
+            resolve(new Set());
+          },
+        )
+        .then((u) => {
+          unsubscribe = u;
+          if (settled) unsubscribe();
+        })
+        .catch((error: unknown) => {
+          settled = true;
+          reject(error);
+        });
+    });
+
+    promise.finally(() => unsubscribe?.());
+
+    return await withTimeout(
+      promise,
+      this.responseTimeoutMs,
+      'NWC info event fetch timed out',
+    );
+  }
+
+  public async subscribeNotifications(params: {
+    onNotification: (payload: NwcNotificationPayload) => void;
+  }): Promise<() => void> {
+    await this.connect();
+
+    const clientPubkey = getPublicKey(
+      hexToBytes(this.connection.clientSecretKeyHex),
+    );
+
+    const filters: Filter[] = [
+      {
+        kinds: [NWC_NOTIFICATION_KIND, NWC_NOTIFICATION_LEGACY_KIND],
+        '#p': [clientPubkey],
+        authors: [this.connection.walletPubkey],
+        since: nowSeconds() - 5,
+      },
+    ];
+
+    this.logger.debug('subscribe for notifications', { filters });
+
+    const unsubscribe = await this.relayHandler.subscribe(filters, (event) => {
+      void (async () => {
+        try {
+          const decrypted = nip04.decrypt(
+            this.connection.clientSecretKeyHex,
+            event.pubkey,
+            event.content,
+          );
+          const parsed = JSON.parse(decrypted) as NwcNotificationPayload;
+          if (
+            typeof parsed !== 'object' ||
+            parsed === null ||
+            typeof parsed.notification_type !== 'string'
+          ) {
+            return;
+          }
+          params.onNotification(parsed);
+        } catch (error: unknown) {
+          this.logger.debug('failed to decrypt/parse nwc notification', {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      })();
+    });
+
+    return unsubscribe;
+  }
+
   public async disconnect(): Promise<void> {
     this.relayHandler.unsubscribe();
     if (!this.connected) return;
@@ -81,14 +187,14 @@ export class NwcClient {
       const clientSecretKey = hexToBytes(this.connection.clientSecretKeyHex);
 
       const plaintext = JSON.stringify(params.request);
-      const encryptedContent = await nip04.encrypt(
+      const encryptedContent = nip04.encrypt(
         this.connection.clientSecretKeyHex,
         this.connection.walletPubkey,
         plaintext,
       );
 
       const eventTemplate = {
-        kind: NWC_REQUEST_KIND,
+        kind: kinds.NWCWalletRequest,
         created_at: now,
         content: encryptedContent,
         tags: [
@@ -110,7 +216,7 @@ export class NwcClient {
       const responsePromise = new Promise<NostrEvent>((resolve, reject) => {
         const filters: Filter[] = [
           {
-            kinds: [NWC_RESPONSE_KIND],
+            kinds: [kinds.NWCWalletResponse],
             '#e': [signedRequest.id],
             authors: [this.connection.walletPubkey],
             since: now - 5,
@@ -184,7 +290,7 @@ export class NwcClient {
         throw new Error('NWC response did not correlate to request');
       }
 
-      const decrypted = await nip04.decrypt(
+      const decrypted = nip04.decrypt(
         this.connection.clientSecretKeyHex,
         responseEvent.pubkey,
         responseEvent.content,

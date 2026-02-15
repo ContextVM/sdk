@@ -15,6 +15,13 @@ class MockNwcClient {
 
   public responses: Array<unknown> = [];
 
+  public infoNotificationTypes: ReadonlySet<string> = new Set();
+  public infoFetchCalls = 0;
+
+  public onNotification:
+    | ((payload: { notification_type: string; notification: unknown }) => void)
+    | undefined;
+
   public async request<M extends string, P, R>(params: {
     method: M;
     request: { method: M; params: P };
@@ -29,6 +36,23 @@ class MockNwcClient {
       throw new Error('MockNwcClient has no responses queued');
     }
     return this.responses.shift() as R;
+  }
+
+  public async fetchInfoNotificationTypes(): Promise<ReadonlySet<string>> {
+    this.infoFetchCalls += 1;
+    return this.infoNotificationTypes;
+  }
+
+  public async subscribeNotifications(params: {
+    onNotification: (payload: {
+      notification_type: string;
+      notification: unknown;
+    }) => void;
+  }): Promise<() => void> {
+    this.onNotification = params.onNotification;
+    return () => {
+      this.onNotification = undefined;
+    };
   }
 }
 
@@ -67,6 +91,23 @@ await import('bun:test').then(({ mock }) => {
         }): Promise<R> {
           if (!mockClient) throw new Error('MockNwcClient not initialized');
           return await mockClient.request(params);
+        }
+
+        public async fetchInfoNotificationTypes(): Promise<
+          ReadonlySet<string>
+        > {
+          if (!mockClient) throw new Error('MockNwcClient not initialized');
+          return await mockClient.fetchInfoNotificationTypes();
+        }
+
+        public async subscribeNotifications(params: {
+          onNotification: (payload: {
+            notification_type: string;
+            notification: unknown;
+          }) => void;
+        }): Promise<() => void> {
+          if (!mockClient) throw new Error('MockNwcClient not initialized');
+          return await mockClient.subscribeNotifications(params);
         }
       },
     };
@@ -159,5 +200,70 @@ describe('LnBolt11NwcPaymentProcessor', () => {
     const lookup = mockClient!.calls[1]!;
     expect(lookup.method).toBe('lookup_invoice');
     expect(lookup.request.params).toEqual({ payment_hash: 'b'.repeat(64) });
+  });
+
+  test('auto mode fetches info once and uses polling when notifications not supported', async () => {
+    const processor = new LnBolt11NwcPaymentProcessor({
+      nwcConnectionString: 'nostr+walletconnect://test',
+      enableNotificationVerification: undefined,
+    });
+
+    mockClient!.infoNotificationTypes = new Set();
+
+    mockClient!.responses.push({
+      result_type: 'lookup_invoice',
+      error: null,
+      result: { state: 'settled', payment_hash: 'c'.repeat(64) },
+    });
+
+    await processor.verifyPayment(
+      makeVerifyParams({ payReq: 'lnbc1invoice', requestEventId: 'req_auto' }),
+    );
+
+    expect(mockClient!.infoFetchCalls).toBe(1);
+    expect(mockClient!.calls).toHaveLength(1);
+    expect(mockClient!.calls[0]!.method).toBe('lookup_invoice');
+  });
+
+  test('notification mode resolves verifyPayment from payment_received notification', async () => {
+    const processor = new LnBolt11NwcPaymentProcessor({
+      nwcConnectionString: 'nostr+walletconnect://test',
+      enableNotificationVerification: true,
+    });
+
+    mockClient!.responses.push({
+      result_type: 'make_invoice',
+      error: null,
+      result: {
+        invoice: 'lnbc1notify',
+        payment_hash: 'd'.repeat(64),
+      },
+    });
+
+    const pr = await processor.createPaymentRequired({
+      amount: 1,
+      requestEventId: 'req_make_notify',
+      clientPubkey: 'c'.repeat(64),
+      description: 'x',
+    });
+
+    const verifyPromise = processor.verifyPayment(
+      makeVerifyParams({
+        payReq: pr.pay_req,
+        requestEventId: 'req_verify_notify',
+      }),
+    );
+
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expect(mockClient!.calls).toHaveLength(1); // only make_invoice
+
+    mockClient!.onNotification?.({
+      notification_type: 'payment_received',
+      notification: { payment_hash: 'd'.repeat(64) },
+    });
+
+    await expect(verifyPromise).resolves.toEqual({
+      _meta: { payment_hash: 'd'.repeat(64) },
+    });
   });
 });

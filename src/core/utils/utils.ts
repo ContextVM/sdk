@@ -131,3 +131,17 @@ export async function sleepWithAbort(params: {
     abortSignal.addEventListener('abort', onAbort, { once: true });
   });
 }
+
+export function getTagValue(
+  tags: string[][],
+  name: string,
+): string | undefined {
+  return tags.find((t) => t[0] === name)?.[1];
+}
+
+export function getTagValues(tags: string[][], name: string): string[] {
+  return tags
+    .filter((t) => t[0] === name)
+    .map((t) => t[1])
+    .filter((v): v is string => typeof v === 'string' && v.length > 0);
+}
