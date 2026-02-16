@@ -85,11 +85,11 @@ export class NostrClientTransport
   private serverResourceTemplatesListEvent: NostrEvent | undefined;
 
   /**
-   * Deduplicate inbound gift-wrap envelopes to avoid redundant decrypt operations.
+   * Deduplicate inbound events to avoid redundant work.
    *
-   * Keyed by the outer Nostr event id (gift-wrap event id).
+   * Used for gift-wrap envelopes (outer event ids). Kept as a bounded LRU.
    */
-  private readonly seenGiftWrapEventIds = new LruCache<true>(DEFAULT_LRU_SIZE);
+  private readonly seenEventIds = new LruCache<true>(DEFAULT_LRU_SIZE);
 
   /**
    * Creates a new NostrClientTransport instance.
@@ -165,7 +165,7 @@ export class NostrClientTransport
       this.unsubscribeAll();
       await this.disconnect();
       this.correlationStore.clear();
-      this.seenGiftWrapEventIds.clear();
+      this.seenEventIds.clear();
       this.onclose?.();
     } catch (error) {
       this.onerror?.(error instanceof Error ? error : new Error(String(error)));
@@ -272,13 +272,13 @@ export class NostrClientTransport
 
       if (event.kind === GIFT_WRAP_KIND) {
         // Deduplicate gift-wrap envelopes before any expensive decryption.
-        if (this.seenGiftWrapEventIds.has(event.id)) {
+        if (this.seenEventIds.has(event.id)) {
           this.logger.debug('Skipping duplicate gift-wrapped event', {
             eventId: event.id,
           });
           return;
         }
-        this.seenGiftWrapEventIds.set(event.id, true);
+        this.seenEventIds.set(event.id, true);
 
         try {
           const decryptedContent = await withTimeout(

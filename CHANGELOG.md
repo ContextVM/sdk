@@ -1,5 +1,11 @@
 # @contextvm/sdk
 
+## 0.4.9
+
+### Patch Changes
+
+- perf(transport): deduplicate inbound events including decrypted inner requests
+
 ## 0.4.8
 
 ### Patch Changes

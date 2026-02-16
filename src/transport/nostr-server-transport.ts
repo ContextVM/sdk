@@ -119,11 +119,11 @@ export class NostrServerTransport
   private readonly inboundMiddlewares: InboundMiddlewareFn[] = [];
 
   /**
-   * Deduplicate inbound gift-wrap envelopes to avoid redundant decrypt operations.
+   * Deduplicate inbound events to avoid redundant work.
    *
-   * Keyed by the outer Nostr event id (gift-wrap event id).
+   * Used for gift-wrap envelopes (outer event ids) and decrypted inner events.
    */
-  private readonly seenGiftWrapEventIds = new LruCache<true>(DEFAULT_LRU_SIZE);
+  private readonly seenEventIds = new LruCache<true>(DEFAULT_LRU_SIZE);
 
   constructor(options: NostrServerTransportOptions) {
     super('nostr-server-transport', options);
@@ -282,7 +282,7 @@ export class NostrServerTransport
       await this.disconnect();
       this.sessionStore.clear();
       this.correlationStore.clear();
-      this.seenGiftWrapEventIds.clear();
+      this.seenEventIds.clear();
       this.onclose?.();
     } catch (error) {
       this.onerror?.(error instanceof Error ? error : new Error(String(error)));
@@ -570,13 +570,13 @@ export class NostrServerTransport
     try {
       if (event.kind === GIFT_WRAP_KIND) {
         // Deduplicate gift-wrap envelopes before any expensive decryption.
-        if (this.seenGiftWrapEventIds.has(event.id)) {
+        if (this.seenEventIds.has(event.id)) {
           this.logger.debug('Skipping duplicate gift-wrapped event', {
             eventId: event.id,
           });
           return;
         }
-        this.seenGiftWrapEventIds.set(event.id, true);
+        this.seenEventIds.set(event.id, true);
 
         await this.handleEncryptedEvent(event);
       } else {
@@ -611,6 +611,18 @@ export class NostrServerTransport
         'Decrypt message timed out',
       );
       const currentEvent = JSON.parse(decryptedJson) as NostrEvent;
+
+      // Deduplicate decrypted inner events to avoid double-processing the same logical request.
+      // This guards against scenarios where the same inner request is delivered in multiple
+      // distinct gift-wrap envelopes (different outer ids).
+      if (this.seenEventIds.has(currentEvent.id)) {
+        this.logger.debug('Skipping duplicate decrypted inner event', {
+          eventId: currentEvent.id,
+        });
+        return;
+      }
+      this.seenEventIds.set(currentEvent.id, true);
+
       this.authorizeAndProcessEvent(currentEvent, true);
     } catch (error) {
       this.logger.error('Failed to handle encrypted Nostr event', {
