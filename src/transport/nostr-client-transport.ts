@@ -20,6 +20,7 @@ import {
   DEFAULT_LRU_SIZE,
   INITIALIZE_METHOD,
 } from '../core/index.js';
+import { LruCache } from '../core/utils/lru-cache.js';
 import {
   BaseNostrTransport,
   BaseNostrTransportOptions,
@@ -82,6 +83,13 @@ export class NostrClientTransport
   private serverResourcesListEvent: NostrEvent | undefined;
   /** The latest server resources/templates/list response event envelope, if received. */
   private serverResourceTemplatesListEvent: NostrEvent | undefined;
+
+  /**
+   * Deduplicate inbound gift-wrap envelopes to avoid redundant decrypt operations.
+   *
+   * Keyed by the outer Nostr event id (gift-wrap event id).
+   */
+  private readonly seenGiftWrapEventIds = new LruCache<true>(DEFAULT_LRU_SIZE);
 
   /**
    * Creates a new NostrClientTransport instance.
@@ -157,6 +165,7 @@ export class NostrClientTransport
       this.unsubscribeAll();
       await this.disconnect();
       this.correlationStore.clear();
+      this.seenGiftWrapEventIds.clear();
       this.onclose?.();
     } catch (error) {
       this.onerror?.(error instanceof Error ? error : new Error(String(error)));
@@ -262,6 +271,15 @@ export class NostrClientTransport
       let nostrEvent = event;
 
       if (event.kind === GIFT_WRAP_KIND) {
+        // Deduplicate gift-wrap envelopes before any expensive decryption.
+        if (this.seenGiftWrapEventIds.has(event.id)) {
+          this.logger.debug('Skipping duplicate gift-wrapped event', {
+            eventId: event.id,
+          });
+          return;
+        }
+        this.seenGiftWrapEventIds.set(event.id, true);
+
         try {
           const decryptedContent = await withTimeout(
             decryptMessage(event, this.signer),

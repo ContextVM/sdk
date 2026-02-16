@@ -24,6 +24,7 @@ import {
   NOSTR_TAGS,
   NOTIFICATIONS_INITIALIZED_METHOD,
   decryptMessage,
+  DEFAULT_LRU_SIZE,
 } from '../core/index.js';
 import { EncryptionMode } from '../core/interfaces.js';
 import { NostrEvent } from 'nostr-tools';
@@ -31,6 +32,7 @@ import { LogLevel } from '../core/utils/logger.js';
 import { injectClientPubkey, withTimeout } from '../core/utils/utils.js';
 import { CorrelationStore } from './nostr-server/correlation-store.js';
 import { ClientSession, SessionStore } from './nostr-server/session-store.js';
+import { LruCache } from '../core/utils/lru-cache.js';
 import {
   AuthorizationPolicy,
   CapabilityExclusion,
@@ -115,6 +117,13 @@ export class NostrServerTransport
       }) => void | Promise<void>)
     | undefined;
   private readonly inboundMiddlewares: InboundMiddlewareFn[] = [];
+
+  /**
+   * Deduplicate inbound gift-wrap envelopes to avoid redundant decrypt operations.
+   *
+   * Keyed by the outer Nostr event id (gift-wrap event id).
+   */
+  private readonly seenGiftWrapEventIds = new LruCache<true>(DEFAULT_LRU_SIZE);
 
   constructor(options: NostrServerTransportOptions) {
     super('nostr-server-transport', options);
@@ -273,6 +282,7 @@ export class NostrServerTransport
       await this.disconnect();
       this.sessionStore.clear();
       this.correlationStore.clear();
+      this.seenGiftWrapEventIds.clear();
       this.onclose?.();
     } catch (error) {
       this.onerror?.(error instanceof Error ? error : new Error(String(error)));
@@ -562,6 +572,15 @@ export class NostrServerTransport
   private async processIncomingEvent(event: NostrEvent): Promise<void> {
     try {
       if (event.kind === GIFT_WRAP_KIND) {
+        // Deduplicate gift-wrap envelopes before any expensive decryption.
+        if (this.seenGiftWrapEventIds.has(event.id)) {
+          this.logger.debug('Skipping duplicate gift-wrapped event', {
+            eventId: event.id,
+          });
+          return;
+        }
+        this.seenGiftWrapEventIds.set(event.id, true);
+
         await this.handleEncryptedEvent(event);
       } else {
         this.handleUnencryptedEvent(event);

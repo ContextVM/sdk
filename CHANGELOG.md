@@ -1,5 +1,16 @@
 # @contextvm/sdk
 
+## 0.4.7
+
+### Patch Changes
+
+- perf(transport): deduplicate inbound gift-wrap envelopes before decryption
+
+Add LRU-based deduplication to both NostrClientTransport and NostrServerTransport
+to skip expensive decrypt operations for duplicate gift-wrap event deliveries.
+This prevents redundant processing when the same gift-wrap event is received
+multiple times from relays, improving throughput under high message volume.
+
 ## 0.4.6
 
 ### Patch Changes
