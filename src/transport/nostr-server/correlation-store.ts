@@ -117,6 +117,37 @@ export class CorrelationStore {
   }
 
   /**
+   * Atomically gets and removes the route for a given event ID.
+   *
+   * This is used to ensure responses are only routed once, even if
+   * concurrent send operations occur for the same response id.
+   */
+  popEventRoute(eventId: string): EventRoute | undefined {
+    const route = this.eventRoutes.get(eventId);
+    if (!route) {
+      return undefined;
+    }
+
+    // Remove progress token mapping if it exists
+    if (route.progressToken) {
+      this.progressTokenToEventId.delete(route.progressToken);
+    }
+
+    // Remove from client index
+    const clientSet = this.clientEventIds.get(route.clientPubkey);
+    if (clientSet) {
+      clientSet.delete(eventId);
+      if (clientSet.size === 0) {
+        this.clientEventIds.delete(route.clientPubkey);
+      }
+    }
+
+    // Remove the event route
+    this.eventRoutes.delete(eventId);
+    return route;
+  }
+
+  /**
    * Gets the event ID for a given progress token.
    *
    * @param progressToken The progress token

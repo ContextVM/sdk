@@ -1,5 +1,16 @@
 # @contextvm/sdk
 
+## 0.4.8
+
+### Patch Changes
+
+- fix(transport): prevent duplicate response publishing on concurrent sends
+
+  Add popEventRoute method to CorrelationStore that atomically retrieves and removes
+  the event route, replacing the previous getEventRoute + removeEventRoute pattern.
+  This ensures responses are only routed once, even when send() is called concurrently
+  with the same response id, preventing duplicate publishes.
+
 ## 0.4.7
 
 ### Patch Changes

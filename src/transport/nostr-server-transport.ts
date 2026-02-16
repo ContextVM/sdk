@@ -401,7 +401,7 @@ export class NostrServerTransport
 
     // Find the event route using O(1) lookup
     const nostrEventId = response.id as string;
-    const route = this.correlationStore.getEventRoute(nostrEventId);
+    const route = this.correlationStore.popEventRoute(nostrEventId);
 
     if (!route) {
       this.onerror?.(
@@ -458,9 +458,6 @@ export class NostrServerTransport
       tags,
       session.isEncrypted,
     );
-
-    // Clean up the event route (this also cleans up progress token mapping)
-    this.correlationStore.removeEventRoute(nostrEventId);
   }
 
   /**

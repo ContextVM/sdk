@@ -71,6 +71,26 @@ describe('CorrelationStore', () => {
     });
   });
 
+  describe('popEventRoute', () => {
+    it('returns and removes the route atomically', () => {
+      const store = new CorrelationStore();
+      store.registerEventRoute('event1', 'client1', 'req1', 'token1');
+
+      const route = store.popEventRoute('event1');
+      expect(route).toBeDefined();
+      expect(route!.clientPubkey).toBe('client1');
+      expect(route!.originalRequestId).toBe('req1');
+      expect(route!.progressToken).toBe('token1');
+
+      // Route + token mapping should be gone.
+      expect(store.hasEventRoute('event1')).toBe(false);
+      expect(store.hasProgressToken('token1')).toBe(false);
+
+      // Second pop is a no-op.
+      expect(store.popEventRoute('event1')).toBeUndefined();
+    });
+  });
+
   describe('getEventIdByProgressToken', () => {
     it('returns undefined for unknown token', () => {
       const store = new CorrelationStore();
