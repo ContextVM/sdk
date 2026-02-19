@@ -34,9 +34,6 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 .DS_Store
 
 docs
-ignore-*
-long-lived*
-transport-comparison*
-*analysis.md
 applesauce
-# typescript-sdk
+typescript-sdk
+contextvm-docs

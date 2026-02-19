@@ -7,9 +7,16 @@ import {
   type JSONRPCMessage,
 } from '@modelcontextprotocol/sdk/types.js';
 import { NostrClientTransport } from '../transport/nostr-client-transport.js';
-import { PaymentHandler, PaymentRequiredNotification } from './types.js';
+import {
+  PaymentHandler,
+  PaymentRejectedNotification,
+  PaymentRequiredNotification,
+} from './types.js';
 import { createLogger } from '../core/utils/logger.js';
-import { DEFAULT_SYNTHETIC_PROGRESS_INTERVAL_MS } from './constants.js';
+import {
+  DEFAULT_SYNTHETIC_PROGRESS_INTERVAL_MS,
+  DEFAULT_PAYMENT_TTL_MS,
+} from './constants.js';
 
 export interface ClientPaymentsOptions {
   handlers: readonly PaymentHandler[];
@@ -18,10 +25,18 @@ export interface ClientPaymentsOptions {
    *
    * One heartbeat is also emitted immediately when `payment_required` is
    * received so the MCP timeout is always reset as soon as the payment flow
-   * begins
-   * @default DEFAULT_SYNTHETIC_PROGRESS_INTERVAL_MS (30000 ms)
+   * begins.
+   * @default DEFAULT_SYNTHETIC_PROGRESS_INTERVAL_MS (30_000 ms)
    */
   syntheticProgressIntervalMs?: number;
+  /**
+   * Duration in ms for synthetic progress when `payment_required` carries no `ttl`.
+   *
+   * Mirrors the server-side `paymentTtlMs` default so the client keeps the MCP
+   * request alive for at least as long as the server will wait.
+   * @default DEFAULT_PAYMENT_TTL_MS (300_000 ms)
+   */
+  defaultPaymentTtlMs?: number;
 }
 
 type ProgressToken = string;
@@ -45,6 +60,11 @@ function isPaymentRequiredNotification(
  *
  * When `transport` is a {@link NostrClientTransport}, PMI advertisement and
  * synthetic progress injection are enabled automatically.
+ *
+ * Note: `payment_rejected` → JSON-RPC error synthesis requires a
+ * {@link NostrClientTransport} because correlation (requestEventId → MCP request id)
+ * depends on Nostr event tagging. On plain transports a rejected payment surfaces
+ * as an unhandled notification and the MCP request times out naturally.
  */
 export function withClientPayments(
   transport: Transport,
@@ -55,6 +75,9 @@ export function withClientPayments(
   const syntheticProgressIntervalMs =
     options.syntheticProgressIntervalMs ??
     DEFAULT_SYNTHETIC_PROGRESS_INTERVAL_MS;
+
+  const defaultPaymentTtlMs =
+    options.defaultPaymentTtlMs ?? DEFAULT_PAYMENT_TTL_MS;
 
   const syntheticProgress = new Map<ProgressToken, SyntheticProgressEntry>();
 
@@ -127,6 +150,17 @@ export function withClientPayments(
     options.handlers.map((h) => [h.pmi, h] as const),
   );
 
+  // Warn on duplicate PMI handlers — Map construction silently keeps only the last.
+  const seenHandlerPmis = new Set<string>();
+  for (const h of options.handlers) {
+    if (seenHandlerPmis.has(h.pmi)) {
+      logger.warn('duplicate PMI handler registered, last one wins', {
+        pmi: h.pmi,
+      });
+    }
+    seenHandlerPmis.add(h.pmi);
+  }
+
   // Prevent double-paying if relays or servers deliver duplicate payment_required notifications.
   const inFlightPayReqs = new Set<string>();
 
@@ -148,12 +182,13 @@ export function withClientPayments(
     if (transport instanceof NostrClientTransport) {
       const pending = transport.getPendingRequestForEventId(requestEventId);
       const token = pending?.progressToken;
-      const ttlSeconds = message.params.ttl;
-      if (
-        token &&
-        typeof ttlSeconds === 'number' &&
-        Number.isFinite(ttlSeconds)
-      ) {
+      // Fall back to defaultPaymentTtlMs when the server omits ttl so the client
+      // keeps the MCP request alive for the same duration the server will wait.
+      const ttlSeconds =
+        message.params.ttl !== undefined
+          ? message.params.ttl
+          : defaultPaymentTtlMs / 1000;
+      if (token && Number.isFinite(ttlSeconds)) {
         // Guard against nonsensical TTLs.
         const ttlMs = Math.floor(ttlSeconds * 1000);
         if (ttlMs > 0 && !syntheticProgress.has(token)) {
@@ -213,6 +248,8 @@ export function withClientPayments(
         amount: message.params.amount,
         pay_req: message.params.pay_req,
         description: message.params.description,
+        ttl: message.params.ttl,
+        _meta: message.params._meta,
         requestEventId,
       };
 
@@ -318,17 +355,36 @@ export function withClientPayments(
 
         // Stop synthetic progress on terminal outcomes (context path).
         if (isJSONRPCNotification(message)) {
-          if (
-            message.method === 'notifications/payment_accepted' ||
-            message.method === 'notifications/payment_rejected'
-          ) {
-            const progressToken =
+          const isAccepted =
+            message.method === 'notifications/payment_accepted';
+          const isRejected =
+            message.method === 'notifications/payment_rejected';
+          if (isAccepted || isRejected) {
+            const pending =
               transport instanceof NostrClientTransport
                 ? transport.getPendingRequestForEventId(requestEventId)
-                    ?.progressToken
                 : undefined;
-            if (progressToken) {
-              stopSyntheticProgress(progressToken);
+            if (pending?.progressToken) {
+              stopSyntheticProgress(pending.progressToken);
+            }
+            // On rejection, synthesize a JSON-RPC error response so the caller's
+            // pending promise is rejected immediately rather than timing out after 60 s.
+            // The server never calls forward() for a rejected payment, so no real
+            // response will arrive.
+            if (isRejected && pending?.originalRequestId != null) {
+              const rejMsg = (message as PaymentRejectedNotification).params
+                ?.message;
+              onmessage?.({
+                jsonrpc: '2.0',
+                id: pending.originalRequestId,
+                error: {
+                  code: -32000,
+                  message: rejMsg
+                    ? `Payment rejected: ${rejMsg}`
+                    : 'Payment rejected',
+                },
+              } as JSONRPCMessage);
+              return;
             }
           }
         }

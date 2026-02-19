@@ -5,3 +5,11 @@
  * so a heartbeat can arrive before the first timeout would fire.
  */
 export const DEFAULT_SYNTHETIC_PROGRESS_INTERVAL_MS = 30_000;
+
+/**
+ * Default payment TTL used for synthetic progress when `payment_required` carries no `ttl`.
+ *
+ * Mirrors the server-side `paymentTtlMs` default (5 minutes) so the client
+ * keeps the MCP request alive for at least as long as the server will wait.
+ */
+export const DEFAULT_PAYMENT_TTL_MS = 300_000;

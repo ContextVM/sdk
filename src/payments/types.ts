@@ -86,6 +86,10 @@ export interface PaymentHandlerRequest {
   amount: number;
   pay_req: string;
   description?: string;
+  /** Time-to-live in seconds from the server's `payment_required` (CEP-8). */
+  ttl?: number;
+  /** Transparency metadata from the server's `payment_required._meta`. */
+  _meta?: Record<string, unknown>;
   requestEventId: string;
 }
 
@@ -134,6 +138,36 @@ export type ResolvePriceRejection = {
   /** Optional human-readable message explaining the rejection. */
   message?: string;
 };
+
+/**
+ * Helper factory for {@link ResolvePriceRejection}.
+ *
+ * Prefer this over writing the object literal directly — the discriminant
+ * `reject: true` is easy to mistype as `rejected: true`, and TypeScript's
+ * union excess-property checking will not catch the mistake at a return site.
+ */
+export function rejectPrice(message?: string): ResolvePriceRejection {
+  return { reject: true, message };
+}
+
+/**
+ * Helper factory for {@link ResolvePriceQuote}.
+ *
+ * Provides a named constructor that pairs naturally with {@link rejectPrice}.
+ * Supports optional description and metadata overrides for full CEP-8 flexibility.
+ */
+export function quotePrice(
+  amount: number,
+  options?: { description?: string; meta?: Record<string, unknown> },
+): ResolvePriceQuote {
+  return {
+    amount,
+    ...(options?.description !== undefined && {
+      description: options.description,
+    }),
+    ...(options?.meta !== undefined && { meta: options.meta }),
+  };
+}
 
 /**
  * Result of resolvePrice callback.

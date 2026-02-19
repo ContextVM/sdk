@@ -1,5 +1,21 @@
 # @contextvm/sdk
 
+## 0.4.13
+
+### Patch Changes
+
+- feat(payments): synthesize JSON-RPC error on payment_rejected and add default TTL
+
+  Add support for synthesizing a JSON-RPC error response when the server sends
+  payment_rejected, allowing the MCP request to fail immediately instead of
+  hanging until the timeout. Also add defaultPaymentTtlMs option to keep the
+  client-side request alive for the same duration the server will wait when
+  the payment_required notification omits the ttl field.
+
+  Add rejectPrice() and quotePrice() helper factories to types.ts for safer
+  price resolution. Add duplicate PMI handler/processor warnings. Include ttl
+  and \_meta fields in PaymentHandlerRequest for full CEP-8 transparency.
+
 ## 0.4.12
 
 ### Patch Changes

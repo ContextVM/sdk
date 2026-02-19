@@ -15,6 +15,7 @@ import {
 import { LruCache } from '../core/utils/lru-cache.js';
 import { withTimeout } from '../core/utils/utils.js';
 import { createLogger } from '../core/utils/logger.js';
+import { DEFAULT_PAYMENT_TTL_MS } from './constants.js';
 
 export interface ServerPaymentsOptions {
   processors: readonly PaymentProcessor[];
@@ -172,7 +173,18 @@ export function createServerPaymentsMiddleware(params: {
     options.processors.map((p) => [p.pmi, p] as const),
   );
 
-  const paymentTtlMs = options.paymentTtlMs ?? 300_000;
+  // Warn on duplicate PMI processors — Map construction silently keeps only the last.
+  const seenProcessorPmis = new Set<string>();
+  for (const p of options.processors) {
+    if (seenProcessorPmis.has(p.pmi)) {
+      logger.warn('duplicate PMI processor registered, last one wins', {
+        pmi: p.pmi,
+      });
+    }
+    seenProcessorPmis.add(p.pmi);
+  }
+
+  const paymentTtlMs = options.paymentTtlMs ?? DEFAULT_PAYMENT_TTL_MS;
   const pending = new LruCache<PendingPaymentState>(
     options.maxPendingPayments ?? 1000,
   );
@@ -359,8 +371,13 @@ export function createServerPaymentsMiddleware(params: {
 
     try {
       await inFlight;
-    } finally {
+      // On success, keep the entry in `pending` until TTL expiry.
+      // This guards against relay redelivery triggering a second charge.
+      // purgeExpiredPending handles eventual cleanup.
+    } catch (err) {
+      // On failure, remove immediately so the client can retry.
       pending.delete(requestEventId);
+      throw err;
     }
   };
 }

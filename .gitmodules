@@ -7,3 +7,6 @@
 [submodule "lemonade-legends-site"]
 	path = lemonade-legends-site
 	url = https://github.com/ContextVM/lemonade-legends-site
+[submodule "lemonade-legends"]
+	path = lemonade-legends
+	url = https://github.com/ContextVM/lemonade-legends

@@ -314,4 +314,113 @@ describe('withClientPayments()', () => {
 
     await paid.close();
   });
+
+  test('synthesizes JSON-RPC error response on payment_rejected and stops synthetic progress', async () => {
+    const transport = new NostrClientTransport({
+      serverPubkey: 'b'.repeat(64),
+      signer: new PrivateKeySigner('a'.repeat(64)),
+      relayHandler: noopRelay,
+      isStateless: true,
+    });
+
+    transport
+      .getInternalStateForTesting()
+      .correlationStore.registerRequest('req-event-id', {
+        originalRequestId: 42,
+        isInitialize: false,
+        progressToken: '42',
+      });
+
+    const observed: JSONRPCMessage[] = [];
+    const paid = withClientPayments(transport, {
+      handlers: [{ pmi: 'fake', async handle(): Promise<void> {} }],
+      syntheticProgressIntervalMs: 60_000, // prevent interval ticks during test
+    });
+    paid.onmessage = (msg) => observed.push(msg);
+    await paid.start();
+
+    // Start synthetic progress on payment_required, then discard all prior messages.
+    transport.onmessageWithContext!(
+      {
+        jsonrpc: '2.0',
+        method: 'notifications/payment_required',
+        params: { amount: 1, pay_req: 'x', pmi: 'fake', ttl: 60 },
+      },
+      { eventId: 'evt1', correlatedEventId: 'req-event-id' },
+    );
+    observed.length = 0;
+
+    // Deliver payment_rejected correlated to the same request.
+    transport.onmessageWithContext!(
+      {
+        jsonrpc: '2.0',
+        method: 'notifications/payment_rejected',
+        params: { pmi: 'fake', amount: 1, message: 'You already have it' },
+      },
+      { eventId: 'evt2', correlatedEventId: 'req-event-id' },
+    );
+
+    // The notification itself is suppressed; a synthetic error response is forwarded instead.
+    expect(observed).toHaveLength(1);
+    const errResp = observed[0] as {
+      id?: unknown;
+      error?: { code?: number; message?: string };
+      method?: string;
+    };
+    expect(errResp.id).toBe(42);
+    expect(errResp.error?.code).toBe(-32000);
+    expect(errResp.error?.message).toBe(
+      'Payment rejected: You already have it',
+    );
+    // Must not look like a notification.
+    expect(errResp.method).toBeUndefined();
+
+    // Synthetic progress must be stopped — no more ticks arrive.
+    await new Promise((r) => setTimeout(r, 20));
+    expect(observed).toHaveLength(1);
+
+    await paid.close();
+  });
+
+  test('synthesizes plain "Payment rejected" when payment_rejected carries no message', async () => {
+    const transport = new NostrClientTransport({
+      serverPubkey: 'b'.repeat(64),
+      signer: new PrivateKeySigner('a'.repeat(64)),
+      relayHandler: noopRelay,
+      isStateless: true,
+    });
+
+    transport
+      .getInternalStateForTesting()
+      .correlationStore.registerRequest('req-event-id-2', {
+        originalRequestId: 99,
+        isInitialize: false,
+      });
+
+    const observed: JSONRPCMessage[] = [];
+    const paid = withClientPayments(transport, {
+      handlers: [{ pmi: 'fake', async handle(): Promise<void> {} }],
+    });
+    paid.onmessage = (msg) => observed.push(msg);
+    await paid.start();
+
+    transport.onmessageWithContext!(
+      {
+        jsonrpc: '2.0',
+        method: 'notifications/payment_rejected',
+        params: { pmi: 'fake', amount: 1 },
+      },
+      { eventId: 'evt3', correlatedEventId: 'req-event-id-2' },
+    );
+
+    expect(observed).toHaveLength(1);
+    const errResp = observed[0] as {
+      id?: unknown;
+      error?: { message?: string };
+    };
+    expect(errResp.id).toBe(99);
+    expect(errResp.error?.message).toBe('Payment rejected');
+
+    await paid.close();
+  });
 });
