@@ -1,5 +1,28 @@
 # @contextvm/sdk
 
+## 0.4.10
+
+### Patch Changes
+
+- feat(payments): add synthetic progress for CEP-8 payment timeout handling
+
+  Implements synthetic progress notifications to keep MCP requests alive during
+  payment settlement, preventing upstream timeout races when CEP-8 TTL exceeds
+  the default MCP request timeout.
+
+  Transport changes:
+  - B1: Fix server progress routing (params.progressToken not params.\_meta.progressToken)
+  - B2: Add taskQueue.shutdown() to NostrClientTransport.close()
+  - S1: Fix double lookup in getOrCreateClientSession
+
+  Cleanup:
+  - D1: Remove dead removeEventRoute from correlation-store
+  - D2: Simplify processor lookup in server-payments
+  - D3: Remove dead lastActivity/updateActivity from session-store
+  - D4: Refactor shouldEvictSession to not re-insert inside eviction callback
+  - D5: Refactor publishEvent to use shared withTimeout helper
+  - S2: Remove redundant stopAllSyntheticProgress from wrapped.close()
+
 ## 0.4.9
 
 ### Patch Changes
