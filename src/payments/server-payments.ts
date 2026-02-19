@@ -7,7 +7,8 @@ import {
   PaymentRequiredNotification,
   PricedCapability,
   ResolvePriceRejection,
-  ResolvePriceQuote,
+  ResolvePriceWaiver,
+  ResolvePriceResult,
   ResolvePriceFn,
   ServerMiddlewareFn,
   isJsonRpcRequest,
@@ -155,9 +156,15 @@ function createPaymentRejectedNotification(params: {
 }
 
 function isResolvePriceRejection(
-  quote: ResolvePriceQuote | ResolvePriceRejection,
+  quote: ResolvePriceResult,
 ): quote is ResolvePriceRejection {
   return 'reject' in quote && quote.reject;
+}
+
+function isResolvePriceWaiver(
+  quote: ResolvePriceResult,
+): quote is ResolvePriceWaiver {
+  return 'waive' in quote && quote.waive;
 }
 
 /**
@@ -273,6 +280,13 @@ export function createServerPaymentsMiddleware(params: {
           rejectedNotification,
           requestEventId,
         );
+      } else if (isResolvePriceWaiver(quote)) {
+        logger.debug('payment waived, forwarding priced request', {
+          requestEventId,
+          method: message.method,
+        });
+
+        await forward(message);
       } else {
         const resolvedQuote = quote;
         const paymentRequired = await processor.createPaymentRequired({

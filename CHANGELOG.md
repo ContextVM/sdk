@@ -1,5 +1,17 @@
 # @contextvm/sdk
 
+## 0.4.14
+
+### Patch Changes
+
+- feat(payments): allow resolvePrice to waive payment and forward immediately
+
+  Add ResolvePriceWaiver type and waivePrice helper to enable resolvePrice
+  callbacks to signal that payment is waived, causing the middleware to
+  forward the request without requiring payment verification. This supports
+  use cases where payment is covered externally or dynamically determined
+  to be unnecessary. Includes test coverage for the waiver flow.
+
 ## 0.4.13
 
 ### Patch Changes

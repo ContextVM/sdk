@@ -36,4 +36,5 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 docs
 applesauce
 typescript-sdk
-contextvm-docs
+# contextvm-docs
+lemonade*

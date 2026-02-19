@@ -139,6 +139,13 @@ export type ResolvePriceRejection = {
   message?: string;
 };
 
+export type ResolvePriceWaiver = {
+  /** Signal that payment is waived/covered and the request should proceed immediately. */
+  waive: true;
+  /** Optional transparency metadata (e.g., remaining balance) attached to `payment_accepted._meta` if emitted. */
+  meta?: Record<string, unknown>;
+};
+
 /**
  * Helper factory for {@link ResolvePriceRejection}.
  *
@@ -148,6 +155,16 @@ export type ResolvePriceRejection = {
  */
 export function rejectPrice(message?: string): ResolvePriceRejection {
   return { reject: true, message };
+}
+
+/**
+ * Helper factory for {@link ResolvePriceWaiver}.
+ */
+export function waivePrice(meta?: Record<string, unknown>): ResolvePriceWaiver {
+  return {
+    waive: true,
+    ...(meta !== undefined && { meta }),
+  };
 }
 
 /**
@@ -175,7 +192,10 @@ export function quotePrice(
  * - Return a quote object to proceed with payment flow.
  * - Return a rejection object to emit `payment_rejected` without asking for payment.
  */
-export type ResolvePriceResult = ResolvePriceQuote | ResolvePriceRejection;
+export type ResolvePriceResult =
+  | ResolvePriceQuote
+  | ResolvePriceRejection
+  | ResolvePriceWaiver;
 
 /**
  * Server-side callback for dynamic pricing.

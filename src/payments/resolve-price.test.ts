@@ -340,4 +340,72 @@ describe('resolvePrice (server payments)', () => {
     expect(pr.params.amount).toBe(5);
     expect(pr.params.message).toBeUndefined();
   });
+
+  test('forwards immediately without payment notifications when resolvePrice waives payment', async () => {
+    let processorCreateCalls = 0;
+    let processorVerifyCalls = 0;
+    const processor = {
+      pmi: 'fake',
+      async createPaymentRequired() {
+        processorCreateCalls += 1;
+        throw new Error('Should not be called');
+      },
+      async verifyPayment() {
+        processorVerifyCalls += 1;
+        throw new Error('Should not be called');
+      },
+    };
+
+    const pricedCapabilities = [
+      {
+        method: 'tools/call',
+        name: 'add',
+        amount: 1,
+        currencyUnit: 'test',
+      },
+    ] as const;
+
+    const ctx: { clientPubkey: string; clientPmis?: readonly string[] } = {
+      clientPubkey: 'test-client',
+    };
+
+    const sent: Array<{ notification: unknown; requestEventId: string }> = [];
+    const sender = {
+      async sendNotification(
+        _clientPubkey: string,
+        notification: unknown,
+        requestEventId: string,
+      ): Promise<void> {
+        sent.push({ notification, requestEventId });
+      },
+    };
+
+    let forwardCalled = false;
+    const forward = async () => {
+      forwardCalled = true;
+    };
+
+    const mw = createServerPaymentsMiddleware({
+      sender,
+      options: {
+        processors: [processor],
+        pricedCapabilities: [...pricedCapabilities],
+        resolvePrice: async () => ({ waive: true }),
+      },
+    });
+
+    const message: JSONRPCRequest = {
+      jsonrpc: '2.0',
+      id: 'event-id',
+      method: 'tools/call',
+      params: { name: 'add', arguments: { a: 1, b: 2 } },
+    };
+
+    await mw(message, ctx, forward);
+
+    expect(forwardCalled).toBe(true);
+    expect(sent).toEqual([]);
+    expect(processorCreateCalls).toBe(0);
+    expect(processorVerifyCalls).toBe(0);
+  });
 });
