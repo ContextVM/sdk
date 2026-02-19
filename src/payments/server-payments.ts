@@ -230,8 +230,7 @@ export function createServerPaymentsMiddleware(params: {
         throw new Error('No payment processors configured');
       }
 
-      const processor =
-        processorsByPmi.get(chosenProcessor.pmi) ?? chosenProcessor;
+      const processor = chosenProcessor;
 
       const quote = options.resolvePrice
         ? await options.resolvePrice({

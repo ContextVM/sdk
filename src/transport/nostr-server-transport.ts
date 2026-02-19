@@ -145,16 +145,6 @@ export class NostrServerTransport
     // Initialize session store with eviction callback for correlation cleanup
     this.sessionStore = new SessionStore({
       maxSessions: options.maxSessions ?? 1000,
-      shouldEvictSession: (clientPubkey) => {
-        // Prevent eviction if client has active routes (in-flight requests)
-        if (this.correlationStore.hasActiveRoutesForClient(clientPubkey)) {
-          this.logger.debug(
-            `Skipped eviction for session ${clientPubkey} (has active routes)`,
-          );
-          return false;
-        }
-        return true;
-      },
       onSessionEvicted: (clientPubkey, session) => {
         // Clean up all correlation data for evicted session
         const removedCount =
@@ -162,6 +152,19 @@ export class NostrServerTransport
         this.logger.info(
           `Evicted session for ${clientPubkey} (removed ${removedCount} routes)`,
         );
+
+        // If there are still active routes (evicted early), recreate the session
+        // to prevent losing track of in-flight requests
+        if (this.correlationStore.hasActiveRoutesForClient(clientPubkey)) {
+          this.logger.debug(
+            `Recreating session ${clientPubkey} due to active routes`,
+          );
+          this.sessionStore.getOrCreateSession(
+            clientPubkey,
+            session.isEncrypted,
+          );
+          return; // Don't call onClientSessionEvicted for vetoed eviction
+        }
 
         if (this.onClientSessionEvicted) {
           Promise.resolve(
@@ -330,11 +333,14 @@ export class NostrServerTransport
     clientPubkey: string,
     isEncrypted: boolean,
   ): ClientSession {
-    const session = this.sessionStore.getSession(clientPubkey);
-    if (!session) {
+    const [session, created] = this.sessionStore.getOrCreateSession(
+      clientPubkey,
+      isEncrypted,
+    );
+    if (created) {
       this.logger.info(`Session created for ${clientPubkey}`);
     }
-    return this.sessionStore.getOrCreateSession(clientPubkey, isEncrypted);
+    return session;
   }
 
   /**
@@ -473,9 +479,9 @@ export class NostrServerTransport
       if (
         isJSONRPCNotification(notification) &&
         notification.method === 'notifications/progress' &&
-        notification.params?._meta?.progressToken
+        notification.params?.progressToken
       ) {
-        const token = String(notification.params._meta.progressToken);
+        const token = String(notification.params.progressToken);
 
         // Use O(1) lookup for progress token routing
         const nostrEventId =
@@ -611,17 +617,6 @@ export class NostrServerTransport
         'Decrypt message timed out',
       );
       const currentEvent = JSON.parse(decryptedJson) as NostrEvent;
-
-      // Deduplicate decrypted inner events to avoid double-processing the same logical request.
-      // This guards against scenarios where the same inner request is delivered in multiple
-      // distinct gift-wrap envelopes (different outer ids).
-      if (this.seenEventIds.has(currentEvent.id)) {
-        this.logger.debug('Skipping duplicate decrypted inner event', {
-          eventId: currentEvent.id,
-        });
-        return;
-      }
-      this.seenEventIds.set(currentEvent.id, true);
 
       this.authorizeAndProcessEvent(currentEvent, true);
     } catch (error) {

@@ -3,6 +3,7 @@ import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js';
 import { createLogger } from './logger.js';
 
 const logger = createLogger('serializers');
+
 /**
  * Serializes an MCP message into a Nostr event object.
  *

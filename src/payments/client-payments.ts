@@ -1,11 +1,15 @@
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import {
   isJSONRPCNotification,
+  isJSONRPCResultResponse,
+  isJSONRPCErrorResponse,
+  JSONRPCNotification,
   type JSONRPCMessage,
 } from '@modelcontextprotocol/sdk/types.js';
 import { NostrClientTransport } from '../transport/nostr-client-transport.js';
 import { PaymentHandler, PaymentRequiredNotification } from './types.js';
 import { createLogger } from '../core/utils/logger.js';
+import { DEFAULT_SYNTHETIC_PROGRESS_INTERVAL_MS } from './constants.js';
 
 type TransportWithOptionalContext = Transport & {
   onmessageWithContext?: (
@@ -16,7 +20,22 @@ type TransportWithOptionalContext = Transport & {
 
 export interface ClientPaymentsOptions {
   handlers: readonly PaymentHandler[];
+  /**
+   * Interval for synthetic progress heartbeats (milliseconds).
+   *
+   * @default DEFAULT_SYNTHETIC_PROGRESS_INTERVAL_MS (30000 ms)
+   * Chosen to be half of the upstream MCP SDK default request timeout (60 s),
+   * ensuring a heartbeat arrives before the first timeout would fire.
+   */
+  syntheticProgressIntervalMs?: number;
 }
+
+type ProgressToken = string;
+
+type SyntheticProgressEntry = {
+  stopAtMs: number;
+  wireProgressToken: string | number;
+};
 
 function isPaymentRequiredNotification(
   msg: JSONRPCMessage,
@@ -35,6 +54,69 @@ export function withClientPayments(
   options: ClientPaymentsOptions,
 ): Transport {
   const logger = createLogger('client-payments');
+
+  const syntheticProgressIntervalMs =
+    options.syntheticProgressIntervalMs ??
+    DEFAULT_SYNTHETIC_PROGRESS_INTERVAL_MS;
+
+  const syntheticProgress = new Map<ProgressToken, SyntheticProgressEntry>();
+
+  let syntheticProgressScheduler: ReturnType<typeof setInterval> | undefined;
+
+  const maybeStopScheduler = (): void => {
+    if (syntheticProgress.size > 0) return;
+    if (!syntheticProgressScheduler) return;
+    clearInterval(syntheticProgressScheduler);
+    syntheticProgressScheduler = undefined;
+  };
+
+  const tickSyntheticProgress = (): void => {
+    if (syntheticProgress.size === 0) {
+      maybeStopScheduler();
+      return;
+    }
+
+    const now = Date.now();
+    for (const [token, entry] of syntheticProgress) {
+      if (now >= entry.stopAtMs) {
+        syntheticProgress.delete(token);
+        continue;
+      }
+
+      onmessage?.({
+        jsonrpc: '2.0',
+        method: 'notifications/progress',
+        params: {
+          progressToken: entry.wireProgressToken,
+          // Arbitrary non-terminal progress value. Receivers treat this as heartbeat.
+          progress: 0,
+        },
+      } as JSONRPCNotification);
+    }
+
+    maybeStopScheduler();
+  };
+
+  const ensureSchedulerStarted = (): void => {
+    if (syntheticProgressScheduler) return;
+    syntheticProgressScheduler = setInterval(
+      tickSyntheticProgress,
+      syntheticProgressIntervalMs,
+    );
+  };
+
+  const stopSyntheticProgress = (token: ProgressToken): void => {
+    if (!syntheticProgress.delete(token)) return;
+    maybeStopScheduler();
+  };
+
+  const stopAllSyntheticProgress = (): void => {
+    syntheticProgress.clear();
+    if (syntheticProgressScheduler) {
+      clearInterval(syntheticProgressScheduler);
+      syntheticProgressScheduler = undefined;
+    }
+  };
 
   // Ensure CEP-8 discovery/negotiation: when using Nostr transports, always advertise
   // supported PMIs derived from the handler list (preference order = handler order).
@@ -63,6 +145,39 @@ export function withClientPayments(
     if (!isPaymentRequiredNotification(message)) {
       return;
     }
+
+    // If the transport can provide the original request's progressToken, emit synthetic
+    // progress notifications locally to keep the upstream MCP request alive while the
+    // payment settles (CEP-8 TTL can exceed the default MCP timeout).
+    if (transport instanceof NostrClientTransport) {
+      const pending = transport.getPendingRequestForEventId(requestEventId);
+      const token = pending?.progressToken;
+      const ttlSeconds = message.params.ttl;
+      if (
+        token &&
+        typeof ttlSeconds === 'number' &&
+        Number.isFinite(ttlSeconds)
+      ) {
+        // Guard against nonsensical TTLs.
+        const ttlMs = Math.floor(ttlSeconds * 1000);
+        if (ttlMs > 0 && !syntheticProgress.has(token)) {
+          const stopAtMs = Date.now() + ttlMs;
+
+          const wireProgressToken = Number.isFinite(Number(token))
+            ? Number(token)
+            : token;
+          syntheticProgress.set(token, { stopAtMs, wireProgressToken });
+          ensureSchedulerStarted();
+          logger.debug('started synthetic progress', {
+            requestEventId,
+            progressToken: token,
+            ttlSeconds,
+            intervalMs: syntheticProgressIntervalMs,
+          });
+        }
+      }
+    }
+
     const handler = handlersByPmi.get(message.params.pmi);
     if (!handler) {
       logger.debug('no handler for PMI, ignoring payment_required', {
@@ -153,7 +268,29 @@ export function withClientPayments(
     },
 
     async start(): Promise<void> {
+      const supportsContextNotifications =
+        'onmessageWithContext' in transportWithContext;
+
       transport.onmessage = (message: JSONRPCMessage) => {
+        // IMPORTANT (correctness): transports like `NostrClientTransport` may deliver
+        // notifications through BOTH `onmessage` and `onmessageWithContext`.
+        // In that case, only forward notifications from the context path to avoid
+        // duplicate delivery to the upstream MCP Protocol.
+        if (supportsContextNotifications && isJSONRPCNotification(message)) {
+          return;
+        }
+
+        // Stop synthetic progress when the server responds (success or error).
+        // message.id was restored to originalRequestId by resolveResponse().
+        // When onprogress was set, originalRequestId = progressToken, making this stop exact.
+        // Otherwise syntheticProgress has no entry and the call is a no-op.
+        if (
+          isJSONRPCResultResponse(message) ||
+          isJSONRPCErrorResponse(message)
+        ) {
+          stopSyntheticProgress(String(message.id));
+        }
+
         // Best-effort: execute handler asynchronously, but never block delivery.
         void maybeHandlePaymentRequired(message, 'unknown').catch(
           (err: unknown) => {
@@ -172,6 +309,26 @@ export function withClientPayments(
           ctx: { eventId: string; correlatedEventId?: string },
         ) => {
           const requestEventId = ctx.correlatedEventId ?? 'unknown';
+
+          // Stop synthetic progress on terminal outcomes (context path).
+          // Use correlation store lookup (reliable) rather than relying on the server
+          // to embed _meta.progressToken in these CEP-8 notifications.
+          if (isJSONRPCNotification(message)) {
+            if (
+              message.method === 'notifications/payment_accepted' ||
+              message.method === 'notifications/payment_rejected'
+            ) {
+              const progressToken =
+                transport instanceof NostrClientTransport
+                  ? transport.getPendingRequestForEventId(requestEventId)
+                      ?.progressToken
+                  : undefined;
+              if (progressToken) {
+                stopSyntheticProgress(progressToken);
+              }
+            }
+          }
+
           void maybeHandlePaymentRequired(message, requestEventId).catch(
             (err: unknown) => {
               const error = err instanceof Error ? err : new Error(String(err));
@@ -179,13 +336,16 @@ export function withClientPayments(
             },
           );
 
-          // Keep message delivery consistent with the plain `onmessage` path.
+          // Forward exactly once (see duplicate-delivery guard in `transport.onmessage`).
           onmessage?.(message);
         };
       }
 
       transport.onerror = (err: Error) => onerror?.(err);
-      transport.onclose = () => onclose?.();
+      transport.onclose = () => {
+        stopAllSyntheticProgress();
+        onclose?.();
+      };
       await transport.start();
     },
 
@@ -194,6 +354,7 @@ export function withClientPayments(
     },
 
     async close(): Promise<void> {
+      // stopAllSyntheticProgress is called via transport.onclose, no need to call it here
       await transport.close();
     },
   };

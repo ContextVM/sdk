@@ -158,37 +158,6 @@ export class CorrelationStore {
   }
 
   /**
-   * Removes an event route and its associated progress token mapping.
-   *
-   * @param eventId The Nostr event ID
-   * @returns true if the route was found and removed, false otherwise
-   */
-  removeEventRoute(eventId: string): boolean {
-    const route = this.eventRoutes.get(eventId);
-    if (!route) {
-      return false;
-    }
-
-    // Remove progress token mapping if it exists
-    if (route.progressToken) {
-      this.progressTokenToEventId.delete(route.progressToken);
-    }
-
-    // Remove from client index
-    const clientSet = this.clientEventIds.get(route.clientPubkey);
-    if (clientSet) {
-      clientSet.delete(eventId);
-      if (clientSet.size === 0) {
-        this.clientEventIds.delete(route.clientPubkey);
-      }
-    }
-
-    // Remove the event route
-    this.eventRoutes.delete(eventId);
-    return true;
-  }
-
-  /**
    * Removes all event routes for a specific client.
    * This is called when a session is evicted or closed.
    *
@@ -207,7 +176,7 @@ export class CorrelationStore {
     // Remove each event route (O(k) where k is the number of active requests for this client)
     const toRemove = Array.from(eventIds);
     for (const eventId of toRemove) {
-      if (this.removeEventRoute(eventId)) {
+      if (this.popEventRoute(eventId)) {
         removed++;
       }
     }

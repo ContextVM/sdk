@@ -28,7 +28,10 @@ import {
 import { getNostrEventTag } from '../core/utils/serializers.js';
 import { NostrEvent } from 'nostr-tools';
 import { LogLevel } from '../core/utils/logger.js';
-import { ClientCorrelationStore } from './nostr-client/correlation-store.js';
+import {
+  ClientCorrelationStore,
+  PendingRequest,
+} from './nostr-client/correlation-store.js';
 import { StatelessModeHandler } from './nostr-client/stateless-mode-handler.js';
 import { withTimeout } from '../core/utils/utils.js';
 
@@ -162,6 +165,7 @@ export class NostrClientTransport
    */
   public async close(): Promise<void> {
     try {
+      await this.taskQueue.shutdown();
       this.unsubscribeAll();
       await this.disconnect();
       this.correlationStore.clear();
@@ -231,12 +235,28 @@ export class NostrClientTransport
       tags,
       undefined,
       (eventId) => {
+        const progressToken = isRequest
+          ? message.params?._meta?.progressToken
+          : undefined;
         this.correlationStore.registerRequest(eventId, {
           originalRequestId: isRequest ? message.id : null,
           isInitialize: isRequest && message.method === INITIALIZE_METHOD,
+          progressToken:
+            progressToken !== undefined ? String(progressToken) : undefined,
         });
       },
     );
+  }
+
+  /**
+   * Internal helper used by payments middleware to correlate CEP-8 notifications
+   * (e.g. payment_required) to the original request's progress token.
+   * @internal
+   */
+  public getPendingRequestForEventId(
+    eventId: string,
+  ): PendingRequest | undefined {
+    return this.correlationStore.getPendingRequest(eventId);
   }
 
   /**

@@ -11,6 +11,8 @@ export interface PendingRequest {
   originalRequestId: string | number | null;
   /** Whether this request is the initialize handshake */
   isInitialize: boolean;
+  /** Optional MCP progress token (present when the request was sent with `onprogress`) */
+  progressToken?: string;
 }
 
 /**
@@ -45,6 +47,16 @@ export class ClientCorrelationStore {
    */
   registerRequest(eventId: string, request: PendingRequest): void {
     this.pendingRequests.set(eventId, request);
+  }
+
+  /**
+   * Gets a pending request without removing it.
+   *
+   * Intended for transport-level features that need request metadata
+   * (e.g. synthetic progress injection).
+   */
+  getPendingRequest(eventId: string): PendingRequest | undefined {
+    return this.pendingRequests.get(eventId);
   }
 
   /**

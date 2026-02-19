@@ -3,6 +3,8 @@ import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js';
 import { withClientPayments } from './client-payments.js';
 import type { PaymentHandlerRequest } from './types.js';
+import { NostrClientTransport } from '../transport/nostr-client-transport.js';
+import { PendingRequest } from '../transport/nostr-client/correlation-store.js';
 
 type TransportWithContext = Transport & {
   onmessageWithContext?: (
@@ -245,5 +247,82 @@ describe('withClientPayments()', () => {
     await new Promise((r) => setTimeout(r, 0));
     expect(errors).toHaveLength(1);
     expect(errors[0]?.message).toMatch(/wallet failed/);
+  });
+
+  test('injects synthetic progress when payment_required includes ttl and request has progressToken', async () => {
+    const observed: JSONRPCMessage[] = [];
+
+    const baseTransport: Transport & {
+      onmessageWithContext?: (
+        message: JSONRPCMessage,
+        ctx: { eventId: string; correlatedEventId?: string },
+      ) => void;
+    } = {
+      onmessage: undefined,
+      onmessageWithContext: undefined,
+      onerror: undefined,
+      onclose: undefined,
+      async start(): Promise<void> {},
+      async send(): Promise<void> {},
+      async close(): Promise<void> {},
+    };
+
+    // Fake a NostrClientTransport instance for instanceof checks.
+    const fakeNostrTransport = Object.assign(
+      Object.create(NostrClientTransport.prototype),
+      baseTransport,
+      {
+        setClientPmis(): void {},
+        getPendingRequestForEventId(): PendingRequest | undefined {
+          return {
+            originalRequestId: 1,
+            isInitialize: false,
+            progressToken: '123',
+          };
+        },
+      },
+    ) as unknown as NostrClientTransport;
+
+    const paid = withClientPayments(fakeNostrTransport, {
+      handlers: [
+        {
+          pmi: 'fake',
+          async handle(): Promise<void> {},
+        },
+      ],
+      syntheticProgressIntervalMs: 5,
+    });
+
+    paid.onmessage = (msg) => observed.push(msg);
+
+    await paid.start();
+
+    const paymentRequired: JSONRPCMessage = {
+      jsonrpc: '2.0',
+      method: 'notifications/payment_required',
+      params: { amount: 1, pay_req: 'x', pmi: 'fake', ttl: 60 },
+    };
+
+    fakeNostrTransport.onmessageWithContext?.(paymentRequired, {
+      eventId: 'evt',
+      correlatedEventId: 'req-event-id',
+    });
+
+    // Should be delivered synchronously.
+    expect(observed[0]).toEqual(paymentRequired);
+
+    // Wait long enough for the interval to fire at least once.
+    await new Promise((r) => setTimeout(r, 25));
+
+    expect(
+      observed.some(
+        (m) =>
+          (m as { method?: string }).method === 'notifications/progress' &&
+          (m as { params?: { progressToken?: unknown } }).params
+            ?.progressToken === 123,
+      ),
+    ).toBe(true);
+
+    await paid.close();
   });
 });

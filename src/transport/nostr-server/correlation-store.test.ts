@@ -107,51 +107,6 @@ describe('CorrelationStore', () => {
     });
   });
 
-  describe('removeEventRoute', () => {
-    it('removes route and returns true', () => {
-      const store = new CorrelationStore();
-      store.registerEventRoute('event1', 'client1', 'req1');
-
-      expect(store.removeEventRoute('event1')).toBe(true);
-      expect(store.hasEventRoute('event1')).toBe(false);
-    });
-
-    it('returns false for unknown event id', () => {
-      const store = new CorrelationStore();
-      expect(store.removeEventRoute('unknown')).toBe(false);
-    });
-
-    it('cleans up progress token mapping on removal', () => {
-      const store = new CorrelationStore();
-      store.registerEventRoute('event1', 'client1', 'req1', 'token1');
-
-      store.removeEventRoute('event1');
-
-      expect(store.hasProgressToken('token1')).toBe(false);
-      expect(store.getEventIdByProgressToken('token1')).toBeUndefined();
-    });
-
-    it('cleans up client index on removal', () => {
-      const store = new CorrelationStore();
-      store.registerEventRoute('event1', 'client1', 'req1');
-
-      store.removeEventRoute('event1');
-
-      expect(store.hasActiveRoutesForClient('client1')).toBe(false);
-    });
-
-    it('preserves other client routes when removing one', () => {
-      const store = new CorrelationStore();
-      store.registerEventRoute('event1', 'client1', 'req1');
-      store.registerEventRoute('event2', 'client1', 'req2');
-
-      store.removeEventRoute('event1');
-
-      expect(store.hasActiveRoutesForClient('client1')).toBe(true);
-      expect(store.hasEventRoute('event2')).toBe(true);
-    });
-  });
-
   describe('removeRoutesForClient', () => {
     it('removes all routes for a client', () => {
       const store = new CorrelationStore();
@@ -234,7 +189,7 @@ describe('CorrelationStore', () => {
     it('returns false after all client routes removed', () => {
       const store = new CorrelationStore();
       store.registerEventRoute('event1', 'client1', 'req1');
-      store.removeEventRoute('event1');
+      store.popEventRoute('event1');
       expect(store.hasActiveRoutesForClient('client1')).toBe(false);
     });
   });
@@ -256,7 +211,7 @@ describe('CorrelationStore', () => {
       const store = new CorrelationStore();
       store.registerEventRoute('event1', 'client1', 'req1');
       store.registerEventRoute('event2', 'client1', 'req2');
-      store.removeEventRoute('event1');
+      store.popEventRoute('event1');
       expect(store.eventRouteCount).toBe(1);
     });
   });
@@ -279,7 +234,7 @@ describe('CorrelationStore', () => {
       const store = new CorrelationStore();
       store.registerEventRoute('event1', 'client1', 'req1', 'token1');
       store.registerEventRoute('event2', 'client1', 'req2', 'token2');
-      store.removeEventRoute('event1');
+      store.popEventRoute('event1');
       expect(store.progressTokenCount).toBe(1);
     });
   });
@@ -375,7 +330,7 @@ describe('CorrelationStore', () => {
       expect(store.hasActiveRoutesForClient('client2')).toBe(true);
 
       // Remove one of client1's routes
-      store.removeEventRoute('c1e1');
+      store.popEventRoute('c1e1');
 
       expect(store.hasActiveRoutesForClient('client1')).toBe(true);
       expect(store.hasProgressToken('t1')).toBe(false);
@@ -404,7 +359,7 @@ describe('CorrelationStore', () => {
       store.registerEventRoute('e3', 'c2', 'r3', 't3');
 
       // Remove one
-      store.removeEventRoute('e2');
+      store.popEventRoute('e2');
 
       // Add more to trigger eviction
       store.registerEventRoute('e4', 'c2', 'r4', 't4');

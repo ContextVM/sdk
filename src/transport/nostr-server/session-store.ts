@@ -16,8 +16,6 @@ export interface ClientSession {
   isInitialized: boolean;
   /** Whether this session uses encryption */
   isEncrypted: boolean;
-  /** Timestamp of the last activity from this client */
-  lastActivity: number;
 }
 
 /**
@@ -28,15 +26,6 @@ export interface SessionStoreOptions {
   maxSessions?: number;
   /** Callback invoked when a session is evicted */
   onSessionEvicted?: (clientPubkey: string, session: ClientSession) => void;
-  /**
-   * Predicate called during LRU eviction to determine if a session should be evicted.
-   * Return true to proceed with eviction, false to keep the session.
-   * If not provided, all LRU evictions proceed normally.
-   */
-  shouldEvictSession?: (
-    clientPubkey: string,
-    session: ClientSession,
-  ) => boolean;
 }
 
 /**
@@ -52,21 +41,11 @@ export class SessionStore {
   private readonly sessions: LruCache<ClientSession>;
 
   constructor(options: SessionStoreOptions = {}) {
-    const {
-      maxSessions = DEFAULT_LRU_SIZE,
-      onSessionEvicted,
-      shouldEvictSession,
-    } = options;
+    const { maxSessions = DEFAULT_LRU_SIZE, onSessionEvicted } = options;
 
     this.sessions = new LruCache<ClientSession>(
       maxSessions,
       (clientPubkey, session) => {
-        // Check if eviction should proceed via predicate
-        if (shouldEvictSession && !shouldEvictSession(clientPubkey, session)) {
-          // Re-insert the session to prevent eviction
-          this.sessions.set(clientPubkey, session);
-          return;
-        }
         onSessionEvicted?.(clientPubkey, session);
       },
     );
@@ -77,27 +56,26 @@ export class SessionStore {
    *
    * @param clientPubkey The client's public key
    * @param isEncrypted Whether the session uses encryption
-   * @returns The client session
+   * @returns Tuple of [session, wasCreated]
    */
   getOrCreateSession(
     clientPubkey: string,
     isEncrypted: boolean,
-  ): ClientSession {
+  ): [ClientSession, boolean] {
     const existing = this.sessions.get(clientPubkey);
     if (existing) {
       // Update encryption mode in case it changed
       existing.isEncrypted = isEncrypted;
-      return existing;
+      return [existing, false];
     }
 
     const newSession: ClientSession = {
       isInitialized: false,
       isEncrypted,
-      lastActivity: Date.now(),
     };
 
     this.sessions.set(clientPubkey, newSession);
-    return newSession;
+    return [newSession, true];
   }
 
   /**
@@ -108,21 +86,6 @@ export class SessionStore {
    */
   getSession(clientPubkey: string): ClientSession | undefined {
     return this.sessions.get(clientPubkey);
-  }
-
-  /**
-   * Updates the last activity timestamp for a session.
-   *
-   * @param clientPubkey The client's public key
-   * @returns true if the session was found and updated, false otherwise
-   */
-  updateActivity(clientPubkey: string): boolean {
-    const session = this.sessions.get(clientPubkey);
-    if (session) {
-      session.lastActivity = Date.now();
-      return true;
-    }
-    return false;
   }
 
   /**
