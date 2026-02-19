@@ -1,5 +1,11 @@
 # @contextvm/sdk
 
+## 0.4.12
+
+### Patch Changes
+
+- fix(payments): ensure onmessageWithContext is own property for NostrClientTransport
+
 ## 0.4.11
 
 ### Patch Changes

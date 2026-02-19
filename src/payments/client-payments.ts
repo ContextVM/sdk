@@ -11,13 +11,6 @@ import { PaymentHandler, PaymentRequiredNotification } from './types.js';
 import { createLogger } from '../core/utils/logger.js';
 import { DEFAULT_SYNTHETIC_PROGRESS_INTERVAL_MS } from './constants.js';
 
-type TransportWithOptionalContext = Transport & {
-  onmessageWithContext?: (
-    message: JSONRPCMessage,
-    ctx: { eventId: string; correlatedEventId?: string },
-  ) => void;
-};
-
 export interface ClientPaymentsOptions {
   handlers: readonly PaymentHandler[];
   /**
@@ -49,6 +42,9 @@ function isPaymentRequiredNotification(
 
 /**
  * Wraps a transport to automatically handle CEP-8 payment requests.
+ *
+ * When `transport` is a {@link NostrClientTransport}, PMI advertisement and
+ * synthetic progress injection are enabled automatically.
  */
 export function withClientPayments(
   transport: Transport,
@@ -259,9 +255,7 @@ export function withClientPayments(
     }
   }
 
-  const transportWithContext = transport as TransportWithOptionalContext;
-
-  const wrapped: TransportWithOptionalContext = {
+  const wrapped = {
     get onmessage() {
       return onmessage;
     },
@@ -282,15 +276,15 @@ export function withClientPayments(
     },
 
     async start(): Promise<void> {
-      const supportsContextNotifications =
-        'onmessageWithContext' in transportWithContext;
+      // Only suppress notifications in `onmessage` when the transport delivers
+      // them through a separate context path (NostrClientTransport).
+      const hasContextPath = transport instanceof NostrClientTransport;
 
       transport.onmessage = (message: JSONRPCMessage) => {
-        // IMPORTANT (correctness): transports like `NostrClientTransport` may deliver
-        // notifications through BOTH `onmessage` and `onmessageWithContext`.
-        // In that case, only forward notifications from the context path to avoid
+        // `NostrClientTransport` delivers notifications through BOTH `onmessage`
+        // and `onmessageWithContext`. Forward only from the context path to avoid
         // duplicate delivery to the upstream MCP Protocol.
-        if (supportsContextNotifications && isJSONRPCNotification(message)) {
+        if (hasContextPath && isJSONRPCNotification(message)) {
           return;
         }
 
@@ -316,44 +310,39 @@ export function withClientPayments(
         onmessage?.(message);
       };
 
-      // If underlying transport supports correlation context, use it to pass requestEventId.
-      if ('onmessageWithContext' in transportWithContext) {
-        transportWithContext.onmessageWithContext = (
-          message: JSONRPCMessage,
-          ctx: { eventId: string; correlatedEventId?: string },
-        ) => {
-          const requestEventId = ctx.correlatedEventId ?? 'unknown';
+      (transport as NostrClientTransport).onmessageWithContext = (
+        message: JSONRPCMessage,
+        ctx: { eventId: string; correlatedEventId?: string },
+      ) => {
+        const requestEventId = ctx.correlatedEventId ?? 'unknown';
 
-          // Stop synthetic progress on terminal outcomes (context path).
-          // Use correlation store lookup (reliable) rather than relying on the server
-          // to embed _meta.progressToken in these CEP-8 notifications.
-          if (isJSONRPCNotification(message)) {
-            if (
-              message.method === 'notifications/payment_accepted' ||
-              message.method === 'notifications/payment_rejected'
-            ) {
-              const progressToken =
-                transport instanceof NostrClientTransport
-                  ? transport.getPendingRequestForEventId(requestEventId)
-                      ?.progressToken
-                  : undefined;
-              if (progressToken) {
-                stopSyntheticProgress(progressToken);
-              }
+        // Stop synthetic progress on terminal outcomes (context path).
+        if (isJSONRPCNotification(message)) {
+          if (
+            message.method === 'notifications/payment_accepted' ||
+            message.method === 'notifications/payment_rejected'
+          ) {
+            const progressToken =
+              transport instanceof NostrClientTransport
+                ? transport.getPendingRequestForEventId(requestEventId)
+                    ?.progressToken
+                : undefined;
+            if (progressToken) {
+              stopSyntheticProgress(progressToken);
             }
           }
+        }
 
-          void maybeHandlePaymentRequired(message, requestEventId).catch(
-            (err: unknown) => {
-              const error = err instanceof Error ? err : new Error(String(err));
-              onerror?.(error);
-            },
-          );
+        void maybeHandlePaymentRequired(message, requestEventId).catch(
+          (err: unknown) => {
+            const error = err instanceof Error ? err : new Error(String(err));
+            onerror?.(error);
+          },
+        );
 
-          // Forward exactly once (see duplicate-delivery guard in `transport.onmessage`).
-          onmessage?.(message);
-        };
-      }
+        // Forward exactly once (see duplicate-delivery guard in `transport.onmessage`).
+        onmessage?.(message);
+      };
 
       transport.onerror = (err: Error) => onerror?.(err);
       transport.onclose = () => {

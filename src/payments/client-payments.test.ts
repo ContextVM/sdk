@@ -4,13 +4,23 @@ import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js';
 import { withClientPayments } from './client-payments.js';
 import type { PaymentHandlerRequest } from './types.js';
 import { NostrClientTransport } from '../transport/nostr-client-transport.js';
-import { PendingRequest } from '../transport/nostr-client/correlation-store.js';
+import { PrivateKeySigner } from '../signer/private-key-signer.js';
+import type { RelayHandler } from '../core/interfaces.js';
 
+/** Minimal fake transport that exposes onmessageWithContext for unit tests. */
 type TransportWithContext = Transport & {
   onmessageWithContext?: (
     message: JSONRPCMessage,
     ctx: { eventId: string; correlatedEventId?: string },
   ) => void;
+};
+
+const noopRelay: RelayHandler = {
+  connect: async () => {},
+  disconnect: async () => {},
+  publish: async () => {},
+  subscribe: async () => () => {},
+  unsubscribe: () => {},
 };
 
 describe('withClientPayments()', () => {
@@ -249,52 +259,28 @@ describe('withClientPayments()', () => {
     expect(errors[0]?.message).toMatch(/wallet failed/);
   });
 
-  test('injects synthetic progress when payment_required includes ttl and request has progressToken', async () => {
-    const observed: JSONRPCMessage[] = [];
-
-    const baseTransport: Transport & {
-      onmessageWithContext?: (
-        message: JSONRPCMessage,
-        ctx: { eventId: string; correlatedEventId?: string },
-      ) => void;
-    } = {
-      onmessage: undefined,
-      onmessageWithContext: undefined,
-      onerror: undefined,
-      onclose: undefined,
-      async start(): Promise<void> {},
-      async send(): Promise<void> {},
-      async close(): Promise<void> {},
-    };
-
-    // Fake a NostrClientTransport instance for instanceof checks.
-    const fakeNostrTransport = Object.assign(
-      Object.create(NostrClientTransport.prototype),
-      baseTransport,
-      {
-        setClientPmis(): void {},
-        getPendingRequestForEventId(): PendingRequest | undefined {
-          return {
-            originalRequestId: 1,
-            isInitialize: false,
-            progressToken: '123',
-          };
-        },
-      },
-    ) as unknown as NostrClientTransport;
-
-    const paid = withClientPayments(fakeNostrTransport, {
-      handlers: [
-        {
-          pmi: 'fake',
-          async handle(): Promise<void> {},
-        },
-      ],
-      syntheticProgressIntervalMs: 5,
+  test('injects synthetic progress immediately and periodically when payment_required includes ttl', async () => {
+    const transport = new NostrClientTransport({
+      serverPubkey: 'b'.repeat(64),
+      signer: new PrivateKeySigner('a'.repeat(64)),
+      relayHandler: noopRelay,
+      isStateless: true,
     });
 
-    paid.onmessage = (msg) => observed.push(msg);
+    transport
+      .getInternalStateForTesting()
+      .correlationStore.registerRequest('req-event-id', {
+        originalRequestId: 123,
+        isInitialize: false,
+        progressToken: '123',
+      });
 
+    const observed: JSONRPCMessage[] = [];
+    const paid = withClientPayments(transport, {
+      handlers: [{ pmi: 'fake', async handle(): Promise<void> {} }],
+      syntheticProgressIntervalMs: 5,
+    });
+    paid.onmessage = (msg) => observed.push(msg);
     await paid.start();
 
     const paymentRequired: JSONRPCMessage = {
@@ -303,18 +289,13 @@ describe('withClientPayments()', () => {
       params: { amount: 1, pay_req: 'x', pmi: 'fake', ttl: 60 },
     };
 
-    fakeNostrTransport.onmessageWithContext?.(paymentRequired, {
+    transport.onmessageWithContext!(paymentRequired, {
       eventId: 'evt',
       correlatedEventId: 'req-event-id',
     });
 
-    // payment_required is still forwarded synchronously; the immediate synthetic
-    // heartbeat now precedes it in observed, so check presence rather than index.
+    // payment_required is forwarded and an immediate heartbeat fires synchronously.
     expect(observed).toContainEqual(paymentRequired);
-
-    // Wait long enough for the interval to fire at least once.
-    await new Promise((r) => setTimeout(r, 25));
-
     expect(
       observed.some(
         (m) =>
@@ -323,6 +304,13 @@ describe('withClientPayments()', () => {
             ?.progressToken === 123,
       ),
     ).toBe(true);
+
+    // Interval ticks also fire.
+    await new Promise((r) => setTimeout(r, 25));
+    const progressCount = observed.filter(
+      (m) => (m as { method?: string }).method === 'notifications/progress',
+    ).length;
+    expect(progressCount).toBeGreaterThan(1);
 
     await paid.close();
   });

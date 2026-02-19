@@ -364,3 +364,17 @@ describe('NostrClientTransport', () => {
     await paidServer.close();
   }, 20000);
 });
+
+describe('NostrClientTransport instance shape', () => {
+  test('onmessageWithContext is an own instance property (regression: ES2018 field without initialiser is not an own property)', () => {
+    const transport = new NostrClientTransport({
+      serverPubkey: 'a'.repeat(64),
+      signer: new PrivateKeySigner('a'.repeat(64)),
+      relayHandler: [],
+    });
+    expect('onmessageWithContext' in transport).toBe(true);
+    expect(
+      Object.prototype.hasOwnProperty.call(transport, 'onmessageWithContext'),
+    ).toBe(true);
+  });
+});

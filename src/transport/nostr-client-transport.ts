@@ -58,10 +58,12 @@ export class NostrClientTransport
 {
   /** Public event handlers required by the Transport interface */
   public onmessage?: (message: JSONRPCMessage) => void;
-  public onmessageWithContext?: (
-    message: JSONRPCMessage,
-    ctx: { eventId: string; correlatedEventId?: string },
-  ) => void;
+  public onmessageWithContext:
+    | ((
+        message: JSONRPCMessage,
+        ctx: { eventId: string; correlatedEventId?: string },
+      ) => void)
+    | undefined = undefined;
   public onclose?: () => void;
   public onerror?: (error: Error) => void;
 
