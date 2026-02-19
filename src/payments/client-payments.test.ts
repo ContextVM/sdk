@@ -308,8 +308,9 @@ describe('withClientPayments()', () => {
       correlatedEventId: 'req-event-id',
     });
 
-    // Should be delivered synchronously.
-    expect(observed[0]).toEqual(paymentRequired);
+    // payment_required is still forwarded synchronously; the immediate synthetic
+    // heartbeat now precedes it in observed, so check presence rather than index.
+    expect(observed).toContainEqual(paymentRequired);
 
     // Wait long enough for the interval to fire at least once.
     await new Promise((r) => setTimeout(r, 25));

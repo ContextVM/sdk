@@ -21,11 +21,12 @@ type TransportWithOptionalContext = Transport & {
 export interface ClientPaymentsOptions {
   handlers: readonly PaymentHandler[];
   /**
-   * Interval for synthetic progress heartbeats (milliseconds).
+   * Interval for periodic synthetic progress heartbeats (milliseconds).
    *
+   * One heartbeat is also emitted immediately when `payment_required` is
+   * received so the MCP timeout is always reset as soon as the payment flow
+   * begins
    * @default DEFAULT_SYNTHETIC_PROGRESS_INTERVAL_MS (30000 ms)
-   * Chosen to be half of the upstream MCP SDK default request timeout (60 s),
-   * ensuring a heartbeat arrives before the first timeout would fire.
    */
   syntheticProgressIntervalMs?: number;
 }
@@ -88,7 +89,6 @@ export function withClientPayments(
         method: 'notifications/progress',
         params: {
           progressToken: entry.wireProgressToken,
-          // Arbitrary non-terminal progress value. Receivers treat this as heartbeat.
           progress: 0,
         },
       } as JSONRPCNotification);
@@ -166,8 +166,22 @@ export function withClientPayments(
           const wireProgressToken = Number.isFinite(Number(token))
             ? Number(token)
             : token;
-          syntheticProgress.set(token, { stopAtMs, wireProgressToken });
+          syntheticProgress.set(token, {
+            stopAtMs,
+            wireProgressToken,
+          });
           ensureSchedulerStarted();
+
+          // Reset the MCP timeout immediately — don't wait for the interval tick
+          onmessage?.({
+            jsonrpc: '2.0',
+            method: 'notifications/progress',
+            params: {
+              progressToken: wireProgressToken,
+              progress: 0,
+            },
+          } as JSONRPCNotification);
+
           logger.debug('started synthetic progress', {
             requestEventId,
             progressToken: token,

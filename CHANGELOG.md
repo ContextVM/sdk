@@ -1,5 +1,11 @@
 # @contextvm/sdk
 
+## 0.4.11
+
+### Patch Changes
+
+- fix(payments): emit immediate synthetic progress heartbeat on payment_required receipt
+
 ## 0.4.10
 
 ### Patch Changes

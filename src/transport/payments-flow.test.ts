@@ -901,4 +901,118 @@ describe('payments fake flow (transport-level)', () => {
       /verifyPayment timed out/,
     );
   }, 20000);
+
+  test('client respects payment TTL without timing out even when TTL > MCP timeout (immediate-heartbeat regression)', async () => {
+    // Scenario (local relay round-trips ≈ 15 ms each):
+    //
+    //   t=0     callTool → MCP timeout starts (400 ms)
+    //   t≈215ms server finishes createPaymentRequired (createDelayMs=200)
+    //             → sends payment_required{ttl:30}
+    //   t≈230ms client receives payment_required
+    //             → immediate synthetic heartbeat resets MCP timeout by 400 ms
+    //               → new deadline: t ≈ 630 ms
+    //             → FakePaymentHandler starts (delayMs=150)
+    //   t≈380ms handler done; server begins verifyPayment (verifyDelayMs=150)
+    //   t≈530ms verification done; server sends tool response
+    //   t≈545ms client receives response — before 630 ms deadline ✓
+    //
+    // Without the immediate-heartbeat fix the only reset mechanism is the
+    // periodic interval. With syntheticProgressIntervalMs=5_000 (>> 400 ms
+    // timeout) the first interval tick fires at t ≈ 5230 ms — long after the
+    // timeout fires at t=400 ms. The request would be cancelled with
+    // "Request timed out" before the response can arrive.
+    const serverSK = generateSecretKey();
+    const serverPrivateKey = bytesToHex(serverSK);
+    const serverPublicKey = getPublicKey(serverSK);
+
+    const mcpServer = new McpServer({
+      name: 'paid-server-ttl',
+      version: '1.0.0',
+    });
+    mcpServer.registerTool(
+      'add',
+      {
+        title: 'Addition Tool',
+        description: 'Add two numbers',
+        inputSchema: { a: z.number(), b: z.number() },
+      },
+      async ({ a, b }: { a: number; b: number }) => ({
+        content: [{ type: 'text', text: String(a + b) }],
+      }),
+    );
+
+    // TTL=30s >> MCP timeout=400ms: client must honour the TTL by keeping the
+    // request alive via synthetic progress until payment settles.
+    // createDelayMs simulates a slow server-side price oracle so that
+    // payment_required arrives at the client AFTER ~230 ms, pushing total
+    // processing time (≈ 545 ms) past the raw 400 ms MCP timeout.
+    const processor = new FakePaymentProcessor({
+      verifyDelayMs: 150,
+      createDelayMs: 200,
+      ttl: 30,
+    });
+    const pricedCapabilities = [
+      {
+        method: 'tools/call',
+        name: 'add',
+        amount: 1,
+        currencyUnit: 'test',
+        description: 'test payment',
+      },
+    ] as const;
+
+    const serverTransport = withServerPayments(
+      new NostrServerTransport({
+        signer: new PrivateKeySigner(serverPrivateKey),
+        relayHandler: new ApplesauceRelayPool([relayUrl]),
+        encryptionMode: EncryptionMode.DISABLED,
+      }),
+      {
+        processors: [processor],
+        pricedCapabilities: [...pricedCapabilities],
+      },
+    );
+
+    await mcpServer.connect(serverTransport);
+
+    const clientSK = generateSecretKey();
+    const clientPrivateKey = bytesToHex(clientSK);
+
+    // syntheticProgressIntervalMs (5 s) >> MCP timeout (400 ms): the interval
+    // alone can never fire in time. Only the immediate heartbeat (the fix) can
+    // prevent the timeout, proving that is what saves the request.
+    const clientTransport = new NostrClientTransport({
+      signer: new PrivateKeySigner(clientPrivateKey),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      serverPubkey: serverPublicKey,
+      encryptionMode: EncryptionMode.DISABLED,
+    });
+    const paidClientTransport = withClientPayments(clientTransport, {
+      handlers: [new FakePaymentHandler({ delayMs: 150 })],
+      syntheticProgressIntervalMs: 5_000,
+    });
+
+    const client = new Client({ name: 'paid-client-ttl', version: '1.0.0' });
+    await client.connect(paidClientTransport);
+
+    const result = await client.callTool(
+      { name: 'add', arguments: { a: 3, b: 4 } },
+      undefined,
+      {
+        // Short timeout: processing (≈545 ms) exceeds this without a reset.
+        timeout: 400,
+        // Opt in to MCP progress-based timeout resetting.
+        onprogress: () => {},
+        resetTimeoutOnProgress: true,
+      },
+    );
+
+    const typedResult = result as {
+      content: Array<{ type: string; text?: string }>;
+    };
+    expect(typedResult.content[0]).toMatchObject({ type: 'text', text: '7' });
+
+    await client.close();
+    await mcpServer.close();
+  }, 20000);
 });

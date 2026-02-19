@@ -4,3 +4,6 @@
 [submodule "contextvm-docs"]
 	path = contextvm-docs
 	url = https://github.com/ContextVM/contextvm-docs
+[submodule "lemonade-legends-site"]
+	path = lemonade-legends-site
+	url = https://github.com/ContextVM/lemonade-legends-site
