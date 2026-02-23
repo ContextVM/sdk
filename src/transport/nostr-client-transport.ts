@@ -31,6 +31,7 @@ import { LogLevel } from '../core/utils/logger.js';
 import {
   ClientCorrelationStore,
   PendingRequest,
+  type OriginalRequestContext,
 } from './nostr-client/correlation-store.js';
 import { StatelessModeHandler } from './nostr-client/stateless-mode-handler.js';
 import { withTimeout } from '../core/utils/utils.js';
@@ -240,14 +241,52 @@ export class NostrClientTransport
         const progressToken = isRequest
           ? message.params?._meta?.progressToken
           : undefined;
+        const originalRequestContext = isRequest
+          ? this.getOriginalRequestContext(message)
+          : undefined;
         this.correlationStore.registerRequest(eventId, {
           originalRequestId: isRequest ? message.id : null,
           isInitialize: isRequest && message.method === INITIALIZE_METHOD,
           progressToken:
             progressToken !== undefined ? String(progressToken) : undefined,
+          originalRequestContext,
         });
       },
     );
+  }
+
+  private getOriginalRequestContext(
+    message: JSONRPCMessage,
+  ): OriginalRequestContext | undefined {
+    if (!isJSONRPCRequest(message)) return undefined;
+
+    const method = message.method;
+
+    switch (method) {
+      case 'tools/call': {
+        const name = message.params?.name;
+        if (typeof name !== 'string' || name.length === 0) {
+          return { method };
+        }
+        return { method, capability: `tool:${name}` };
+      }
+      case 'prompts/get': {
+        const name = message.params?.name;
+        if (typeof name !== 'string' || name.length === 0) {
+          return { method };
+        }
+        return { method, capability: `prompt:${name}` };
+      }
+      case 'resources/read': {
+        const uri = message.params?.uri;
+        if (typeof uri !== 'string' || uri.length === 0) {
+          return { method };
+        }
+        return { method, capability: `resource:${uri}` };
+      }
+      default:
+        return { method };
+    }
   }
 
   /**

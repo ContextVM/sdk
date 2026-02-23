@@ -16,7 +16,12 @@ import {
 import { LruCache } from '../core/utils/lru-cache.js';
 import { withTimeout } from '../core/utils/utils.js';
 import { createLogger } from '../core/utils/logger.js';
-import { DEFAULT_PAYMENT_TTL_MS } from './constants.js';
+import {
+  DEFAULT_PAYMENT_TTL_MS,
+  PAYMENT_ACCEPTED_METHOD,
+  PAYMENT_REJECTED_METHOD,
+  PAYMENT_REQUIRED_METHOD,
+} from './constants.js';
 
 export interface ServerPaymentsOptions {
   processors: readonly PaymentProcessor[];
@@ -126,7 +131,7 @@ function createPaymentRequiredNotification(params: {
 }): PaymentRequiredNotification {
   return {
     jsonrpc: '2.0',
-    method: 'notifications/payment_required',
+    method: PAYMENT_REQUIRED_METHOD,
     params,
   };
 }
@@ -138,7 +143,7 @@ function createPaymentAcceptedNotification(params: {
 }): PaymentAcceptedNotification {
   return {
     jsonrpc: '2.0',
-    method: 'notifications/payment_accepted',
+    method: PAYMENT_ACCEPTED_METHOD,
     params,
   };
 }
@@ -150,7 +155,7 @@ function createPaymentRejectedNotification(params: {
 }): PaymentRejectedNotification {
   return {
     jsonrpc: '2.0',
-    method: 'notifications/payment_rejected',
+    method: PAYMENT_REJECTED_METHOD,
     params,
   };
 }

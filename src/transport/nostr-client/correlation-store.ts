@@ -13,7 +13,22 @@ export interface PendingRequest {
   isInitialize: boolean;
   /** Optional MCP progress token (present when the request was sent with `onprogress`) */
   progressToken?: string;
+  /** Minimal context about the original request (safe to store; no arguments). */
+  originalRequestContext?: OriginalRequestContext;
 }
+
+/**
+ * Minimal context about the original JSON-RPC request that triggered a payment.
+ *
+ * `capability` reuses the CEP-8 capability identifier format:
+ * - `tool:<name>`
+ * - `prompt:<name>`
+ * - `resource:<uri>`
+ */
+export type OriginalRequestContext = {
+  method: string;
+  capability?: string;
+};
 
 /**
  * Configuration options for the ClientCorrelationStore.

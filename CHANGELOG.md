@@ -1,5 +1,18 @@
 # @contextvm/sdk
 
+## 0.5.0
+
+### Minor Changes
+
+- Add client-side payment policy hook for LLM-aware payment consent
+  - Added `paymentPolicy` hook to `ClientPaymentsOptions` for consent/authorization before payment execution
+  - Extended `PaymentHandlerRequest` to include `pmi` field for rail identification
+  - Added `OriginalRequestContext` type (`{ method, capability }`) stored in correlation store
+  - `NostrClientTransport` now captures minimal request context for tools/prompts/resources
+  - Both `paymentPolicy` decline and `canHandle === false` now synthesize JSON-RPC errors with code `-32000` when correlation exists (fail-fast behavior)
+  - Error `data` includes `{ pmi, amount, capability, method }` for programmatic handling
+  - Synthetic progress lifecycle documented: starts on `payment_required`, stops on all terminal outcomes (accept/reject/client decline)
+
 ## 0.4.14
 
 ### Patch Changes

@@ -85,6 +85,8 @@ export type PaymentRejectedNotification = JSONRPCNotification & {
 export interface PaymentHandlerRequest {
   amount: number;
   pay_req: string;
+  /** The PMI requested by the server (e.g. "bitcoin-lightning-bolt11"). */
+  pmi: string;
   description?: string;
   /** Time-to-live in seconds from the server's `payment_required` (CEP-8). */
   ttl?: number;

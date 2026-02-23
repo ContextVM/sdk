@@ -5,7 +5,7 @@ import { withClientPayments } from './client-payments.js';
 import type { PaymentHandlerRequest } from './types.js';
 import { NostrClientTransport } from '../transport/nostr-client-transport.js';
 import { PrivateKeySigner } from '../signer/private-key-signer.js';
-import type { RelayHandler } from '../core/interfaces.js';
+import { EncryptionMode, type RelayHandler } from '../core/interfaces.js';
 
 /** Minimal fake transport that exposes onmessageWithContext for unit tests. */
 type TransportWithContext = Transport & {
@@ -67,6 +67,7 @@ describe('withClientPayments()', () => {
     expect(observed).toEqual({
       amount: 1,
       pay_req: 'x',
+      pmi: 'fake',
       description: undefined,
       requestEventId: 'req-id',
     });
@@ -204,6 +205,118 @@ describe('withClientPayments()', () => {
 
     await new Promise((r) => setTimeout(r, 0));
     expect(handleCalls).toBe(0);
+  });
+
+  test('synthesizes JSON-RPC error when canHandle declines and correlation exists', async () => {
+    const transport = new NostrClientTransport({
+      signer: new PrivateKeySigner('1'.repeat(64)),
+      relayHandler: noopRelay,
+      serverPubkey: '2'.repeat(64),
+      encryptionMode: 'disabled' as any,
+    });
+
+    const observed: JSONRPCMessage[] = [];
+
+    const paid = withClientPayments(transport, {
+      handlers: [
+        {
+          pmi: 'fake',
+          async canHandle(): Promise<boolean> {
+            return false;
+          },
+          async handle(): Promise<void> {
+            throw new Error('should not be called');
+          },
+        },
+      ],
+    });
+
+    paid.onmessage = (msg) => observed.push(msg);
+
+    await paid.start();
+
+    // Inject correlation state directly.
+    (transport as any).correlationStore.registerRequest('req-event-id', {
+      originalRequestId: 42,
+      isInitialize: false,
+      progressToken: undefined,
+      originalRequestContext: { method: 'tools/call', capability: 'tool:add' },
+    });
+
+    const paymentRequired: JSONRPCMessage = {
+      jsonrpc: '2.0',
+      method: 'notifications/payment_required',
+      params: { amount: 1, pay_req: 'x', pmi: 'fake' },
+    };
+
+    (transport as any).onmessageWithContext?.(paymentRequired, {
+      eventId: 'evt',
+      correlatedEventId: 'req-event-id',
+    });
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    const errResp = observed.find((m) => (m as any).id === 42) as any;
+    expect(errResp.error?.code).toBe(-32000);
+    expect(errResp.error?.message).toBe('Payment declined by client handler');
+    expect(errResp.error?.data).toEqual({
+      pmi: 'fake',
+      amount: 1,
+      method: 'tools/call',
+      capability: 'tool:add',
+    });
+  });
+
+  test('synthesizes JSON-RPC error when paymentPolicy declines and correlation exists', async () => {
+    const transport = new NostrClientTransport({
+      signer: new PrivateKeySigner('1'.repeat(64)),
+      relayHandler: noopRelay,
+      serverPubkey: '2'.repeat(64),
+      encryptionMode: EncryptionMode.DISABLED,
+    });
+
+    const observed: JSONRPCMessage[] = [];
+    const paid = withClientPayments(transport, {
+      handlers: [{ pmi: 'fake', async handle(): Promise<void> {} }],
+      paymentPolicy: async () => false,
+    });
+
+    paid.onmessage = (msg) => observed.push(msg);
+    await paid.start();
+
+    (transport as any).correlationStore.registerRequest('req-event-id', {
+      originalRequestId: 99,
+      isInitialize: false,
+      progressToken: undefined,
+      originalRequestContext: {
+        method: 'prompts/get',
+        capability: 'prompt:hi',
+      },
+    });
+
+    (transport as any).onmessageWithContext(
+      {
+        jsonrpc: '2.0',
+        method: 'notifications/payment_required',
+        params: { amount: 2, pay_req: 'y', pmi: 'fake' },
+      } as JSONRPCMessage,
+      {
+        eventId: 'evt',
+        correlatedEventId: 'req-event-id',
+      },
+    );
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    const errResp = observed.find((m) => (m as any).id === 99) as any;
+    expect(errResp.error?.code).toBe(-32000);
+    expect(errResp.error?.message).toBe('Payment declined by client policy');
+    expect(errResp.error?.data).toEqual({
+      pmi: 'fake',
+      amount: 2,
+      method: 'prompts/get',
+      capability: 'prompt:hi',
+    });
   });
 
   test('handler errors call onerror but do not block message delivery', async () => {

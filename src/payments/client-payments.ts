@@ -11,11 +11,16 @@ import {
   PaymentHandler,
   PaymentRejectedNotification,
   PaymentRequiredNotification,
+  PaymentHandlerRequest,
 } from './types.js';
 import { createLogger } from '../core/utils/logger.js';
+import type { OriginalRequestContext } from '../transport/nostr-client/correlation-store.js';
 import {
   DEFAULT_SYNTHETIC_PROGRESS_INTERVAL_MS,
   DEFAULT_PAYMENT_TTL_MS,
+  PAYMENT_ACCEPTED_METHOD,
+  PAYMENT_REJECTED_METHOD,
+  PAYMENT_REQUIRED_METHOD,
 } from './constants.js';
 
 export interface ClientPaymentsOptions {
@@ -37,6 +42,20 @@ export interface ClientPaymentsOptions {
    * @default DEFAULT_PAYMENT_TTL_MS (300_000 ms)
    */
   defaultPaymentTtlMs?: number;
+
+  /**
+   * Optional policy hook invoked when a `payment_required` notification is received.
+   *
+   * This is evaluated before checking rail-specific `canHandle` methods.
+   *
+   * When the underlying transport supports request correlation (e.g. {@link NostrClientTransport}),
+   * `originalRequestContext` provides minimal details about the original JSON-RPC request that
+   * triggered the payment.
+   */
+  paymentPolicy?: (
+    req: PaymentHandlerRequest,
+    originalRequestContext?: OriginalRequestContext,
+  ) => boolean | Promise<boolean>;
 }
 
 type ProgressToken = string;
@@ -46,13 +65,27 @@ type SyntheticProgressEntry = {
   wireProgressToken: string | number;
 };
 
+type TransportWithContext = Transport & {
+  onmessageWithContext?: (
+    message: JSONRPCMessage,
+    ctx: { eventId: string; correlatedEventId?: string },
+  ) => void;
+};
+
+function supportsOnmessageWithContext(
+  transport: Transport,
+): transport is TransportWithContext {
+  // Avoid using the `in` operator here; prefer an ES3-compatible check.
+  return Object.prototype.hasOwnProperty.call(
+    transport,
+    'onmessageWithContext',
+  );
+}
+
 function isPaymentRequiredNotification(
   msg: JSONRPCMessage,
 ): msg is PaymentRequiredNotification {
-  return (
-    isJSONRPCNotification(msg) &&
-    msg.method === 'notifications/payment_required'
-  );
+  return isJSONRPCNotification(msg) && msg.method === PAYMENT_REQUIRED_METHOD;
 }
 
 /**
@@ -244,13 +277,46 @@ export function withClientPayments(
 
     inFlightPayReqs.add(message.params.pay_req);
     try {
-      const req = {
+      const req: PaymentHandlerRequest = {
         amount: message.params.amount,
         pay_req: message.params.pay_req,
+        pmi: message.params.pmi,
         description: message.params.description,
         ttl: message.params.ttl,
         _meta: message.params._meta,
         requestEventId,
+      };
+
+      const pending =
+        transport instanceof NostrClientTransport
+          ? transport.getPendingRequestForEventId(requestEventId)
+          : undefined;
+
+      const synthesizeClientDeclineError = (params: {
+        message: string;
+      }): void => {
+        if (pending?.originalRequestId == null) {
+          return;
+        }
+
+        if (pending.progressToken) {
+          stopSyntheticProgress(pending.progressToken);
+        }
+
+        onmessage?.({
+          jsonrpc: '2.0',
+          id: pending.originalRequestId,
+          error: {
+            code: -32000,
+            message: params.message,
+            data: {
+              pmi: req.pmi,
+              amount: req.amount,
+              method: pending.originalRequestContext?.method,
+              capability: pending.originalRequestContext?.capability,
+            },
+          },
+        } as JSONRPCMessage);
       };
 
       logger.info('processing payment_required', {
@@ -259,11 +325,32 @@ export function withClientPayments(
         amount: message.params.amount,
       });
 
+      if (options.paymentPolicy) {
+        const isApproved = await options.paymentPolicy(
+          req,
+          pending?.originalRequestContext,
+        );
+        if (!isApproved) {
+          logger.debug('paymentPolicy declined the payment', {
+            requestEventId,
+            pmi: message.params.pmi,
+            amount: message.params.amount,
+          });
+          synthesizeClientDeclineError({
+            message: 'Payment declined by client policy',
+          });
+          return;
+        }
+      }
+
       const canHandle = handler.canHandle ? await handler.canHandle(req) : true;
       if (!canHandle) {
         logger.debug('handler declined to handle', {
           requestEventId,
           pmi: message.params.pmi,
+        });
+        synthesizeClientDeclineError({
+          message: 'Payment declined by client handler',
         });
         return;
       }
@@ -315,7 +402,7 @@ export function withClientPayments(
     async start(): Promise<void> {
       // Only suppress notifications in `onmessage` when the transport delivers
       // them through a separate context path (NostrClientTransport).
-      const hasContextPath = transport instanceof NostrClientTransport;
+      const hasContextPath = supportsOnmessageWithContext(transport);
 
       transport.onmessage = (message: JSONRPCMessage) => {
         // `NostrClientTransport` delivers notifications through BOTH `onmessage`
@@ -347,58 +434,58 @@ export function withClientPayments(
         onmessage?.(message);
       };
 
-      (transport as NostrClientTransport).onmessageWithContext = (
-        message: JSONRPCMessage,
-        ctx: { eventId: string; correlatedEventId?: string },
-      ) => {
-        const requestEventId = ctx.correlatedEventId ?? 'unknown';
+      if (hasContextPath) {
+        transport.onmessageWithContext = (
+          message: JSONRPCMessage,
+          ctx: { eventId: string; correlatedEventId?: string },
+        ) => {
+          const requestEventId = ctx.correlatedEventId ?? 'unknown';
 
-        // Stop synthetic progress on terminal outcomes (context path).
-        if (isJSONRPCNotification(message)) {
-          const isAccepted =
-            message.method === 'notifications/payment_accepted';
-          const isRejected =
-            message.method === 'notifications/payment_rejected';
-          if (isAccepted || isRejected) {
-            const pending =
-              transport instanceof NostrClientTransport
-                ? transport.getPendingRequestForEventId(requestEventId)
-                : undefined;
-            if (pending?.progressToken) {
-              stopSyntheticProgress(pending.progressToken);
-            }
-            // On rejection, synthesize a JSON-RPC error response so the caller's
-            // pending promise is rejected immediately rather than timing out after 60 s.
-            // The server never calls forward() for a rejected payment, so no real
-            // response will arrive.
-            if (isRejected && pending?.originalRequestId != null) {
-              const rejMsg = (message as PaymentRejectedNotification).params
-                ?.message;
-              onmessage?.({
-                jsonrpc: '2.0',
-                id: pending.originalRequestId,
-                error: {
-                  code: -32000,
-                  message: rejMsg
-                    ? `Payment rejected: ${rejMsg}`
-                    : 'Payment rejected',
-                },
-              } as JSONRPCMessage);
-              return;
+          // Stop synthetic progress on terminal outcomes (context path).
+          if (isJSONRPCNotification(message)) {
+            const isAccepted = message.method === PAYMENT_ACCEPTED_METHOD;
+            const isRejected = message.method === PAYMENT_REJECTED_METHOD;
+            if (isAccepted || isRejected) {
+              const pending =
+                transport instanceof NostrClientTransport
+                  ? transport.getPendingRequestForEventId(requestEventId)
+                  : undefined;
+              if (pending?.progressToken) {
+                stopSyntheticProgress(pending.progressToken);
+              }
+              // On rejection, synthesize a JSON-RPC error response so the caller's
+              // pending promise is rejected immediately rather than timing out after 60 s.
+              // The server never calls forward() for a rejected payment, so no real
+              // response will arrive.
+              if (isRejected && pending?.originalRequestId != null) {
+                const rejMsg = (message as PaymentRejectedNotification).params
+                  ?.message;
+                onmessage?.({
+                  jsonrpc: '2.0',
+                  id: pending.originalRequestId,
+                  error: {
+                    code: -32000,
+                    message: rejMsg
+                      ? `Payment rejected: ${rejMsg}`
+                      : 'Payment rejected',
+                  },
+                } as JSONRPCMessage);
+                return;
+              }
             }
           }
-        }
 
-        void maybeHandlePaymentRequired(message, requestEventId).catch(
-          (err: unknown) => {
-            const error = err instanceof Error ? err : new Error(String(err));
-            onerror?.(error);
-          },
-        );
+          void maybeHandlePaymentRequired(message, requestEventId).catch(
+            (err: unknown) => {
+              const error = err instanceof Error ? err : new Error(String(err));
+              onerror?.(error);
+            },
+          );
 
-        // Forward exactly once (see duplicate-delivery guard in `transport.onmessage`).
-        onmessage?.(message);
-      };
+          // Forward exactly once (see duplicate-delivery guard in `transport.onmessage`).
+          onmessage?.(message);
+        };
+      }
 
       transport.onerror = (err: Error) => onerror?.(err);
       transport.onclose = () => {
