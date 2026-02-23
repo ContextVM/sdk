@@ -212,7 +212,7 @@ describe('withClientPayments()', () => {
       signer: new PrivateKeySigner('1'.repeat(64)),
       relayHandler: noopRelay,
       serverPubkey: '2'.repeat(64),
-      encryptionMode: 'disabled' as any,
+      encryptionMode: EncryptionMode.DISABLED,
     });
 
     const observed: JSONRPCMessage[] = [];
@@ -236,7 +236,13 @@ describe('withClientPayments()', () => {
     await paid.start();
 
     // Inject correlation state directly.
-    (transport as any).correlationStore.registerRequest('req-event-id', {
+    (
+      transport as unknown as {
+        correlationStore: {
+          registerRequest: (eventId: string, req: unknown) => void;
+        };
+      }
+    ).correlationStore.registerRequest('req-event-id', {
       originalRequestId: 42,
       isInitialize: false,
       progressToken: undefined,
@@ -249,17 +255,28 @@ describe('withClientPayments()', () => {
       params: { amount: 1, pay_req: 'x', pmi: 'fake' },
     };
 
-    (transport as any).onmessageWithContext?.(paymentRequired, {
-      eventId: 'evt',
-      correlatedEventId: 'req-event-id',
-    });
+    (transport as unknown as TransportWithContext).onmessageWithContext?.(
+      paymentRequired,
+      {
+        eventId: 'evt',
+        correlatedEventId: 'req-event-id',
+      },
+    );
 
     await new Promise((r) => setTimeout(r, 0));
 
-    const errResp = observed.find((m) => (m as any).id === 42) as any;
-    expect(errResp.error?.code).toBe(-32000);
-    expect(errResp.error?.message).toBe('Payment declined by client handler');
-    expect(errResp.error?.data).toEqual({
+    const errResp = observed.find(
+      (
+        m,
+      ): m is {
+        jsonrpc: '2.0';
+        id: number;
+        error: { code: number; message: string; data?: unknown };
+      } => 'id' in m && m.id === 42 && 'error' in m,
+    );
+    expect(errResp?.error?.code).toBe(-32000);
+    expect(errResp?.error?.message).toBe('Payment declined by client handler');
+    expect(errResp?.error?.data).toEqual({
       pmi: 'fake',
       amount: 1,
       method: 'tools/call',
@@ -284,7 +301,13 @@ describe('withClientPayments()', () => {
     paid.onmessage = (msg) => observed.push(msg);
     await paid.start();
 
-    (transport as any).correlationStore.registerRequest('req-event-id', {
+    (
+      transport as unknown as {
+        correlationStore: {
+          registerRequest: (eventId: string, req: unknown) => void;
+        };
+      }
+    ).correlationStore.registerRequest('req-event-id', {
       originalRequestId: 99,
       isInitialize: false,
       progressToken: undefined,
@@ -294,7 +317,7 @@ describe('withClientPayments()', () => {
       },
     });
 
-    (transport as any).onmessageWithContext(
+    (transport as unknown as TransportWithContext).onmessageWithContext?.(
       {
         jsonrpc: '2.0',
         method: 'notifications/payment_required',
@@ -308,10 +331,18 @@ describe('withClientPayments()', () => {
 
     await new Promise((r) => setTimeout(r, 0));
 
-    const errResp = observed.find((m) => (m as any).id === 99) as any;
-    expect(errResp.error?.code).toBe(-32000);
-    expect(errResp.error?.message).toBe('Payment declined by client policy');
-    expect(errResp.error?.data).toEqual({
+    const errResp = observed.find(
+      (
+        m,
+      ): m is {
+        jsonrpc: '2.0';
+        id: number;
+        error: { code: number; message: string; data?: unknown };
+      } => 'id' in m && m.id === 99 && 'error' in m,
+    );
+    expect(errResp?.error?.code).toBe(-32000);
+    expect(errResp?.error?.message).toBe('Payment declined by client policy');
+    expect(errResp?.error?.data).toEqual({
       pmi: 'fake',
       amount: 2,
       method: 'prompts/get',
