@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { LnBolt11NwcPaymentHandler } from './handlers/ln-bolt11-nwc-payment-handler.js';
 import { LnBolt11ZapPaymentProcessor } from './processors/ln-bolt11-zap-payment-processor.js';
+import { PMI_BITCOIN_LIGHTNING_BOLT11 } from './pmis.js';
 
 const zapEnabled = process.env.ZAP_INTEGRATION === 'true';
 
@@ -36,6 +37,7 @@ describe('zap integration (skipped by default)', () => {
       await handler.handle({
         amount: paymentRequired.amount,
         pay_req: paymentRequired.pay_req,
+        pmi: PMI_BITCOIN_LIGHTNING_BOLT11,
         requestEventId: 'zap-integration-test',
       });
 

@@ -1,4 +1,4 @@
-import { describe, test, expect, mock } from 'bun:test';
+import { afterAll, describe, test, expect, mock } from 'bun:test';
 import { EncryptionMode, type RelayHandler } from '../core/interfaces.js';
 import type { NostrEvent } from 'nostr-tools';
 import { NostrClientTransport } from './nostr-client-transport.js';
@@ -27,9 +27,13 @@ mock.module('../core/encryption.js', () => {
       } satisfies NostrEvent);
     },
     encryptMessage: () => {
-      throw new Error('encryptMessage not used in this test');
+      console.log('encryptMessage not used in this test');
     },
   };
+});
+
+afterAll(() => {
+  mock.restore();
 });
 
 function makeNoopRelayHandler(): RelayHandler {

@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { LnBolt11NwcPaymentHandler } from './handlers/ln-bolt11-nwc-payment-handler.js';
 import { LnBolt11NwcPaymentProcessor } from './processors/ln-bolt11-nwc-payment-processor.js';
+import { PMI_BITCOIN_LIGHTNING_BOLT11 } from './pmis.js';
 
 const nwcEnabled = process.env.NWC_INTEGRATION === 'true';
 
@@ -36,6 +37,7 @@ describe('nwc integration (skipped by default)', () => {
       await handler.handle({
         amount: paymentRequired.amount,
         pay_req: paymentRequired.pay_req,
+        pmi: PMI_BITCOIN_LIGHTNING_BOLT11,
         description: paymentRequired.description,
         requestEventId: 'nwc-integration-test',
       });

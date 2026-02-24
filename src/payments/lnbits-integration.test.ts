@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { LnBolt11LnbitsPaymentHandler } from './handlers/ln-bolt11-lnbits-payment-handler.js';
 import { LnBolt11LnbitsPaymentProcessor } from './processors/ln-bolt11-lnbits-payment-processor.js';
+import { PMI_BITCOIN_LIGHTNING_BOLT11 } from './pmis.js';
 
 const lnbitsEnabled = process.env.LNBITS_INTEGRATION === 'true';
 
@@ -43,6 +44,7 @@ describe('lnbits integration (skipped by default)', () => {
       await handler.handle({
         amount: paymentRequired.amount,
         pay_req: paymentRequired.pay_req,
+        pmi: PMI_BITCOIN_LIGHTNING_BOLT11,
         description: paymentRequired.description,
         requestEventId: 'lnbits-integration-test',
       });
