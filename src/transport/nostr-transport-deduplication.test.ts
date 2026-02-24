@@ -26,8 +26,16 @@ mock.module('../core/encryption.js', () => {
         sig: '0'.repeat(128),
       } satisfies NostrEvent);
     },
-    encryptMessage: () => {
-      console.log('encryptMessage not used in this test');
+    encryptMessage: (message: string, recipientPublicKey: string): NostrEvent => {
+      return {
+        id: 'mock-giftwrap',
+        kind: GIFT_WRAP_KIND,
+        content: message,
+        tags: [['p', recipientPublicKey]],
+        created_at: 1,
+        pubkey: '0'.repeat(64),
+        sig: '0'.repeat(128),
+      } satisfies NostrEvent;
     },
   };
 });
