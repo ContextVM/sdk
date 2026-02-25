@@ -15,10 +15,13 @@ import {
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import {
   CTXVM_MESSAGES_KIND,
+  DEFAULT_TIMEOUT_MS,
+  EPHEMERAL_GIFT_WRAP_KIND,
   GIFT_WRAP_KIND,
   decryptMessage,
   DEFAULT_LRU_SIZE,
   INITIALIZE_METHOD,
+  NOSTR_TAGS,
 } from '../core/index.js';
 import { LruCache } from '../core/utils/lru-cache.js';
 import {
@@ -28,6 +31,7 @@ import {
 import { getNostrEventTag } from '../core/utils/serializers.js';
 import { NostrEvent } from 'nostr-tools';
 import { LogLevel } from '../core/utils/logger.js';
+import { GiftWrapMode } from '../core/interfaces.js';
 import {
   ClientCorrelationStore,
   PendingRequest,
@@ -35,6 +39,10 @@ import {
 } from './nostr-client/correlation-store.js';
 import { StatelessModeHandler } from './nostr-client/stateless-mode-handler.js';
 import { withTimeout } from '../core/utils/utils.js';
+
+function hasSingleTag(tags: string[][], tag: string): boolean {
+  return tags.some((t) => t.length === 1 && t[0] === tag);
+}
 
 /**
  * Options for configuring the NostrClientTransport.
@@ -231,6 +239,8 @@ export class NostrClientTransport
 
     const tags = [...this.createRecipientTags(this.serverPubkey), ...pmiTags];
 
+    const giftWrapKind = this.chooseOutboundGiftWrapKind();
+
     return await this.sendMcpMessage(
       message,
       this.serverPubkey,
@@ -252,7 +262,25 @@ export class NostrClientTransport
           originalRequestContext,
         });
       },
+      giftWrapKind,
     );
+  }
+
+  private chooseOutboundGiftWrapKind(): number {
+    // Strict modes are deterministic.
+    if (this.giftWrapMode === GiftWrapMode.PERSISTENT) return GIFT_WRAP_KIND;
+    if (this.giftWrapMode === GiftWrapMode.EPHEMERAL)
+      return EPHEMERAL_GIFT_WRAP_KIND;
+
+    const initTags = this.serverInitializeEvent?.tags;
+    const supportsEphemeral =
+      Array.isArray(initTags) &&
+      hasSingleTag(
+        initTags as string[][],
+        NOSTR_TAGS.SUPPORT_ENCRYPTION_EPHEMERAL,
+      );
+
+    return supportsEphemeral ? EPHEMERAL_GIFT_WRAP_KIND : GIFT_WRAP_KIND;
   }
 
   private getOriginalRequestContext(
@@ -331,7 +359,18 @@ export class NostrClientTransport
     try {
       let nostrEvent = event;
 
-      if (event.kind === GIFT_WRAP_KIND) {
+      if (
+        event.kind === GIFT_WRAP_KIND ||
+        event.kind === EPHEMERAL_GIFT_WRAP_KIND
+      ) {
+        if (!this.isGiftWrapKindAllowed(event.kind)) {
+          this.logger.debug('Skipping gift wrap due to GiftWrapMode policy', {
+            eventId: event.id,
+            kind: event.kind,
+          });
+          return;
+        }
+
         // Deduplicate gift-wrap envelopes before any expensive decryption.
         if (this.seenEventIds.has(event.id)) {
           this.logger.debug('Skipping duplicate gift-wrapped event', {
@@ -344,7 +383,7 @@ export class NostrClientTransport
         try {
           const decryptedContent = await withTimeout(
             decryptMessage(event, this.signer),
-            30000,
+            DEFAULT_TIMEOUT_MS,
             'Decrypt message timed out',
           );
           nostrEvent = JSON.parse(decryptedContent) as NostrEvent;

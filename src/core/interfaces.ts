@@ -19,6 +19,21 @@ export enum EncryptionMode {
 }
 
 /**
+ * Defines the policy for NIP-59 gift wrap kind selection.
+ *
+ * - `optional`: Accept both persistent (`1059`) and ephemeral (`21059`) wraps.
+ *   Outbound selection is capability-based (when supported by peer) or mirrored
+ *   from the inbound wrap kind (server responses).
+ * - `ephemeral`: Only accept/send ephemeral wraps (`21059`).
+ * - `persistent`: Only accept/send persistent wraps (`1059`).
+ */
+export enum GiftWrapMode {
+  OPTIONAL = 'optional',
+  EPHEMERAL = 'ephemeral',
+  PERSISTENT = 'persistent',
+}
+
+/**
  * A generic interface for Nostr signers.
  */
 export interface NostrSigner {

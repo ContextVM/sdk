@@ -15,6 +15,13 @@ export const CTXVM_MESSAGES_KIND = 25910;
 export const GIFT_WRAP_KIND = 1059;
 
 /**
+ * Ephemeral variant of NIP-59 Gift Wrap.
+ *
+ * Same structure and semantics as kind 1059, but in NIP-01's ephemeral range.
+ */
+export const EPHEMERAL_GIFT_WRAP_KIND = 21059;
+
+/**
  * Addressable event for server announcements.
  */
 export const SERVER_ANNOUNCEMENT_KIND = 11316;
@@ -72,9 +79,19 @@ export const NOSTR_TAGS = {
    * Support encryption tag for server announcements.
    */
   SUPPORT_ENCRYPTION: 'support_encryption',
+
+  /**
+   * Support ephemeral gift wrap kind (21059) for encrypted messages.
+   */
+  SUPPORT_ENCRYPTION_EPHEMERAL: 'support_encryption_ephemeral',
 } as const;
 
 export const DEFAULT_LRU_SIZE = 5000;
+
+/**
+ * Default timeout for network/relay operations (30 seconds).
+ */
+export const DEFAULT_TIMEOUT_MS = 30_000;
 
 export const announcementMethods: AnnouncementMethods = {
   tools: 'tools/list',

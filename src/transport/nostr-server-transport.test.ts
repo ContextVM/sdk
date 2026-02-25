@@ -25,7 +25,7 @@ import {
   TOOLS_LIST_KIND,
 } from '../core/constants.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { EncryptionMode } from '../core/interfaces.js';
+import { EncryptionMode, GiftWrapMode } from '../core/interfaces.js';
 import { ApplesauceRelayPool } from '../relay/applesauce-relay-pool.js';
 import { z } from 'zod';
 import { injectClientPubkey } from '../core/utils/utils.js';
@@ -77,6 +77,7 @@ describe('NostrServerTransport', () => {
     name: string,
     serverPublicKey: string,
     encryptionMode?: EncryptionMode,
+    giftWrapMode?: GiftWrapMode,
   ) => {
     const client = new Client({ name, version: '1.0.0' });
     const clientNostrTransport = new NostrClientTransport({
@@ -84,6 +85,7 @@ describe('NostrServerTransport', () => {
       relayHandler: new ApplesauceRelayPool([relayUrl]),
       serverPubkey: serverPublicKey,
       encryptionMode, // Enable encryption
+      giftWrapMode,
     });
     return { client, clientNostrTransport };
   };
@@ -738,6 +740,51 @@ describe('NostrServerTransport', () => {
     await client.close();
     await server.close();
     await relayPool.disconnect();
+  }, 10000);
+
+  test('should include support_encryption_ephemeral tag in initialize response when giftWrapMode is EPHEMERAL', async () => {
+    const serverPrivateKey = bytesToHex(generateSecretKey());
+    const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
+
+    const clientPrivateKey = bytesToHex(generateSecretKey());
+
+    const server = new McpServer({
+      name: 'Test Server',
+      version: '1.0.0',
+    });
+
+    const serverTransport = new NostrServerTransport({
+      signer: new PrivateKeySigner(serverPrivateKey),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      serverInfo: { name: 'Test Server' },
+      encryptionMode: EncryptionMode.OPTIONAL,
+      giftWrapMode: GiftWrapMode.EPHEMERAL,
+    });
+
+    await server.connect(serverTransport);
+
+    const { client, clientNostrTransport } = createClientAndTransport(
+      clientPrivateKey,
+      'Test Client',
+      serverPublicKey,
+      EncryptionMode.OPTIONAL,
+      GiftWrapMode.EPHEMERAL,
+    );
+
+    await client.connect(clientNostrTransport);
+    await sleep(200);
+
+    const initializeResponseEvent =
+      clientNostrTransport.getServerInitializeEvent();
+    expect(initializeResponseEvent).toBeDefined();
+    const supportEncryptionEphemeralTag = initializeResponseEvent!.tags.find(
+      (tag: string[]) =>
+        tag.length === 1 && tag[0] === 'support_encryption_ephemeral',
+    );
+    expect(supportEncryptionEphemeralTag).toBeDefined();
+
+    await client.close();
+    await server.close();
   }, 10000);
 
   test('should delete announcements per-kind without cross-kind accumulation', async () => {

@@ -41,7 +41,6 @@ type SubscriptionState = SubscriptionDescriptor & {
 
 /** Configuration options for ApplesauceRelayPool */
 export interface ApplesauceRelayPoolOptions {
-  /** Ping frequency in ms (default: 30000) */
   pingFrequencyMs?: number;
   /** Ping timeout in ms (default: 20000) */
   pingTimeoutMs?: number;

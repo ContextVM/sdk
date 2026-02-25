@@ -1,5 +1,21 @@
 # @contextvm/sdk
 
+## 0.6.0
+
+### Minor Changes
+
+- feat(core,transport): add support for ephemeral gift wraps (CEP-19 kind 21059)
+
+  Add GiftWrapMode enum to control gift wrap kind selection:
+  - OPTIONAL: accept both 1059 and 21059, select based on peer capability
+  - EPHEMERAL: only accept/send 21059
+  - PERSISTENT: only accept/send 1059
+
+  Introduce EPHEMERAL_GIFT_WRAP_KIND constant (21059) and SUPPORT_ENCRYPTION_EPHEMERAL tag.
+  Update encryption layer to encrypt/decrypt both gift wrap kinds.
+  Modify transport subscription filters and inbound routing to handle both kinds.
+  Server responses in OPTIONAL mode mirror the inbound wrap kind.
+
 ## 0.5.0
 
 ### Minor Changes

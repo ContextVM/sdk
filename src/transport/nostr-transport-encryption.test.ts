@@ -15,8 +15,12 @@ import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import type { NostrEvent } from 'nostr-tools';
 import { bytesToHex, hexToBytes } from 'nostr-tools/utils';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { EncryptionMode } from '../core/interfaces.js';
-import { CTXVM_MESSAGES_KIND, GIFT_WRAP_KIND } from '../core/constants.js';
+import { EncryptionMode, GiftWrapMode } from '../core/interfaces.js';
+import {
+  CTXVM_MESSAGES_KIND,
+  EPHEMERAL_GIFT_WRAP_KIND,
+  GIFT_WRAP_KIND,
+} from '../core/constants.js';
 import { ApplesauceRelayPool } from '../relay/applesauce-relay-pool.js';
 
 const baseRelayPort = 7791;
@@ -58,6 +62,7 @@ describe('NostrTransport Encryption', () => {
     privateKey: string,
     serverPublicKey: string,
     encryptionMode: EncryptionMode,
+    giftWrapMode?: GiftWrapMode,
   ) => {
     const client = new Client({ name: 'TestClient', version: '1.0.0' });
     const clientNostrTransport = new NostrClientTransport({
@@ -65,6 +70,7 @@ describe('NostrTransport Encryption', () => {
       relayHandler: new ApplesauceRelayPool([relayUrl]),
       serverPubkey: serverPublicKey,
       encryptionMode,
+      giftWrapMode,
     });
     return { client, clientNostrTransport };
   };
@@ -73,12 +79,23 @@ describe('NostrTransport Encryption', () => {
   const createServerAndTransport = (
     privateKey: string,
     encryptionMode: EncryptionMode,
+    giftWrapMode?: GiftWrapMode,
   ) => {
     const server = new McpServer({ name: 'TestServer', version: '1.0.0' });
+    // Ensure the default MCP server has at least one capability so listTools succeeds.
+    server.registerTool(
+      'noop',
+      {
+        title: 'noop',
+        description: 'noop',
+      },
+      async () => ({ content: [{ type: 'text', text: 'ok' }] }),
+    );
     const serverTransport = new NostrServerTransport({
       signer: new PrivateKeySigner(privateKey),
       relayHandler: new ApplesauceRelayPool([relayUrl]),
       encryptionMode,
+      giftWrapMode,
       serverInfo: {},
     });
     return { server, serverTransport };
@@ -313,6 +330,42 @@ describe('NostrTransport Encryption', () => {
       collectedEvents.push(event);
     });
     await client.connect(clientNostrTransport);
+    expect(collectedEvents.length).toBeGreaterThan(0);
+
+    await client.close();
+    await server.close();
+  }, 10000);
+
+  test('client optional should use kind 21059 when server advertises support_encryption_ephemeral', async () => {
+    const serverPrivateKey = bytesToHex(generateSecretKey());
+    const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
+    const clientPrivateKey = bytesToHex(generateSecretKey());
+    const collectedEvents: NostrEvent[] = [];
+
+    const { server, serverTransport } = createServerAndTransport(
+      serverPrivateKey,
+      EncryptionMode.OPTIONAL,
+      GiftWrapMode.EPHEMERAL,
+    );
+    await server.connect(serverTransport);
+    await Bun.sleep(100);
+
+    const { client, clientNostrTransport } = createClientAndTransport(
+      clientPrivateKey,
+      serverPublicKey,
+      EncryptionMode.REQUIRED,
+      GiftWrapMode.EPHEMERAL,
+    );
+
+    const relayHandler = new ApplesauceRelayPool([relayUrl]);
+    relayHandler.subscribe([{ kinds: [EPHEMERAL_GIFT_WRAP_KIND] }], (event) => {
+      collectedEvents.push(event);
+    });
+
+    await client.connect(clientNostrTransport);
+
+    await client.listTools();
+
     expect(collectedEvents.length).toBeGreaterThan(0);
 
     await client.close();
