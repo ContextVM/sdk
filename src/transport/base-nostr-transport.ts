@@ -7,6 +7,8 @@ import {
 } from '../core/interfaces.js';
 import {
   CTXVM_MESSAGES_KIND,
+  DEFAULT_TIMEOUT_MS,
+  EPHEMERAL_GIFT_WRAP_KIND,
   GIFT_WRAP_KIND,
   mcpToNostrEvent,
   NOSTR_TAGS,
@@ -26,9 +28,7 @@ import {
 } from '../core/utils/logger.js';
 import { TaskQueue } from '../core/utils/task-queue.js';
 import { ApplesauceRelayPool } from '../relay/applesauce-relay-pool.js';
-
-// Default timeout for network operations (30 seconds)
-const DEFAULT_TIMEOUT_MS = 30000;
+import { GiftWrapMode } from '../core/interfaces.js';
 
 /**
  * Base options for configuring Nostr-based transports.
@@ -38,6 +38,7 @@ export interface BaseNostrTransportOptions {
   signer: NostrSigner;
   relayHandler: RelayHandler | string[];
   encryptionMode?: EncryptionMode;
+  giftWrapMode?: GiftWrapMode;
   logLevel?: LogLevel;
 }
 
@@ -57,6 +58,7 @@ export abstract class BaseNostrTransport {
   protected readonly signer: NostrSigner;
   protected readonly relayHandler: RelayHandler;
   protected readonly encryptionMode: EncryptionMode;
+  protected readonly giftWrapMode: GiftWrapMode;
   protected logger: Logger;
   protected isConnected = false;
 
@@ -73,8 +75,33 @@ export abstract class BaseNostrTransport {
       ? new ApplesauceRelayPool(options.relayHandler)
       : options.relayHandler;
     this.encryptionMode = options.encryptionMode ?? EncryptionMode.OPTIONAL;
+    this.giftWrapMode = options.giftWrapMode ?? GiftWrapMode.OPTIONAL;
     this.logger = createLogger(module, { level: options.logLevel });
     this.taskQueue = new TaskQueue(5);
+  }
+
+  protected isGiftWrapKindAllowed(kind: number): boolean {
+    switch (this.giftWrapMode) {
+      case GiftWrapMode.PERSISTENT:
+        return kind === GIFT_WRAP_KIND;
+      case GiftWrapMode.EPHEMERAL:
+        return kind === EPHEMERAL_GIFT_WRAP_KIND;
+      case GiftWrapMode.OPTIONAL:
+      default:
+        return kind === GIFT_WRAP_KIND || kind === EPHEMERAL_GIFT_WRAP_KIND;
+    }
+  }
+
+  protected getSubscribedGiftWrapKinds(): number[] {
+    switch (this.giftWrapMode) {
+      case GiftWrapMode.PERSISTENT:
+        return [GIFT_WRAP_KIND];
+      case GiftWrapMode.EPHEMERAL:
+        return [EPHEMERAL_GIFT_WRAP_KIND];
+      case GiftWrapMode.OPTIONAL:
+      default:
+        return [GIFT_WRAP_KIND, EPHEMERAL_GIFT_WRAP_KIND];
+    }
   }
 
   /**
@@ -305,6 +332,7 @@ export abstract class BaseNostrTransport {
     tags?: NostrEvent['tags'],
     isEncrypted?: boolean,
     onEventCreated?: (eventId: string) => void,
+    giftWrapKind?: number,
   ): Promise<string> {
     try {
       const shouldEncrypt = this.shouldEncryptMessage(kind, isEncrypted);
@@ -315,15 +343,19 @@ export abstract class BaseNostrTransport {
       onEventCreated?.(event.id);
 
       if (shouldEncrypt) {
+        // Optional transports may decide gift wrap kind upstream.
+        // Default remains persistent kind (1059) for backwards compatibility.
         const encryptedEvent = encryptMessage(
           JSON.stringify(event),
           recipientPublicKey,
+          giftWrapKind,
         );
         await this.publishEvent(encryptedEvent);
         this.logger.debug('Sent encrypted MCP message', {
           eventId: event.id,
           kind,
           recipient: recipientPublicKey,
+          giftWrapKind: encryptedEvent.kind,
         });
       } else {
         await this.publishEvent(event);
@@ -372,10 +404,11 @@ export abstract class BaseNostrTransport {
     targetPubkey: string,
     additionalFilters: Partial<Filter> = {},
   ): Filter[] {
+    const giftWrapKinds = this.getSubscribedGiftWrapKinds();
     return [
       {
         '#p': [targetPubkey],
-        kinds: [CTXVM_MESSAGES_KIND, GIFT_WRAP_KIND],
+        kinds: [CTXVM_MESSAGES_KIND, ...giftWrapKinds],
         since: Math.floor(Date.now() / 1000),
         ...additionalFilters,
       },

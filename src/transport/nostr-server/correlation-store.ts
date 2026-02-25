@@ -17,6 +17,13 @@ export interface EventRoute {
   originalRequestId: string | number;
   /** Optional progress token for this request */
   progressToken?: string;
+
+  /**
+   * Optional gift wrap kind used for the correlated request.
+   *
+   * Used to mirror wrap kind for server responses in GiftWrapMode.OPTIONAL.
+   */
+  wrapKind?: number;
 }
 
 /**
@@ -84,11 +91,13 @@ export class CorrelationStore {
     clientPubkey: string,
     originalRequestId: string | number,
     progressToken?: string,
+    wrapKind?: number,
   ): void {
     const route: EventRoute = {
       clientPubkey,
       originalRequestId,
       progressToken,
+      wrapKind,
     };
 
     this.eventRoutes.set(eventId, route);

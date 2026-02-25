@@ -32,6 +32,7 @@ import {
   NOTIFICATIONS_INITIALIZED_METHOD,
 } from '../../core/index.js';
 import { EncryptionMode } from '../../core/interfaces.js';
+import { GiftWrapMode } from '../../core/interfaces.js';
 
 /**
  * Information about a server.
@@ -51,6 +52,9 @@ export interface AnnouncementManagerOptions {
   serverInfo?: ServerInfo;
   /** Encryption mode for determining tag inclusion */
   encryptionMode: EncryptionMode;
+
+  /** Gift wrap mode for determining tag inclusion */
+  giftWrapMode: GiftWrapMode;
 
   /** Optional extra tags to include in server announcement + initialize response events (e.g. `pmi`). */
   extraCommonTags?: string[][];
@@ -102,6 +106,7 @@ interface AnnouncementMapping {
 export class AnnouncementManager {
   private readonly serverInfo?: ServerInfo;
   private readonly encryptionMode: EncryptionMode;
+  private readonly giftWrapMode: GiftWrapMode;
   private extraCommonTags: string[][];
   private pricingTags: string[][];
   private readonly onSendMessage: (message: JSONRPCMessage) => void;
@@ -124,6 +129,7 @@ export class AnnouncementManager {
   constructor(options: AnnouncementManagerOptions) {
     this.serverInfo = options.serverInfo;
     this.encryptionMode = options.encryptionMode;
+    this.giftWrapMode = options.giftWrapMode;
     this.extraCommonTags = options.extraCommonTags ?? [];
     this.pricingTags = options.pricingTags ?? [];
     this.onSendMessage = options.onSendMessage;
@@ -186,6 +192,10 @@ export class AnnouncementManager {
     }
     if (this.encryptionMode !== EncryptionMode.DISABLED) {
       commonTags.push([NOSTR_TAGS.SUPPORT_ENCRYPTION]);
+
+      if (this.giftWrapMode !== GiftWrapMode.PERSISTENT) {
+        commonTags.push([NOSTR_TAGS.SUPPORT_ENCRYPTION_EPHEMERAL]);
+      }
     }
 
     for (const tag of this.extraCommonTags) {

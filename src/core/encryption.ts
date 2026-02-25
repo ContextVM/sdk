@@ -5,8 +5,16 @@ import {
   getPublicKey,
   NostrEvent,
 } from 'nostr-tools/pure';
-import { GIFT_WRAP_KIND, NOSTR_TAGS } from './constants.js';
+import {
+  EPHEMERAL_GIFT_WRAP_KIND,
+  GIFT_WRAP_KIND,
+  NOSTR_TAGS,
+} from './constants.js';
 import { NostrSigner } from './interfaces.js';
+
+function isSupportedGiftWrapKind(kind: number): boolean {
+  return kind === GIFT_WRAP_KIND || kind === EPHEMERAL_GIFT_WRAP_KIND;
+}
 
 /**
  * Encrypts a JSON-RPC message using a simplified NIP-17/NIP-59 gift wrap scheme.
@@ -18,7 +26,11 @@ import { NostrSigner } from './interfaces.js';
 export function encryptMessage(
   message: string,
   recipientPublicKey: string,
+  giftWrapKind: number = GIFT_WRAP_KIND,
 ): NostrEvent {
+  if (!isSupportedGiftWrapKind(giftWrapKind)) {
+    throw new Error(`Unsupported gift wrap kind: ${giftWrapKind}`);
+  }
   const giftWrapPrivateKey = generateSecretKey();
   const giftWrapPublicKey = getPublicKey(giftWrapPrivateKey);
   const conversationKey = nip44.v2.utils.getConversationKey(
@@ -27,7 +39,7 @@ export function encryptMessage(
   );
   const encryptedContent = nip44.v2.encrypt(message, conversationKey);
   const giftWrap = {
-    kind: GIFT_WRAP_KIND,
+    kind: giftWrapKind,
     content: encryptedContent,
     tags: [[NOSTR_TAGS.PUBKEY, recipientPublicKey]],
     created_at: Math.floor(Date.now() / 1000),
@@ -48,8 +60,8 @@ export async function decryptMessage(
   event: NostrEvent,
   signer: NostrSigner,
 ): Promise<string> {
-  if (event.kind !== GIFT_WRAP_KIND) {
-    throw new Error('Event is not a gift wrap.');
+  if (!isSupportedGiftWrapKind(event.kind)) {
+    throw new Error(`Event is not a supported gift wrap (kind=${event.kind}).`);
   }
 
   // Use the signer's nip44 decryption if available

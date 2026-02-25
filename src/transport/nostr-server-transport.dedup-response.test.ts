@@ -5,7 +5,7 @@ import type { JSONRPCResponse } from '@modelcontextprotocol/sdk/types.js';
 import { NostrServerTransport } from './nostr-server-transport.js';
 import { PrivateKeySigner } from '../signer/private-key-signer.js';
 import { EncryptionMode } from '../core/interfaces.js';
-import { GIFT_WRAP_KIND } from '../core/constants.js';
+import { EPHEMERAL_GIFT_WRAP_KIND, GIFT_WRAP_KIND } from '../core/constants.js';
 
 function makeCountingRelayHandler(counter: {
   publishCalls: number;
@@ -116,6 +116,55 @@ describe('NostrServerTransport duplicate response prevention', () => {
     expect(decryptCalls).toBe(2);
     // The transport should only process the inner request once.
     // We assert on correlation store size because requests register an event route.
+    expect(
+      transport.getInternalStateForTesting().correlationStore.eventRouteCount,
+    ).toBe(1);
+  });
+
+  it('accepts ephemeral gift wrap envelopes (21059) when encryption is required', async () => {
+    const counter = { publishCalls: 0 };
+
+    const transport = new NostrServerTransport({
+      signer: new PrivateKeySigner('1'.repeat(64)),
+      relayHandler: makeCountingRelayHandler(counter),
+      encryptionMode: EncryptionMode.REQUIRED,
+    });
+
+    // Deterministic decrypt.
+    const signer = transport['signer'];
+    signer.nip44 = {
+      encrypt: async () => {
+        throw new Error('encrypt not used in this test');
+      },
+      decrypt: async () =>
+        JSON.stringify({
+          id: 'inner-request-id-2',
+          kind: 25910,
+          pubkey: 'c'.repeat(64),
+          created_at: 1,
+          tags: [['p', 's'.repeat(64)]],
+          content: JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            method: 'tools/list',
+            params: {},
+          }),
+          sig: '0'.repeat(128),
+        } satisfies NostrEvent),
+    };
+
+    const gw: NostrEvent = {
+      id: 'gw-ephemeral',
+      kind: EPHEMERAL_GIFT_WRAP_KIND,
+      pubkey: 'a'.repeat(64),
+      created_at: 1,
+      tags: [['p', 's'.repeat(64)]],
+      content: 'ciphertext',
+      sig: '0'.repeat(128),
+    };
+
+    await transport['processIncomingEvent'](gw);
+
     expect(
       transport.getInternalStateForTesting().correlationStore.eventRouteCount,
     ).toBe(1);

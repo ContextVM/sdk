@@ -20,13 +20,15 @@ import {
 } from './base-nostr-transport.js';
 import {
   CTXVM_MESSAGES_KIND,
+  DEFAULT_TIMEOUT_MS,
+  EPHEMERAL_GIFT_WRAP_KIND,
   GIFT_WRAP_KIND,
   NOSTR_TAGS,
   NOTIFICATIONS_INITIALIZED_METHOD,
   decryptMessage,
   DEFAULT_LRU_SIZE,
 } from '../core/index.js';
-import { EncryptionMode } from '../core/interfaces.js';
+import { EncryptionMode, GiftWrapMode } from '../core/interfaces.js';
 import { NostrEvent } from 'nostr-tools';
 import { LogLevel } from '../core/utils/logger.js';
 import { injectClientPubkey, withTimeout } from '../core/utils/utils.js';
@@ -194,6 +196,7 @@ export class NostrServerTransport
     this.announcementManager = new AnnouncementManager({
       serverInfo: options.serverInfo,
       encryptionMode: this.encryptionMode,
+      giftWrapMode: this.giftWrapMode,
       extraCommonTags: [],
       pricingTags: [],
       onSendMessage: (message) => this.onmessage?.(message),
@@ -353,6 +356,7 @@ export class NostrServerTransport
     eventId: string,
     request: JSONRPCRequest,
     clientPubkey: string,
+    wrapKind?: number,
   ): void {
     // Store the original request ID for later restoration
     const originalRequestId = request.id;
@@ -366,6 +370,7 @@ export class NostrServerTransport
       clientPubkey,
       originalRequestId,
       progressToken ? String(progressToken) : undefined,
+      wrapKind,
     );
   }
 
@@ -430,6 +435,17 @@ export class NostrServerTransport
     // Send the response back to the original requester
     const tags = this.createResponseTags(route.clientPubkey, nostrEventId);
 
+    let giftWrapKind: number | undefined;
+    if (session.isEncrypted) {
+      if (this.giftWrapMode === GiftWrapMode.OPTIONAL) {
+        giftWrapKind = route.wrapKind;
+      } else if (this.giftWrapMode === GiftWrapMode.EPHEMERAL) {
+        giftWrapKind = EPHEMERAL_GIFT_WRAP_KIND;
+      } else if (this.giftWrapMode === GiftWrapMode.PERSISTENT) {
+        giftWrapKind = GIFT_WRAP_KIND;
+      }
+    }
+
     // Add common tags for initialize responses (independent of encryption mode)
     if (
       isJSONRPCResultResponse(response) &&
@@ -463,6 +479,8 @@ export class NostrServerTransport
       CTXVM_MESSAGES_KIND,
       tags,
       session.isEncrypted,
+      undefined,
+      giftWrapKind,
     );
   }
 
@@ -563,6 +581,14 @@ export class NostrServerTransport
       CTXVM_MESSAGES_KIND,
       tags,
       session.isEncrypted,
+      undefined,
+      session.isEncrypted
+        ? this.giftWrapMode === GiftWrapMode.EPHEMERAL
+          ? EPHEMERAL_GIFT_WRAP_KIND
+          : this.giftWrapMode === GiftWrapMode.PERSISTENT
+            ? GIFT_WRAP_KIND
+            : undefined
+        : undefined,
     );
   }
 
@@ -574,7 +600,18 @@ export class NostrServerTransport
    */
   private async processIncomingEvent(event: NostrEvent): Promise<void> {
     try {
-      if (event.kind === GIFT_WRAP_KIND) {
+      if (
+        event.kind === GIFT_WRAP_KIND ||
+        event.kind === EPHEMERAL_GIFT_WRAP_KIND
+      ) {
+        if (!this.isGiftWrapKindAllowed(event.kind)) {
+          this.logger.debug('Skipping gift wrap due to GiftWrapMode policy', {
+            eventId: event.id,
+            kind: event.kind,
+          });
+          return;
+        }
+
         // Deduplicate gift-wrap envelopes before any expensive decryption.
         if (this.seenEventIds.has(event.id)) {
           this.logger.debug('Skipping duplicate gift-wrapped event', {
@@ -613,12 +650,12 @@ export class NostrServerTransport
     try {
       const decryptedJson = await withTimeout(
         decryptMessage(event, this.signer),
-        30000, // 30 seconds default timeout
+        DEFAULT_TIMEOUT_MS,
         'Decrypt message timed out',
       );
       const currentEvent = JSON.parse(decryptedJson) as NostrEvent;
 
-      this.authorizeAndProcessEvent(currentEvent, true);
+      this.authorizeAndProcessEvent(currentEvent, true, event.kind);
     } catch (error) {
       this.logger.error('Failed to handle encrypted Nostr event', {
         error: error instanceof Error ? error.message : String(error),
@@ -657,6 +694,7 @@ export class NostrServerTransport
   private authorizeAndProcessEvent(
     event: NostrEvent,
     isEncrypted: boolean,
+    wrapKind?: number,
   ): void {
     try {
       const mcpMessage = this.convertNostrEventToMcpMessage(event);
@@ -705,6 +743,14 @@ export class NostrServerTransport
             CTXVM_MESSAGES_KIND,
             tags,
             isEncrypted,
+            undefined,
+            isEncrypted
+              ? this.giftWrapMode === GiftWrapMode.EPHEMERAL
+                ? EPHEMERAL_GIFT_WRAP_KIND
+                : this.giftWrapMode === GiftWrapMode.PERSISTENT
+                  ? GIFT_WRAP_KIND
+                  : wrapKind
+              : undefined,
           ).catch((err) => {
             this.logger.error('Failed to send unauthorized response', {
               error: err instanceof Error ? err.message : String(err),
@@ -724,7 +770,12 @@ export class NostrServerTransport
 
       // Handle message routing and conditionally inject client pubkey
       if (isJSONRPCRequest(mcpMessage)) {
-        this.handleIncomingRequest(event.id, mcpMessage, event.pubkey);
+        this.handleIncomingRequest(
+          event.id,
+          mcpMessage,
+          event.pubkey,
+          wrapKind,
+        );
 
         // Inject client public key for enhanced server integration (in-place mutation)
         if (this.injectClientPubkey) {

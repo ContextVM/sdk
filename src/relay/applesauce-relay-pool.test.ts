@@ -12,6 +12,7 @@ import { PrivateKeySigner } from '../signer/private-key-signer.js';
 import { ApplesauceRelayPool, PING_FILTER } from './applesauce-relay-pool.js';
 import { Relay, RelayGroup } from 'applesauce-relay';
 import { Subject } from 'rxjs';
+import { DEFAULT_TIMEOUT_MS } from '../core/constants.js';
 
 /** Type for accessing private members in tests */
 type TestableApplesauceRelayPool = Omit<ApplesauceRelayPool, 'relayGroup'> & {
@@ -417,51 +418,55 @@ describe('ApplesauceRelayPool Integration', () => {
     await relayPool.disconnect();
   }, 10000);
 
-  test('should eventually publish after a relay outage and recovery', async () => {
-    // 1. Setup signer
-    const privateKey = generateSecretKey();
-    const privateKeyHex = bytesToHex(privateKey);
-    const publicKeyHex = getPublicKey(privateKey);
-    const signer = new PrivateKeySigner(privateKeyHex);
+  test(
+    'should eventually publish after a relay outage and recovery',
+    async () => {
+      // 1. Setup signer
+      const privateKey = generateSecretKey();
+      const privateKeyHex = bytesToHex(privateKey);
+      const publicKeyHex = getPublicKey(privateKey);
+      const signer = new PrivateKeySigner(privateKeyHex);
 
-    // 2. Setup ApplesauceRelayPool
-    const relayPool = new ApplesauceRelayPool([relayUrl]);
-    await relayPool.connect();
+      // 2. Setup ApplesauceRelayPool
+      const relayPool = new ApplesauceRelayPool([relayUrl]);
+      await relayPool.connect();
 
-    // 3. Stop the relay to simulate an outage
-    relayProcess.kill();
-    await sleep(3000);
+      // 3. Stop the relay to simulate an outage
+      relayProcess.kill();
+      await sleep(3000);
 
-    // 4. Create an event and start publishing while the relay is down
-    const unsignedEvent: UnsignedEvent = {
-      kind: 1059,
-      pubkey: publicKeyHex,
-      created_at: Math.floor(Date.now() / 1000),
-      tags: [],
-      content: 'Publish during outage; should succeed after recovery',
-    };
-    const signedEvent = await signer.signEvent(unsignedEvent);
+      // 4. Create an event and start publishing while the relay is down
+      const unsignedEvent: UnsignedEvent = {
+        kind: 1059,
+        pubkey: publicKeyHex,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [],
+        content: 'Publish during outage; should succeed after recovery',
+      };
+      const signedEvent = await signer.signEvent(unsignedEvent);
 
-    const publishPromise = relayPool.publish(signedEvent);
+      const publishPromise = relayPool.publish(signedEvent);
 
-    // 5. Restart the relay after a short downtime
-    await sleep(1500);
-    relayProcess = Bun.spawn(['bun', 'src/__mocks__/mock-relay.ts'], {
-      env: {
-        ...process.env,
-        PORT: `${relayPort}`,
-        DISABLE_MOCK_RESPONSES: 'true',
-      },
-    });
-    await sleep(150);
+      // 5. Restart the relay after a short downtime
+      await sleep(1500);
+      relayProcess = Bun.spawn(['bun', 'src/__mocks__/mock-relay.ts'], {
+        env: {
+          ...process.env,
+          PORT: `${relayPort}`,
+          DISABLE_MOCK_RESPONSES: 'true',
+        },
+      });
+      await sleep(150);
 
-    // 6. Ensure publish eventually resolves
-    await publishPromise;
+      // 6. Ensure publish eventually resolves
+      await publishPromise;
 
-    // 7. Cleanup
-    relayPool.unsubscribe();
-    await relayPool.disconnect();
-  }, 30000);
+      // 7. Cleanup
+      relayPool.unsubscribe();
+      await relayPool.disconnect();
+    },
+    DEFAULT_TIMEOUT_MS,
+  );
 
   test('should rebuild on liveness timeout (unresponsive relay)', async () => {
     // 1. Start a relay that will be unresponsive for pings
@@ -498,47 +503,51 @@ describe('ApplesauceRelayPool Integration', () => {
     unresponsiveRelayProcess.kill();
   }, 40000);
 
-  test('should handle rebuild triggers without crashing (graceful degradation)', async () => {
-    // 1. Start a relay that will be unresponsive for pings
-    const unresponsiveRelayPort = 7783;
-    const unresponsiveRelayUrl = `ws://localhost:${unresponsiveRelayPort}`;
-    const unresponsiveRelayProcess = Bun.spawn(
-      ['bun', 'src/__mocks__/mock-relay.ts'],
-      {
-        env: {
-          ...process.env,
-          PORT: `${unresponsiveRelayPort}`,
-          UNRESPONSIVE: 'true',
+  test(
+    'should handle rebuild triggers without crashing (graceful degradation)',
+    async () => {
+      // 1. Start a relay that will be unresponsive for pings
+      const unresponsiveRelayPort = 7783;
+      const unresponsiveRelayUrl = `ws://localhost:${unresponsiveRelayPort}`;
+      const unresponsiveRelayProcess = Bun.spawn(
+        ['bun', 'src/__mocks__/mock-relay.ts'],
+        {
+          env: {
+            ...process.env,
+            PORT: `${unresponsiveRelayPort}`,
+            UNRESPONSIVE: 'true',
+          },
         },
-      },
-    );
-    await sleep(TIMING.RELAY_STARTUP);
+      );
+      await sleep(TIMING.RELAY_STARTUP);
 
-    // 2. Setup ApplesauceRelayPool with unresponsive relay, using fast ping for testing
-    const relayPool = new ApplesauceRelayPool([unresponsiveRelayUrl], {
-      pingFrequencyMs: 1000,
-      pingTimeoutMs: 2000,
-    });
-    await relayPool.connect();
+      // 2. Setup ApplesauceRelayPool with unresponsive relay, using fast ping for testing
+      const relayPool = new ApplesauceRelayPool([unresponsiveRelayUrl], {
+        pingFrequencyMs: 1000,
+        pingTimeoutMs: 2000,
+      });
+      await relayPool.connect();
 
-    // 3. Track rebuild count by spying on createRelay using helper
-    const createRelayTracker = trackCreateRelayCalls(relayPool);
+      // 3. Track rebuild count by spying on createRelay using helper
+      const createRelayTracker = trackCreateRelayCalls(relayPool);
 
-    // 4. Setup subscription to trigger ping monitor
-    relayPool.subscribe([{ kinds: [1] }], () => {});
+      // 4. Setup subscription to trigger ping monitor
+      relayPool.subscribe([{ kinds: [1] }], () => {});
 
-    // 5. Wait for multiple liveness checks to trigger
-    await sleep(6000);
+      // 5. Wait for multiple liveness checks to trigger
+      await sleep(6000);
 
-    // 6. Assert multiple rebuilds happened
-    expect(createRelayTracker.callCount).toBeGreaterThan(1);
+      // 6. Assert multiple rebuilds happened
+      expect(createRelayTracker.callCount).toBeGreaterThan(1);
 
-    // 7. Cleanup
-    createRelayTracker.restore();
-    relayPool.unsubscribe();
-    await relayPool.disconnect();
-    unresponsiveRelayProcess.kill();
-  }, 30000);
+      // 7. Cleanup
+      createRelayTracker.restore();
+      relayPool.unsubscribe();
+      await relayPool.disconnect();
+      unresponsiveRelayProcess.kill();
+    },
+    DEFAULT_TIMEOUT_MS,
+  );
 
   test('should cleanup subscription descriptors on unsubscribe', async () => {
     // 1. Setup ApplesauceRelayPool
@@ -602,93 +611,97 @@ describe('ApplesauceRelayPool Integration', () => {
     unresponsiveRelayProcess.kill();
   }, 10000);
 
-  test('should restore subscription delivery after relay disconnect/reconnect', async () => {
-    // 1. Setup signer
-    const privateKey = generateSecretKey();
-    const privateKeyHex = bytesToHex(privateKey);
-    const publicKeyHex = getPublicKey(privateKey);
-    const signer = new PrivateKeySigner(privateKeyHex);
+  test(
+    'should restore subscription delivery after relay disconnect/reconnect',
+    async () => {
+      // 1. Setup signer
+      const privateKey = generateSecretKey();
+      const privateKeyHex = bytesToHex(privateKey);
+      const publicKeyHex = getPublicKey(privateKey);
+      const signer = new PrivateKeySigner(privateKeyHex);
 
-    // 2. Setup ApplesauceRelayPool
-    const relayPool = new ApplesauceRelayPool([relayUrl]);
-    await relayPool.connect();
+      // 2. Setup ApplesauceRelayPool
+      const relayPool = new ApplesauceRelayPool([relayUrl]);
+      await relayPool.connect();
 
-    // 3. Create and sign an event for post-recovery
-    const postRecoveryEvent: UnsignedEvent = {
-      kind: 1,
-      pubkey: publicKeyHex,
-      created_at: Math.floor(Date.now() / 1000),
-      tags: [],
-      content:
-        'Event published after relay restart to verify subscription restored',
-    };
-    const postRecoverySignedEvent = await signer.signEvent(postRecoveryEvent);
+      // 3. Create and sign an event for post-recovery
+      const postRecoveryEvent: UnsignedEvent = {
+        kind: 1,
+        pubkey: publicKeyHex,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [],
+        content:
+          'Event published after relay restart to verify subscription restored',
+      };
+      const postRecoverySignedEvent = await signer.signEvent(postRecoveryEvent);
 
-    // 4. Setup subscription before killing the relay
-    const receivedEvents: NostrEvent[] = [];
-    const subscriptionPromise = new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(
-        () =>
-          reject(
-            new Error('Subscription timeout waiting for post-recovery event'),
-          ),
-        15000,
-      );
+      // 4. Setup subscription before killing the relay
+      const receivedEvents: NostrEvent[] = [];
+      const subscriptionPromise = new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(
+          () =>
+            reject(
+              new Error('Subscription timeout waiting for post-recovery event'),
+            ),
+          15000,
+        );
 
-      relayPool.subscribe(
-        [{ kinds: [1], authors: [publicKeyHex] }],
-        (event) => {
-          receivedEvents.push(event);
-          if (event.id === postRecoverySignedEvent.id) {
-            clearTimeout(timeout);
-            resolve();
-          }
+        relayPool.subscribe(
+          [{ kinds: [1], authors: [publicKeyHex] }],
+          (event) => {
+            receivedEvents.push(event);
+            if (event.id === postRecoverySignedEvent.id) {
+              clearTimeout(timeout);
+              resolve();
+            }
+          },
+        );
+      });
+
+      // Wait for initial EOSE to confirm subscription is active
+      await new Promise<void>((resolve) => {
+        relayPool.subscribe(
+          [{ kinds: [1], limit: 0 }],
+          () => {},
+          () => resolve(),
+        );
+        setTimeout(resolve, 1000);
+      });
+
+      // 5. Kill the relay to simulate network partition
+      relayProcess.kill();
+      await sleep(2000);
+
+      // 6. Restart the relay to simulate recovery
+      relayProcess = Bun.spawn(['bun', 'src/__mocks__/mock-relay.ts'], {
+        env: {
+          ...process.env,
+          PORT: `${relayPort}`,
+          DISABLE_MOCK_RESPONSES: 'true',
         },
+      });
+      await sleep(500);
+
+      // 7. Publish event after relay recovery
+      await relayPool.publish(postRecoverySignedEvent);
+
+      // 8. Wait for the event to be received via the restored subscription
+      await subscriptionPromise;
+
+      // 9. Assertions - verify subscription was actually restored
+      expect(receivedEvents.length).toBeGreaterThan(0);
+      const receivedEvent = receivedEvents.find(
+        (e) => e.id === postRecoverySignedEvent.id,
       );
-    });
+      expect(receivedEvent).toBeDefined();
+      expect(receivedEvent?.content).toBe(postRecoverySignedEvent.content);
 
-    // Wait for initial EOSE to confirm subscription is active
-    await new Promise<void>((resolve) => {
-      relayPool.subscribe(
-        [{ kinds: [1], limit: 0 }],
-        () => {},
-        () => resolve(),
-      );
-      setTimeout(resolve, 1000);
-    });
-
-    // 5. Kill the relay to simulate network partition
-    relayProcess.kill();
-    await sleep(2000);
-
-    // 6. Restart the relay to simulate recovery
-    relayProcess = Bun.spawn(['bun', 'src/__mocks__/mock-relay.ts'], {
-      env: {
-        ...process.env,
-        PORT: `${relayPort}`,
-        DISABLE_MOCK_RESPONSES: 'true',
-      },
-    });
-    await sleep(500);
-
-    // 7. Publish event after relay recovery
-    await relayPool.publish(postRecoverySignedEvent);
-
-    // 8. Wait for the event to be received via the restored subscription
-    await subscriptionPromise;
-
-    // 9. Assertions - verify subscription was actually restored
-    expect(receivedEvents.length).toBeGreaterThan(0);
-    const receivedEvent = receivedEvents.find(
-      (e) => e.id === postRecoverySignedEvent.id,
-    );
-    expect(receivedEvent).toBeDefined();
-    expect(receivedEvent?.content).toBe(postRecoverySignedEvent.content);
-
-    // 10. Cleanup
-    relayPool.unsubscribe();
-    await relayPool.disconnect();
-  }, 30000);
+      // 10. Cleanup
+      relayPool.unsubscribe();
+      await relayPool.disconnect();
+    },
+    DEFAULT_TIMEOUT_MS,
+  );
 
   test('should restore subscription via rebuild when applesauce auto-recovery is disabled', async () => {
     // 1. Setup signer using helper
@@ -838,106 +851,113 @@ describe('ApplesauceRelayPool Integration', () => {
     await relayPool.disconnect();
   }, 10000);
 
-  test('should detect half-open connection, rebuild, and recover when relay becomes responsive', async () => {
-    // 1. Setup signer for publishing using helper
-    const { publicKeyHex, signer } = createTestSigner();
+  test(
+    'should detect half-open connection, rebuild, and recover when relay becomes responsive',
+    async () => {
+      // 1. Setup signer for publishing using helper
+      const { publicKeyHex, signer } = createTestSigner();
 
-    // 2. Start an unresponsive relay
-    const relayPort = 7787;
-    const relayUrl = `ws://localhost:${relayPort}`;
-    const unresponsiveRelay = Bun.spawn(
-      ['bun', 'src/__mocks__/mock-relay.ts'],
-      {
-        env: {
-          ...process.env,
-          PORT: `${relayPort}`,
-          UNRESPONSIVE: 'true',
-        },
-      },
-    );
-    await sleep(TIMING.RELAY_STARTUP);
-
-    // 3. Setup ApplesauceRelayPool with fast ping for testing
-    const relayPool = new ApplesauceRelayPool([relayUrl], {
-      pingFrequencyMs: 500,
-      pingTimeoutMs: 1000,
-    });
-    await relayPool.connect();
-
-    // 4. Track rebuild calls using helper
-    const rebuildTracker = trackRebuildCalls(relayPool);
-
-    // 5. Start subscription to activate ping monitor
-    relayPool.subscribe([{ kinds: [1] }], () => {});
-
-    // 6. Wait for first rebuild
-    await sleep(TIMING.REBUILD_WAIT);
-    expect(rebuildTracker.calls.length).toBeGreaterThan(0);
-
-    // 7. Kill unresponsive relay
-    unresponsiveRelay.kill();
-    await sleep(TIMING.SHORT_WAIT);
-
-    // 8. Start responsive relay on same port
-    const responsiveRelay = Bun.spawn(['bun', 'src/__mocks__/mock-relay.ts'], {
-      env: {
-        ...process.env,
-        PORT: `${relayPort}`,
-        DISABLE_MOCK_RESPONSES: 'true',
-      },
-    });
-
-    // 9. Create and publish an event to verify functionality is restored
-    const testEvent: UnsignedEvent = {
-      kind: 1,
-      pubkey: publicKeyHex,
-      created_at: Math.floor(Date.now() / 1000),
-      tags: [],
-      content: 'Test event after recovery from half-open connection',
-    };
-    const testSignedEvent = await signer.signEvent(testEvent);
-
-    // 10. Track received events
-    const receivedEvents: NostrEvent[] = [];
-    const eventReceivedPromise = new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(
-        () => reject(new Error('Timeout waiting for event after recovery')),
-        TIMING.SUBSCRIPTION_TIMEOUT,
-      );
-
-      relayPool.subscribe(
-        [{ kinds: [1], authors: [publicKeyHex] }],
-        (event) => {
-          receivedEvents.push(event);
-          if (event.id === testSignedEvent.id) {
-            clearTimeout(timeout);
-            resolve();
-          }
+      // 2. Start an unresponsive relay
+      const relayPort = 7787;
+      const relayUrl = `ws://localhost:${relayPort}`;
+      const unresponsiveRelay = Bun.spawn(
+        ['bun', 'src/__mocks__/mock-relay.ts'],
+        {
+          env: {
+            ...process.env,
+            PORT: `${relayPort}`,
+            UNRESPONSIVE: 'true',
+          },
         },
       );
-    });
+      await sleep(TIMING.RELAY_STARTUP);
 
-    // 11. Publish the event
-    await relayPool.publish(testSignedEvent);
+      // 3. Setup ApplesauceRelayPool with fast ping for testing
+      const relayPool = new ApplesauceRelayPool([relayUrl], {
+        pingFrequencyMs: 500,
+        pingTimeoutMs: 1000,
+      });
+      await relayPool.connect();
 
-    // 12. Wait for event to be received via restored subscription
-    await eventReceivedPromise;
+      // 4. Track rebuild calls using helper
+      const rebuildTracker = trackRebuildCalls(relayPool);
 
-    // 13. Assertions
-    expect(rebuildTracker.calls.length).toBeGreaterThan(0);
-    expect(receivedEvents.length).toBeGreaterThan(0);
-    const receivedEvent = receivedEvents.find(
-      (e) => e.id === testSignedEvent.id,
-    );
-    expect(receivedEvent).toBeDefined();
-    expect(receivedEvent?.content).toBe(testSignedEvent.content);
+      // 5. Start subscription to activate ping monitor
+      relayPool.subscribe([{ kinds: [1] }], () => {});
 
-    // 14. Cleanup
-    rebuildTracker.restore();
-    relayPool.unsubscribe();
-    await relayPool.disconnect();
-    responsiveRelay.kill();
-  }, 30000);
+      // 6. Wait for first rebuild
+      await sleep(TIMING.REBUILD_WAIT);
+      expect(rebuildTracker.calls.length).toBeGreaterThan(0);
+
+      // 7. Kill unresponsive relay
+      unresponsiveRelay.kill();
+      await sleep(TIMING.SHORT_WAIT);
+
+      // 8. Start responsive relay on same port
+      const responsiveRelay = Bun.spawn(
+        ['bun', 'src/__mocks__/mock-relay.ts'],
+        {
+          env: {
+            ...process.env,
+            PORT: `${relayPort}`,
+            DISABLE_MOCK_RESPONSES: 'true',
+          },
+        },
+      );
+
+      // 9. Create and publish an event to verify functionality is restored
+      const testEvent: UnsignedEvent = {
+        kind: 1,
+        pubkey: publicKeyHex,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [],
+        content: 'Test event after recovery from half-open connection',
+      };
+      const testSignedEvent = await signer.signEvent(testEvent);
+
+      // 10. Track received events
+      const receivedEvents: NostrEvent[] = [];
+      const eventReceivedPromise = new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(
+          () => reject(new Error('Timeout waiting for event after recovery')),
+          TIMING.SUBSCRIPTION_TIMEOUT,
+        );
+
+        relayPool.subscribe(
+          [{ kinds: [1], authors: [publicKeyHex] }],
+          (event) => {
+            receivedEvents.push(event);
+            if (event.id === testSignedEvent.id) {
+              clearTimeout(timeout);
+              resolve();
+            }
+          },
+        );
+      });
+
+      // 11. Publish the event
+      await relayPool.publish(testSignedEvent);
+
+      // 12. Wait for event to be received via restored subscription
+      await eventReceivedPromise;
+
+      // 13. Assertions
+      expect(rebuildTracker.calls.length).toBeGreaterThan(0);
+      expect(receivedEvents.length).toBeGreaterThan(0);
+      const receivedEvent = receivedEvents.find(
+        (e) => e.id === testSignedEvent.id,
+      );
+      expect(receivedEvent).toBeDefined();
+      expect(receivedEvent?.content).toBe(testSignedEvent.content);
+
+      // 14. Cleanup
+      rebuildTracker.restore();
+      relayPool.unsubscribe();
+      await relayPool.disconnect();
+      responsiveRelay.kill();
+    },
+    DEFAULT_TIMEOUT_MS,
+  );
 
   test('should detect relay becoming unresponsive and trigger rebuild', async () => {
     // 1. Start relay in UNRESPONSIVE mode (half-open connection)
