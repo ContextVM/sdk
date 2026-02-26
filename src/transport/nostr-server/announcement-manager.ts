@@ -177,33 +177,63 @@ export class AnnouncementManager {
       return this.cachedCommonTags;
     }
 
-    const commonTags: string[][] = [];
+    const commonTags: string[][] = [
+      ...this.getServerInfoTags(),
+      ...this.getCapabilityTags(),
+    ];
+
+    this.cachedCommonTags = commonTags;
+    return commonTags;
+  }
+
+  /**
+   * Returns server metadata tags (name/about/website/picture).
+   *
+   * These tags are informational and may be large (e.g. `about`). They are intended
+   * for announcements and initialize semantics, not for lightweight capability
+   * discovery.
+   */
+  public getServerInfoTags(): string[][] {
+    const tags: string[][] = [];
+
     if (this.serverInfo?.name) {
-      commonTags.push([NOSTR_TAGS.NAME, this.serverInfo.name]);
+      tags.push([NOSTR_TAGS.NAME, this.serverInfo.name]);
     }
     if (this.serverInfo?.about) {
-      commonTags.push([NOSTR_TAGS.ABOUT, this.serverInfo.about]);
+      tags.push([NOSTR_TAGS.ABOUT, this.serverInfo.about]);
     }
     if (this.serverInfo?.website) {
-      commonTags.push([NOSTR_TAGS.WEBSITE, this.serverInfo.website]);
+      tags.push([NOSTR_TAGS.WEBSITE, this.serverInfo.website]);
     }
     if (this.serverInfo?.picture) {
-      commonTags.push([NOSTR_TAGS.PICTURE, this.serverInfo.picture]);
+      tags.push([NOSTR_TAGS.PICTURE, this.serverInfo.picture]);
     }
+
+    return tags;
+  }
+
+  /**
+   * Returns transport capability tags.
+   *
+   * This is used for lightweight per-session discovery (e.g. stateless clients)
+   * and intentionally excludes server metadata.
+   */
+  public getCapabilityTags(): string[][] {
+    const tags: string[][] = [];
+
     if (this.encryptionMode !== EncryptionMode.DISABLED) {
-      commonTags.push([NOSTR_TAGS.SUPPORT_ENCRYPTION]);
+      tags.push([NOSTR_TAGS.SUPPORT_ENCRYPTION]);
 
       if (this.giftWrapMode !== GiftWrapMode.PERSISTENT) {
-        commonTags.push([NOSTR_TAGS.SUPPORT_ENCRYPTION_EPHEMERAL]);
+        tags.push([NOSTR_TAGS.SUPPORT_ENCRYPTION_EPHEMERAL]);
       }
     }
 
     for (const tag of this.extraCommonTags) {
-      commonTags.push(tag);
+      tags.push(tag);
     }
 
-    this.cachedCommonTags = commonTags;
-    return commonTags;
+    return tags;
   }
 
   /**

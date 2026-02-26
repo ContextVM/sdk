@@ -63,14 +63,17 @@ describe('NostrTransport Encryption', () => {
     serverPublicKey: string,
     encryptionMode: EncryptionMode,
     giftWrapMode?: GiftWrapMode,
+    isStateless?: boolean,
+    relayHandler?: ApplesauceRelayPool,
   ) => {
     const client = new Client({ name: 'TestClient', version: '1.0.0' });
     const clientNostrTransport = new NostrClientTransport({
       signer: new PrivateKeySigner(privateKey),
-      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      relayHandler: relayHandler ?? new ApplesauceRelayPool([relayUrl]),
       serverPubkey: serverPublicKey,
       encryptionMode,
       giftWrapMode,
+      isStateless,
     });
     return { client, clientNostrTransport };
   };
@@ -80,6 +83,7 @@ describe('NostrTransport Encryption', () => {
     privateKey: string,
     encryptionMode: EncryptionMode,
     giftWrapMode?: GiftWrapMode,
+    relayHandler?: ApplesauceRelayPool,
   ) => {
     const server = new McpServer({ name: 'TestServer', version: '1.0.0' });
     // Ensure the default MCP server has at least one capability so listTools succeeds.
@@ -93,7 +97,7 @@ describe('NostrTransport Encryption', () => {
     );
     const serverTransport = new NostrServerTransport({
       signer: new PrivateKeySigner(privateKey),
-      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      relayHandler: relayHandler ?? new ApplesauceRelayPool([relayUrl]),
       encryptionMode,
       giftWrapMode,
       serverInfo: {},
@@ -371,4 +375,61 @@ describe('NostrTransport Encryption', () => {
     await client.close();
     await server.close();
   }, 10000);
+
+  test('stateless client optional should switch to kind 21059 after first server response advertises support_encryption_ephemeral', async () => {
+    const serverPrivateKey = bytesToHex(generateSecretKey());
+    const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
+    const clientPrivateKey = bytesToHex(generateSecretKey());
+
+    const giftWrapKindsObserved: number[] = [];
+
+    const serverRelayHandler = new ApplesauceRelayPool([relayUrl]);
+    const clientRelayHandler = new ApplesauceRelayPool([relayUrl]);
+    const observerRelayHandler = new ApplesauceRelayPool([relayUrl]);
+
+    const { server, serverTransport } = createServerAndTransport(
+      serverPrivateKey,
+      EncryptionMode.OPTIONAL,
+      GiftWrapMode.OPTIONAL,
+      serverRelayHandler,
+    );
+    await server.connect(serverTransport);
+    await Bun.sleep(100);
+
+    const { client, clientNostrTransport } = createClientAndTransport(
+      clientPrivateKey,
+      serverPublicKey,
+      EncryptionMode.REQUIRED,
+      GiftWrapMode.OPTIONAL,
+      true,
+      clientRelayHandler,
+    );
+
+    observerRelayHandler.subscribe(
+      [{ kinds: [GIFT_WRAP_KIND, EPHEMERAL_GIFT_WRAP_KIND] }],
+      (event) => {
+        // Collect only client->server envelopes by matching recipient tag.
+        // Client->server has a `p` tag of the server pubkey.
+        const pTags = event.tags.filter((t) => t[0] === 'p');
+        if (pTags.some((t) => t[1] === serverPublicKey)) {
+          giftWrapKindsObserved.push(event.kind);
+        }
+      },
+    );
+
+    await client.connect(clientNostrTransport);
+
+    // First request: should default to persistent gift wrap (1059)
+    await client.listTools();
+    await Bun.sleep(50);
+    // Second request: after server response tags, should switch to ephemeral gift wrap (21059)
+    await client.listTools();
+    await Bun.sleep(50);
+
+    expect(giftWrapKindsObserved).toContain(GIFT_WRAP_KIND);
+    expect(giftWrapKindsObserved).toContain(EPHEMERAL_GIFT_WRAP_KIND);
+
+    await client.close();
+    await server.close();
+  }, 30000);
 });

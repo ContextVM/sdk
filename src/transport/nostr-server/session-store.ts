@@ -16,6 +16,8 @@ export interface ClientSession {
   isInitialized: boolean;
   /** Whether this session uses encryption */
   isEncrypted: boolean;
+  /** Whether server common transport capability tags were already sent to this client */
+  hasSentCommonTags: boolean;
 }
 
 /**
@@ -72,6 +74,7 @@ export class SessionStore {
     const newSession: ClientSession = {
       isInitialized: false,
       isEncrypted,
+      hasSentCommonTags: false,
     };
 
     this.sessions.set(clientPubkey, newSession);

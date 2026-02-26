@@ -1,2 +1,4 @@
 export const TEST_PRIVATE_KEY =
   'b994738f7c9b3bcfcdba63886c7f3f57ce1e1b51dde3040c6fc073fd069b96ce';
+export const TEST_PUBLIC_KEY =
+  'ada13b4dbc773890a5e8e468b72418b9fffb51c40b78236819a721971b14fed1';

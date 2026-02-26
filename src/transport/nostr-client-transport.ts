@@ -98,6 +98,9 @@ export class NostrClientTransport
   /** The latest server resources/templates/list response event envelope, if received. */
   private serverResourceTemplatesListEvent: NostrEvent | undefined;
 
+  /** Whether the server has advertised ephemeral gift wrap support via Nostr tags. */
+  private serverSupportsEphemeralGiftWraps: boolean = false;
+
   /**
    * Deduplicate inbound events to avoid redundant work.
    *
@@ -272,15 +275,21 @@ export class NostrClientTransport
     if (this.giftWrapMode === GiftWrapMode.EPHEMERAL)
       return EPHEMERAL_GIFT_WRAP_KIND;
 
+    if (this.serverSupportsEphemeralGiftWraps) {
+      return EPHEMERAL_GIFT_WRAP_KIND;
+    }
+
     const initTags = this.serverInitializeEvent?.tags;
-    const supportsEphemeral =
+    const supportsEphemeralFromInit =
       Array.isArray(initTags) &&
       hasSingleTag(
         initTags as string[][],
         NOSTR_TAGS.SUPPORT_ENCRYPTION_EPHEMERAL,
       );
 
-    return supportsEphemeral ? EPHEMERAL_GIFT_WRAP_KIND : GIFT_WRAP_KIND;
+    return supportsEphemeralFromInit
+      ? EPHEMERAL_GIFT_WRAP_KIND
+      : GIFT_WRAP_KIND;
   }
 
   private getOriginalRequestContext(
@@ -414,6 +423,20 @@ export class NostrClientTransport
           eventId: nostrEvent.id,
         });
         return;
+      }
+
+      // Learn server transport capabilities from any inbound server envelope tags.
+      // This enables ephemeral gift wrap discovery even when clients operate in stateless
+      // mode (no real initialize handshake observed).
+      if (
+        !this.serverSupportsEphemeralGiftWraps &&
+        Array.isArray(nostrEvent.tags) &&
+        hasSingleTag(
+          nostrEvent.tags as string[][],
+          NOSTR_TAGS.SUPPORT_ENCRYPTION_EPHEMERAL,
+        )
+      ) {
+        this.serverSupportsEphemeralGiftWraps = true;
       }
 
       const eTag = getNostrEventTag(nostrEvent.tags, 'e');

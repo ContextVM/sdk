@@ -6,7 +6,6 @@ import { z } from 'zod';
 import { NostrServerTransport } from '../transport/nostr-server-transport.js';
 import { PrivateKeySigner } from '../signer/private-key-signer.js';
 import { TEST_PRIVATE_KEY } from './fixtures.js';
-import { ApplesauceRelayPool } from '../relay/applesauce-relay-pool.js';
 
 // Create an MCP server
 const server = new McpServer({
@@ -48,7 +47,7 @@ server.registerResource(
 // Start receiving messages on stdin and sending messages on stdout
 const transport = new NostrServerTransport({
   signer: new PrivateKeySigner(TEST_PRIVATE_KEY),
-  relayHandler: new ApplesauceRelayPool(['wss://relay.contextvm.org']),
+  relayHandler: ['ws://localhost:10547'],
   serverInfo: {
     name: 'demo-server',
     website: 'https://model-context.org',

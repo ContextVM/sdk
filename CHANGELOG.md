@@ -1,5 +1,11 @@
 # @contextvm/sdk
 
+## 0.6.1
+
+### Patch Changes
+
+- refactor(transport): capability tags on first response for stateless ephemeral discovery
+
 ## 0.6.0
 
 ### Minor Changes
