@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, test, expect } from 'bun:test';
-import { sleep, type Subprocess } from 'bun';
+import { sleep } from 'bun';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { TEST_PRIVATE_KEY } from '../__mocks__/fixtures.js';
@@ -10,14 +10,13 @@ import { getPublicKey } from 'nostr-tools';
 import { hexToBytes } from 'nostr-tools/utils';
 import { createLogger } from '../core/utils/logger.js';
 import { ApplesauceRelayPool } from '../relay/applesauce-relay-pool.js';
+import { spawnMockRelay } from '../__mocks__/test-relay-helpers.js';
 
 describe('NostrMCPGateway End-to-End Test', () => {
-  let relayProcess: Subprocess;
+  let stopRelay: (() => void) | undefined;
   let gateway: NostrMCPGateway;
+  let relayUrl: string;
   const logger = createLogger('gateway-test');
-
-  const relayPort = 7780;
-  const relayUrl = `ws://localhost:${relayPort}`;
 
   // Generate a test private key for the gateway
   const gatewayPrivateKey = TEST_PRIVATE_KEY;
@@ -28,17 +27,9 @@ describe('NostrMCPGateway End-to-End Test', () => {
 
   beforeAll(async () => {
     // Start the mock relay
-    relayProcess = Bun.spawn(['bun', 'src/__mocks__/mock-relay.ts'], {
-      env: {
-        ...process.env,
-        PORT: `${relayPort}`,
-      },
-      stdout: 'inherit',
-      stderr: 'inherit',
-    });
-
-    // Wait for relay to start
-    await sleep(100);
+    const relay = await spawnMockRelay();
+    relayUrl = relay.relayUrl;
+    stopRelay = relay.stop;
 
     // Create the gateway with the mock server transport
     const mcpServerTransport = new StdioClientTransport({
@@ -92,8 +83,7 @@ describe('NostrMCPGateway End-to-End Test', () => {
       await gateway.stop();
     }
 
-    // Kill processes
-    relayProcess?.kill();
+    stopRelay?.();
 
     // Wait for cleanup
     await sleep(100);
@@ -110,43 +100,51 @@ describe('NostrMCPGateway End-to-End Test', () => {
     });
   };
 
-  test('should connect to gateway and initialize', async () => {
-    const transport = createClientTransport();
+  test.serial(
+    'should connect to gateway and initialize',
+    async () => {
+      const transport = createClientTransport();
 
-    const client = new Client({
-      name: 'e2e-test-client',
-      version: '1.0.0',
-    });
+      const client = new Client({
+        name: 'e2e-test-client',
+        version: '1.0.0',
+      });
 
-    await client.connect(transport);
-    console.log('Client connected to gateway');
+      await client.connect(transport);
+      console.log('Client connected to gateway');
 
-    // Verify gateway is active
-    expect(gateway.isActive()).toBe(true);
+      // Verify gateway is active
+      expect(gateway.isActive()).toBe(true);
 
-    await client.close();
-  }, 10000);
+      await client.close();
+    },
+    10000,
+  );
 
-  test('should list tools through gateway', async () => {
-    const transport = createClientTransport();
-    const client = new Client({
-      name: 'tools-test-client',
-      version: '1.0.0',
-    });
+  test.serial(
+    'should list tools through gateway',
+    async () => {
+      const transport = createClientTransport();
+      const client = new Client({
+        name: 'tools-test-client',
+        version: '1.0.0',
+      });
 
-    await client.connect(transport);
+      await client.connect(transport);
 
-    // List tools from the mock MCP server
-    const tools = await client.listTools();
-    expect(tools).toBeDefined();
-    expect(tools.tools).toBeDefined();
+      // List tools from the mock MCP server
+      const tools = await client.listTools();
+      expect(tools).toBeDefined();
+      expect(tools.tools).toBeDefined();
 
-    // Verify the mock server provides expected tools
-    const toolNames = tools.tools.map((tool) => tool.name);
-    expect(toolNames).toContain('add');
+      // Verify the mock server provides expected tools
+      const toolNames = tools.tools.map((tool) => tool.name);
+      expect(toolNames).toContain('add');
 
-    await client.close();
-  }, 10000);
+      await client.close();
+    },
+    10000,
+  );
   // test('should capture stderr output from underlying MCP server transport', async () => {
   //   // Create a custom transport that captures stderr to demonstrate the issue
   //   const stderrBuffer: string[] = [];

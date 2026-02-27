@@ -1,4 +1,4 @@
-import { afterAll, describe, test, expect, mock } from 'bun:test';
+import { describe, test, expect } from 'bun:test';
 import { EncryptionMode, type RelayHandler } from '../core/interfaces.js';
 import type { NostrEvent } from 'nostr-tools';
 import { NostrClientTransport } from './nostr-client-transport.js';
@@ -8,10 +8,19 @@ import { NostrServerTransport } from './nostr-server-transport.js';
 
 let decryptCallCount = 0;
 
-// Mock decryptMessage so we can deterministically assert deduplication without a relay.
-mock.module('../core/encryption.js', () => {
-  return {
-    decryptMessage: async () => {
+function installDeterministicDecrypt(transport: {
+  signer: {
+    nip44: {
+      encrypt: (plaintext: string, pubkey: string) => Promise<string>;
+      decrypt: (ciphertext: string, pubkey: string) => Promise<string>;
+    };
+  };
+}): void {
+  transport.signer.nip44 = {
+    encrypt: async () => {
+      throw new Error('encrypt not used in this test');
+    },
+    decrypt: async () => {
       decryptCallCount += 1;
       return JSON.stringify({
         id: 'inner-event-id',
@@ -26,26 +35,8 @@ mock.module('../core/encryption.js', () => {
         sig: '0'.repeat(128),
       } satisfies NostrEvent);
     },
-    encryptMessage: (
-      message: string,
-      recipientPublicKey: string,
-    ): NostrEvent => {
-      return {
-        id: 'mock-giftwrap',
-        kind: GIFT_WRAP_KIND,
-        content: message,
-        tags: [['p', recipientPublicKey]],
-        created_at: 1,
-        pubkey: '0'.repeat(64),
-        sig: '0'.repeat(128),
-      } satisfies NostrEvent;
-    },
   };
-});
-
-afterAll(() => {
-  mock.restore();
-});
+}
 
 function makeNoopRelayHandler(): RelayHandler {
   return {
@@ -71,6 +62,16 @@ describe('gift-wrap pre-decrypt deduplication', () => {
       serverPubkey,
       encryptionMode: EncryptionMode.REQUIRED,
     });
+    installDeterministicDecrypt(
+      transport as unknown as {
+        signer: {
+          nip44: {
+            encrypt: (plaintext: string, pubkey: string) => Promise<string>;
+            decrypt: (ciphertext: string, pubkey: string) => Promise<string>;
+          };
+        };
+      },
+    );
 
     const received: unknown[] = [];
     transport.onmessage = (msg) => received.push(msg);
@@ -104,6 +105,16 @@ describe('gift-wrap pre-decrypt deduplication', () => {
       serverPubkey,
       encryptionMode: EncryptionMode.REQUIRED,
     });
+    installDeterministicDecrypt(
+      transport as unknown as {
+        signer: {
+          nip44: {
+            encrypt: (plaintext: string, pubkey: string) => Promise<string>;
+            decrypt: (ciphertext: string, pubkey: string) => Promise<string>;
+          };
+        };
+      },
+    );
 
     const received: unknown[] = [];
     transport.onmessage = (msg) => received.push(msg);
@@ -133,6 +144,16 @@ describe('gift-wrap pre-decrypt deduplication', () => {
       relayHandler: makeNoopRelayHandler(),
       encryptionMode: EncryptionMode.REQUIRED,
     });
+    installDeterministicDecrypt(
+      transport as unknown as {
+        signer: {
+          nip44: {
+            encrypt: (plaintext: string, pubkey: string) => Promise<string>;
+            decrypt: (ciphertext: string, pubkey: string) => Promise<string>;
+          };
+        };
+      },
+    );
 
     const received: unknown[] = [];
     transport.onmessage = (msg) => received.push(msg);
@@ -164,6 +185,16 @@ describe('gift-wrap pre-decrypt deduplication', () => {
       relayHandler: makeNoopRelayHandler(),
       encryptionMode: EncryptionMode.REQUIRED,
     });
+    installDeterministicDecrypt(
+      transport as unknown as {
+        signer: {
+          nip44: {
+            encrypt: (plaintext: string, pubkey: string) => Promise<string>;
+            decrypt: (ciphertext: string, pubkey: string) => Promise<string>;
+          };
+        };
+      },
+    );
 
     const received: unknown[] = [];
     transport.onmessage = (msg) => received.push(msg);

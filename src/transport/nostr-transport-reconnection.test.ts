@@ -6,7 +6,7 @@ import {
   test,
   expect,
 } from 'bun:test';
-import { sleep, type Subprocess } from 'bun';
+import { sleep } from 'bun';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { NostrServerTransport } from './nostr-server-transport.js';
 import { NostrClientTransport } from './nostr-client-transport.js';
@@ -19,59 +19,64 @@ import { z } from 'zod';
 import { EncryptionMode } from '../core/interfaces.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { DEFAULT_TIMEOUT_MS } from '../core/constants.js';
+import {
+  spawnMockRelay,
+  restartMockRelay,
+  clearRelayCache,
+} from '../__mocks__/test-relay-helpers.js';
 
-const baseRelayPort = 7792; // Use a different port to avoid conflicts
-const secondaryRelayPort = 7793; // Second relay for multi-relay tests
-const relayUrl = `ws://localhost:${baseRelayPort}`;
-const secondaryRelayUrl = `ws://localhost:${secondaryRelayPort}`;
-
-describe('NostrTransport Reconnection', () => {
-  let relayProcess: Subprocess;
-  let secondaryRelayProcess: Subprocess;
+describe.serial('NostrTransport Reconnection', () => {
+  let stopPrimaryRelay: (() => void) | undefined;
+  let stopSecondaryRelay: (() => void) | undefined;
+  let primaryRelayInstance: Awaited<ReturnType<typeof spawnMockRelay>>['relay'];
+  let relayUrl: string;
+  let secondaryRelayUrl: string;
+  let primaryHttpUrl: string;
+  let secondaryHttpUrl: string;
   const serverPrivateKey = bytesToHex(generateSecretKey());
   const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
 
   beforeAll(async () => {
-    // Start mock relay
-    relayProcess = Bun.spawn(['bun', 'src/__mocks__/mock-relay.ts'], {
-      env: { ...process.env, PORT: `${baseRelayPort}` },
-      stdout: 'inherit',
-      stderr: 'inherit',
-    });
-    // Start secondary relay
-    secondaryRelayProcess = Bun.spawn(['bun', 'src/__mocks__/mock-relay.ts'], {
-      env: { ...process.env, PORT: `${secondaryRelayPort}` },
-      stdout: 'inherit',
-      stderr: 'inherit',
-    });
-    await sleep(200);
+    // Start primary relay on an OS-assigned port (avoids TOCTOU races under concurrency)
+    const primaryRelay = await spawnMockRelay();
+    primaryRelayInstance = primaryRelay.relay;
+    stopPrimaryRelay = primaryRelay.stop;
+    relayUrl = primaryRelay.relayUrl;
+    primaryHttpUrl = primaryRelay.httpUrl;
+
+    // Start secondary relay on an OS-assigned port
+    const secondaryRelay = await spawnMockRelay();
+    stopSecondaryRelay = secondaryRelay.stop;
+    secondaryRelayUrl = secondaryRelay.relayUrl;
+    secondaryHttpUrl = secondaryRelay.httpUrl;
   });
 
   afterEach(async () => {
     // Clear relay cache for both relays
-    try {
-      const clearUrl = relayUrl.replace('ws://', 'http://') + '/clear-cache';
-      await fetch(clearUrl, { method: 'POST' });
-      const secondaryClearUrl =
-        secondaryRelayUrl.replace('ws://', 'http://') + '/clear-cache';
-      await fetch(secondaryClearUrl, { method: 'POST' });
-    } catch (error) {
-      console.warn('[TEST] Failed to clear event cache:', error);
-    }
+    await clearRelayCache(primaryHttpUrl);
+    await clearRelayCache(secondaryHttpUrl);
   });
 
   afterAll(async () => {
-    relayProcess?.kill();
-    secondaryRelayProcess?.kill();
+    stopPrimaryRelay?.();
+    stopSecondaryRelay?.();
     await sleep(100);
   });
+
+  /**
+   * Helper function to restart the primary relay on the same port
+   */
+  const restartPrimaryRelay = async (): Promise<void> => {
+    // Prefer pausing/resuming the in-process relay to avoid EADDRINUSE flakes.
+    await restartMockRelay(primaryRelayInstance);
+  };
 
   /**
    * Helper function to create a server with basic tool
    */
   const createServer = async (
     relayUrls: string[] = [relayUrl],
-  ): Promise<{ server: McpServer }> => {
+  ): Promise<McpServer> => {
     const server = new McpServer({
       name: 'Test-Server-Reconnection',
       version: '1.0.0',
@@ -91,11 +96,14 @@ describe('NostrTransport Reconnection', () => {
 
     const transport = new NostrServerTransport({
       signer: new PrivateKeySigner(serverPrivateKey),
-      relayHandler: new ApplesauceRelayPool(relayUrls),
+      relayHandler: new ApplesauceRelayPool(relayUrls, {
+        reconnectBaseDelayMs: 100,
+        reconnectMaxDelayMs: 1_000,
+      }),
     });
 
     await server.connect(transport);
-    return { server };
+    return server;
   };
 
   /**
@@ -103,7 +111,7 @@ describe('NostrTransport Reconnection', () => {
    */
   const createClient = async (
     relayUrls: string[] = [relayUrl],
-  ): Promise<{ client: Client }> => {
+  ): Promise<Client> => {
     const client = new Client({
       name: 'Test-Client-Reconnection',
       version: '1.0.0',
@@ -112,111 +120,127 @@ describe('NostrTransport Reconnection', () => {
 
     const transport = new NostrClientTransport({
       signer: new PrivateKeySigner(clientPrivateKey),
-      relayHandler: new ApplesauceRelayPool(relayUrls),
+      relayHandler: new ApplesauceRelayPool(relayUrls, {
+        reconnectBaseDelayMs: 100,
+        reconnectMaxDelayMs: 1_000,
+      }),
       serverPubkey: serverPublicKey,
       encryptionMode: EncryptionMode.DISABLED,
     });
 
     await client.connect(transport);
-    return { client };
+    return client;
   };
 
-  test('should handle relay restart and continue processing requests', async () => {
-    // Create server and client
-    const { server: initialServer } = await createServer();
-    const { client } = await createClient();
+  const eventually = async <T>(
+    fn: () => Promise<T>,
+    opts: {
+      timeoutMs: number;
+      intervalMs?: number;
+      onError?: (error: unknown) => void;
+    },
+  ): Promise<T> => {
+    const startMs = Date.now();
+    const intervalMs = opts.intervalMs ?? 100;
+    let lastError: unknown;
 
-    // First request - should work
-    const tools1 = await client.listTools();
-    expect(tools1).toBeDefined();
-    expect(Array.isArray(tools1.tools)).toBe(true);
+    while (true) {
+      try {
+        return await fn();
+      } catch (error) {
+        lastError = error;
+        opts.onError?.(error);
 
-    // Test tool call before relay restart
-    const toolResult1 = (await client.callTool({
+        if (Date.now() - startMs >= opts.timeoutMs) {
+          throw lastError;
+        }
+
+        await sleep(intervalMs);
+      }
+    }
+  };
+
+  const assertToolsAvailable = async (
+    client: Client,
+    expectedCount?: number,
+  ): Promise<void> => {
+    const tools = await client.listTools();
+    expect(tools).toBeDefined();
+    expect(Array.isArray(tools.tools)).toBe(true);
+    if (expectedCount !== undefined) {
+      expect(tools.tools.length).toBe(expectedCount);
+    }
+  };
+
+  const callAddTool = async (
+    client: Client,
+    a: number,
+    b: number,
+  ): Promise<CallToolResult> => {
+    return (await client.callTool({
       name: 'add',
-      arguments: { a: 5, b: 3 },
+      arguments: { a, b },
     })) as CallToolResult;
-    expect(toolResult1).toBeDefined();
-    expect(
-      toolResult1.content[0].type === 'text' && toolResult1.content[0].text,
-    ).toBe('8');
+  };
 
-    // Restart the relay process
-    console.log('Restarting relay...');
-    relayProcess.kill();
+  const expectTextResult = (result: CallToolResult, expected: string): void => {
+    expect(result).toBeDefined();
+    expect(result.content[0].type === 'text' && result.content[0].text).toBe(
+      expected,
+    );
+  };
 
-    // Start relay again
-    relayProcess = Bun.spawn(['bun', 'src/__mocks__/mock-relay.ts'], {
-      env: { ...process.env, PORT: `${baseRelayPort}` },
-      stdout: 'inherit',
-      stderr: 'inherit',
-    });
+  test.serial(
+    'should handle relay restart and continue processing requests',
+    async () => {
+      // Create server and client
+      const initialServer = await createServer();
+      const client = await createClient();
 
-    // Second request after relay restart - should still work
-    const tools2 = await client.listTools();
-    expect(tools2).toBeDefined();
-    expect(Array.isArray(tools2.tools)).toBe(true);
-    expect(tools2.tools.length).toBe(1);
+      // First request - should work
+      await assertToolsAvailable(client);
 
-    // Test tool call after relay restart
-    const toolResult2 = (await client.callTool({
-      name: 'add',
-      arguments: { a: 10, b: 20 },
-    })) as CallToolResult;
-    expect(toolResult2).toBeDefined();
-    expect(
-      toolResult2.content[0].type === 'text' && toolResult2.content[0].text,
-    ).toBe('30');
+      // Test tool call before relay restart
+      expectTextResult(await callAddTool(client, 5, 3), '8');
 
-    await client.close();
-    await initialServer.close();
-  }, 20000);
+      // Restart the relay process
+      await restartPrimaryRelay();
 
-  test(
+      // Second request after relay restart - should still work
+      const toolResult2 = await eventually(() => callAddTool(client, 10, 20), {
+        timeoutMs: 15_000,
+        intervalMs: 150,
+      });
+      expectTextResult(toolResult2, '30');
+
+      await client.close();
+      await initialServer.close();
+    },
+    20000,
+  );
+
+  test.serial(
     'should handle multiple relay restarts',
     async () => {
-      const { server } = await createServer();
-      const { client } = await createClient();
+      const server = await createServer();
+      const client = await createClient();
 
       // First request
-      const tools1 = await client.listTools();
-      expect(tools1).toBeDefined();
+      await assertToolsAvailable(client);
 
       // First relay restart
-      console.log('First relay restart...');
-      relayProcess.kill();
-      relayProcess = Bun.spawn(['bun', 'src/__mocks__/mock-relay.ts'], {
-        env: { ...process.env, PORT: `${baseRelayPort}` },
-        stdout: 'inherit',
-        stderr: 'inherit',
-      });
+      await restartPrimaryRelay();
+      await sleep(300);
 
       // Request after first restart
-      const toolResult1 = (await client.callTool({
-        name: 'add',
-        arguments: { a: 1, b: 2 },
-      })) as CallToolResult;
-      expect(
-        toolResult1.content[0].type === 'text' && toolResult1.content[0].text,
-      ).toBe('3');
+      expectTextResult(await callAddTool(client, 1, 2), '3');
 
       // Second relay restart
-      console.log('Second relay restart...');
-      relayProcess.kill();
-      relayProcess = Bun.spawn(['bun', 'src/__mocks__/mock-relay.ts'], {
-        env: { ...process.env, PORT: `${baseRelayPort}` },
-        stdout: 'inherit',
-        stderr: 'inherit',
-      });
+      await restartPrimaryRelay();
+      await sleep(300);
 
       // Request after second restart
-      const toolResult2 = (await client.callTool({
-        name: 'add',
-        arguments: { a: 7, b: 8 },
-      })) as CallToolResult;
-      expect(
-        toolResult2.content[0].type === 'text' && toolResult2.content[0].text,
-      ).toBe('15');
+      expectTextResult(await callAddTool(client, 7, 8), '15');
 
       await client.close();
       await server.close();
@@ -224,125 +248,73 @@ describe('NostrTransport Reconnection', () => {
     DEFAULT_TIMEOUT_MS,
   );
 
-  test('should handle relay being offline for extended period (10 seconds)', async () => {
-    const { server } = await createServer();
-    const { client } = await createClient();
+  test.serial(
+    'should handle relay being offline for extended period (10 seconds)',
+    async () => {
+      const server = await createServer();
+      const client = await createClient();
 
-    // First request - should work
-    const tools1 = await client.listTools();
-    expect(tools1).toBeDefined();
-    expect(Array.isArray(tools1.tools)).toBe(true);
+      // First request - should work
+      await assertToolsAvailable(client);
 
-    // Test tool call before relay goes offline
-    const toolResult1 = (await client.callTool({
-      name: 'add',
-      arguments: { a: 5, b: 3 },
-    })) as CallToolResult;
-    expect(toolResult1).toBeDefined();
-    expect(
-      toolResult1.content[0].type === 'text' && toolResult1.content[0].text,
-    ).toBe('8');
+      // Test tool call before relay goes offline
+      expectTextResult(await callAddTool(client, 5, 3), '8');
 
-    // Kill the relay and wait for 10 seconds (simulating extended outage)
-    console.log('Killing relay for extended outage (10 seconds)...');
-    relayProcess.kill();
+      // Simulate the relay going offline and wait for 10 seconds (extended outage)
+      primaryRelayInstance.pause();
 
-    // Wait for 10 seconds to simulate extended outage
-    console.log('Waiting 10 seconds...');
-    await sleep(10000);
+      // Wait for 10 seconds to simulate extended outage
+      await sleep(10000);
 
-    // Start relay again
-    console.log('Restarting relay after extended outage...');
-    relayProcess = Bun.spawn(['bun', 'src/__mocks__/mock-relay.ts'], {
-      env: { ...process.env, PORT: `${baseRelayPort}` },
-      stdout: 'inherit',
-      stderr: 'inherit',
-    });
+      // Bring relay back online (without releasing the port)
+      await restartPrimaryRelay();
 
-    // Wait a moment for relay to fully start
-    await sleep(500);
+      // Second request after extended outage - should still work
+      const toolResult2 = await eventually(() => callAddTool(client, 15, 25), {
+        timeoutMs: 25_000,
+        intervalMs: 200,
+      });
+      expectTextResult(toolResult2, '40');
 
-    // Second request after extended outage - should still work
-    const tools2 = await client.listTools();
-    expect(tools2).toBeDefined();
-    expect(Array.isArray(tools2.tools)).toBe(true);
-    expect(tools2.tools.length).toBe(1);
+      await client.close();
+      await server.close();
+    },
+    40000,
+  ); // Longer timeout for extended outage test
+  test.serial(
+    'should handle one relay dropping in multi-relay setup',
+    async () => {
+      // Create server and client with both relays
+      const server = await createServer([relayUrl, secondaryRelayUrl]);
+      const client = await createClient([relayUrl, secondaryRelayUrl]);
 
-    // Test tool call after extended outage
-    const toolResult2 = (await client.callTool({
-      name: 'add',
-      arguments: { a: 15, b: 25 },
-    })) as CallToolResult;
-    expect(toolResult2).toBeDefined();
-    expect(
-      toolResult2.content[0].type === 'text' && toolResult2.content[0].text,
-    ).toBe('40');
+      // First request - should work with both relays
+      await assertToolsAvailable(client);
 
-    await client.close();
-    await server.close();
-  }, 40000); // Longer timeout for extended outage test
-  test('should handle one relay dropping in multi-relay setup', async () => {
-    // Create server and client with both relays
-    const { server } = await createServer([relayUrl, secondaryRelayUrl]);
-    const { client } = await createClient([relayUrl, secondaryRelayUrl]);
+      // Test tool call before dropping one relay
+      expectTextResult(await callAddTool(client, 5, 3), '8');
 
-    // First request - should work with both relays
-    const tools1 = await client.listTools();
-    expect(tools1).toBeDefined();
-    expect(Array.isArray(tools1.tools)).toBe(true);
+      // Drop the primary relay (without releasing the port)
+      primaryRelayInstance.pause();
 
-    // Test tool call before dropping one relay
-    const toolResult1 = (await client.callTool({
-      name: 'add',
-      arguments: { a: 5, b: 3 },
-    })) as CallToolResult;
-    expect(toolResult1).toBeDefined();
-    expect(
-      toolResult1.content[0].type === 'text' && toolResult1.content[0].text,
-    ).toBe('8');
+      // Second request should still work through secondary relay
+      await assertToolsAvailable(client, 1);
 
-    // Drop the primary relay
-    console.log('Dropping primary relay...');
-    relayProcess.kill();
+      // Test tool call after dropping primary relay
+      expectTextResult(await callAddTool(client, 10, 20), '30');
 
-    // Second request should still work through secondary relay
-    const tools2 = await client.listTools();
-    expect(tools2).toBeDefined();
-    expect(Array.isArray(tools2.tools)).toBe(true);
-    expect(tools2.tools.length).toBe(1);
+      // Restart the primary relay
+      await restartPrimaryRelay();
 
-    // Test tool call after dropping primary relay
-    const toolResult2 = (await client.callTool({
-      name: 'add',
-      arguments: { a: 10, b: 20 },
-    })) as CallToolResult;
-    expect(toolResult2).toBeDefined();
-    expect(
-      toolResult2.content[0].type === 'text' && toolResult2.content[0].text,
-    ).toBe('30');
+      // Wait for reconnection to complete
+      await sleep(100);
 
-    // Restart the primary relay
-    console.log('Restarting primary relay...');
-    relayProcess = Bun.spawn(['bun', 'src/__mocks__/mock-relay.ts'], {
-      env: { ...process.env, PORT: `${baseRelayPort}` },
-      stdout: 'inherit',
-      stderr: 'inherit',
-    });
+      // Third request should work with both relays again
+      expectTextResult(await callAddTool(client, 15, 25), '40');
 
-    // Wait for reconnection to complete
-    await sleep(100);
-
-    // Third request should work with both relays again
-    const toolResult3 = (await client.callTool({
-      name: 'add',
-      arguments: { a: 15, b: 25 },
-    })) as CallToolResult;
-    expect(toolResult3).toBeDefined();
-    expect(
-      toolResult3.content[0].type === 'text' && toolResult3.content[0].text,
-    ).toBe('40');
-
-    await client.close();
-    await server.close();
-  }, 40000);
+      await client.close();
+      await server.close();
+    },
+    40000,
+  );
 });

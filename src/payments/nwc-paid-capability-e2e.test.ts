@@ -6,7 +6,7 @@ import {
   expect,
   test,
 } from 'bun:test';
-import { sleep, type Subprocess } from 'bun';
+import { sleep } from 'bun';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
@@ -22,6 +22,10 @@ import type { NostrEvent } from 'nostr-tools';
 import { withClientPayments, withServerPayments } from './index.js';
 import { LnBolt11NwcPaymentHandler } from './handlers/ln-bolt11-nwc-payment-handler.js';
 import { LnBolt11NwcPaymentProcessor } from './processors/ln-bolt11-nwc-payment-processor.js';
+import {
+  spawnMockRelay,
+  clearRelayCache,
+} from '../__mocks__/test-relay-helpers.js';
 
 const nwcEnabled = process.env.NWC_INTEGRATION === 'true';
 
@@ -73,34 +77,23 @@ async function captureNextPaymentRequired(params: {
 }
 
 describe('nwc paid capability e2e (skipped by default)', () => {
-  const baseRelayPort = 7820;
-  const relayUrl = `ws://localhost:${baseRelayPort}`;
-
-  let relayProcess: Subprocess;
+  let relayUrl: string;
+  let httpUrl: string;
+  let stopRelay: (() => void) | undefined;
 
   beforeAll(async () => {
-    relayProcess = Bun.spawn(['bun', 'src/__mocks__/mock-relay.ts'], {
-      env: {
-        ...process.env,
-        PORT: `${baseRelayPort}`,
-      },
-      stdout: 'inherit',
-      stderr: 'inherit',
-    });
-    await sleep(100);
+    const relay = await spawnMockRelay();
+    relayUrl = relay.relayUrl;
+    httpUrl = relay.httpUrl;
+    stopRelay = relay.stop;
   });
 
   afterEach(async () => {
-    try {
-      const clearUrl = relayUrl.replace('ws://', 'http://') + '/clear-cache';
-      await fetch(clearUrl, { method: 'POST' });
-    } catch {
-      // best-effort
-    }
+    await clearRelayCache(httpUrl);
   });
 
   afterAll(async () => {
-    relayProcess?.kill();
+    stopRelay?.();
     await sleep(100);
   });
 

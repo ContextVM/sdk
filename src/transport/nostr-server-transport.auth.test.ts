@@ -6,7 +6,8 @@ import {
   test,
   expect,
 } from 'bun:test';
-import { sleep, type Subprocess } from 'bun';
+import { sleep } from 'bun';
+import type { MockRelayInstance } from '../__mocks__/mock-relay-server.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { NostrServerTransport } from './nostr-server-transport.js';
 import { NostrClientTransport } from './nostr-client-transport.js';
@@ -16,39 +17,29 @@ import { bytesToHex, hexToBytes } from 'nostr-tools/utils';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { ApplesauceRelayPool } from '../relay/applesauce-relay-pool.js';
 import { EncryptionMode } from '../core/interfaces.js';
-
-const baseRelayPort = 7791; // Use a different port to avoid conflicts
-const relayUrl = `ws://localhost:${baseRelayPort}`;
+import {
+  spawnMockRelay,
+  clearRelayCache,
+} from '../__mocks__/test-relay-helpers.js';
 
 describe('NostrServerTransport Auth', () => {
-  let relayProcess: Subprocess;
+  let relay: MockRelayInstance;
+  let relayUrl: string;
+  let httpUrl: string;
 
   beforeAll(async () => {
-    relayProcess = Bun.spawn(['bun', 'src/__mocks__/mock-relay.ts'], {
-      env: {
-        ...process.env,
-        PORT: `${baseRelayPort}`,
-      },
-      stdout: 'inherit',
-      stderr: 'inherit',
-    });
-    await sleep(100);
+    const spawned = await spawnMockRelay();
+    relay = spawned.relay;
+    relayUrl = spawned.relayUrl;
+    httpUrl = spawned.httpUrl;
   });
 
   afterEach(async () => {
-    if (relayUrl) {
-      try {
-        const clearUrl = relayUrl.replace('ws://', 'http://') + '/clear-cache';
-        await fetch(clearUrl, { method: 'POST' });
-        console.log('[TEST] Event cache cleared');
-      } catch (error) {
-        console.warn('[TEST] Failed to clear event cache:', error);
-      }
-    }
+    await clearRelayCache(httpUrl);
   });
 
   afterAll(async () => {
-    relayProcess?.kill();
+    relay.stop();
     await sleep(100);
   });
 
@@ -162,7 +153,7 @@ describe('NostrServerTransport Auth', () => {
       serverPublicKey,
     );
 
-    expect(
+    await expect(
       disallowedClient.connect(disallowedClientNostrTransport),
     ).rejects.toThrow('Unauthorized');
 
@@ -213,7 +204,7 @@ describe('NostrServerTransport Auth', () => {
     // Connect client (sends initialize message)
     await client.connect(clientNostrTransport);
     // Attempt to connect (should fail with Unauthorized error)
-    expect(
+    await expect(
       unauthorizedClient.connect(unauthorizedClientNostrTransport),
     ).rejects.toThrow('Unauthorized');
 

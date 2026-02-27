@@ -31,8 +31,7 @@ import {
   INITIALIZE_METHOD,
   NOTIFICATIONS_INITIALIZED_METHOD,
 } from '../../core/index.js';
-import { EncryptionMode } from '../../core/interfaces.js';
-import { GiftWrapMode } from '../../core/interfaces.js';
+import { EncryptionMode, GiftWrapMode } from '../../core/interfaces.js';
 
 /**
  * Information about a server.

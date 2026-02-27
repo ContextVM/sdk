@@ -1,5 +1,12 @@
-import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
-import { sleep, type Subprocess } from 'bun';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  test,
+} from 'bun:test';
+import { sleep } from 'bun';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
@@ -16,6 +23,10 @@ import {
   withClientPayments,
   withServerPayments,
 } from '../payments/index.js';
+import {
+  spawnMockRelay,
+  clearRelayCache,
+} from '../__mocks__/test-relay-helpers.js';
 
 type PaidClient = {
   client: Client;
@@ -66,25 +77,23 @@ async function createPaidClient(params: {
 }
 
 describe('payments real-world regression (server + many clients)', () => {
-  const baseRelayPort = 7830;
-  const relayUrl = `ws://localhost:${baseRelayPort}`;
-
-  let relayProcess: Subprocess;
+  let relayUrl: string;
+  let httpUrl: string;
+  let stopRelay: (() => void) | undefined;
 
   beforeAll(async () => {
-    relayProcess = Bun.spawn(['bun', 'src/__mocks__/mock-relay.ts'], {
-      env: {
-        ...process.env,
-        PORT: `${baseRelayPort}`,
-      },
-      stdout: 'inherit',
-      stderr: 'inherit',
-    });
-    await sleep(100);
+    const relay = await spawnMockRelay();
+    relayUrl = relay.relayUrl;
+    httpUrl = relay.httpUrl;
+    stopRelay = relay.stop;
+  });
+
+  afterEach(async () => {
+    await clearRelayCache(httpUrl);
   });
 
   afterAll(async () => {
-    relayProcess?.kill();
+    stopRelay?.();
     await sleep(100);
   });
 

@@ -6,7 +6,8 @@ import {
   test,
   expect,
 } from 'bun:test';
-import { sleep, type Subprocess } from 'bun';
+import { sleep } from 'bun';
+import type { MockRelayInstance } from '../__mocks__/mock-relay-server.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { NostrServerTransport } from './nostr-server-transport.js';
 import { NostrClientTransport } from './nostr-client-transport.js';
@@ -26,25 +27,26 @@ import { EncryptionMode } from '../core/interfaces.js';
 import { CTXVM_MESSAGES_KIND } from '../core/constants.js';
 import { withServerPayments } from '../payments/server-transport-payments.js';
 import { FakePaymentProcessor } from '../payments/fake-payment-processor.js';
+import {
+  spawnMockRelay,
+  clearRelayCache,
+} from '../__mocks__/test-relay-helpers.js';
 
-const baseRelayPort = 7791;
-const relayUrl = `ws://localhost:${baseRelayPort}`;
-
-describe('NostrClientTransport', () => {
-  let relayProcess: Subprocess;
+describe.serial('NostrClientTransport', () => {
+  let relay: MockRelayInstance;
+  let relayUrl: string;
+  let httpUrl: string;
   let server: McpServer;
   let serverTransport: NostrServerTransport;
   const serverPrivateKey = bytesToHex(generateSecretKey());
   const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
 
   beforeAll(async () => {
-    // Start mock relay
-    relayProcess = Bun.spawn(['bun', 'src/__mocks__/mock-relay.ts'], {
-      env: { ...process.env, PORT: `${baseRelayPort}` },
-      stdout: 'inherit',
-      stderr: 'inherit',
-    });
-    await sleep(200);
+    // Start mock relay with dynamic port
+    const spawned = await spawnMockRelay();
+    relay = spawned.relay;
+    relayUrl = spawned.relayUrl;
+    httpUrl = spawned.httpUrl;
 
     server = new McpServer({
       name: 'Test-Server-For-Client-Test',
@@ -73,17 +75,12 @@ describe('NostrClientTransport', () => {
 
   afterEach(async () => {
     // Clear relay cache
-    try {
-      const clearUrl = relayUrl.replace('ws://', 'http://') + '/clear-cache';
-      await fetch(clearUrl, { method: 'POST' });
-    } catch (error) {
-      console.warn('[TEST] Failed to clear event cache:', error);
-    }
+    await clearRelayCache(httpUrl);
   });
 
   afterAll(async () => {
     await server.close();
-    relayProcess?.kill();
+    relay.stop();
     await sleep(100);
   });
 
@@ -91,6 +88,7 @@ describe('NostrClientTransport', () => {
     // Create a client
     const client = new Client({ name: 'Stateless-Client', version: '1.0.0' });
     const clientPrivateKey = bytesToHex(generateSecretKey());
+    const clientPublicKey = getPublicKey(hexToBytes(clientPrivateKey));
 
     const clientTransport = new NostrClientTransport({
       signer: new PrivateKeySigner(clientPrivateKey),
@@ -102,13 +100,59 @@ describe('NostrClientTransport', () => {
 
     await client.connect(clientTransport);
 
+    const hasTagValue = (
+      event: NostrEvent,
+      name: string,
+      value: string,
+    ): boolean => event.tags.some((t) => t[0] === name && t[1] === value);
+
     const receivedEvents: NostrEvent[] = [];
-    clientTransport['relayHandler'].subscribe([{}], (event) => {
-      receivedEvents.push(event);
+    const receivedTwoEvents = new Promise<void>((resolve, reject) => {
+      let unsubscribe: (() => void) | null = null;
+
+      const timeout = setTimeout(() => {
+        cleanup();
+        reject(new Error('Timed out waiting for 2 relay events'));
+      }, 5000);
+
+      const cleanup = (): void => {
+        clearTimeout(timeout);
+        try {
+          unsubscribe?.();
+        } catch {
+          // Best-effort: test isolation only
+        }
+      };
+
+      void clientTransport['relayHandler']
+        .subscribe([{}], (event) => {
+          const isRequest =
+            event.pubkey === clientPublicKey &&
+            hasTagValue(event, 'p', serverPublicKey);
+          const isResponse =
+            event.pubkey === serverPublicKey &&
+            hasTagValue(event, 'p', clientPublicKey);
+
+          if (!isRequest && !isResponse) return;
+
+          receivedEvents.push(event);
+          if (receivedEvents.length >= 2) {
+            cleanup();
+            resolve();
+          }
+        })
+        .then((u) => {
+          unsubscribe = u;
+        })
+        .catch(() => {
+          // Ignore subscribe errors; listTools() will fail if relay is broken.
+        });
     });
 
     const tools: ListToolsResult = await client.listTools();
-    await sleep(100);
+
+    await receivedTwoEvents;
+
     // Assertions
     expect(tools).toBeDefined();
     expect(Array.isArray(tools.tools)).toBe(true);

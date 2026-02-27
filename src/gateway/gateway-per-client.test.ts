@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
-import { sleep, type Subprocess } from 'bun';
+import { sleep } from 'bun';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { getPublicKey } from 'nostr-tools';
@@ -10,13 +10,12 @@ import { ApplesauceRelayPool } from '../relay/applesauce-relay-pool.js';
 import { PrivateKeySigner } from '../signer/private-key-signer.js';
 import { NostrClientTransport } from '../transport/nostr-client-transport.js';
 import { NostrMCPGateway } from './index.js';
+import { spawnMockRelay } from '../__mocks__/test-relay-helpers.js';
 
 describe('NostrMCPGateway per-client MCP routing', () => {
-  let relayProcess: Subprocess;
+  let stopRelay: (() => void) | undefined;
+  let relayUrl: string;
   const logger = createLogger('gateway-per-client-test');
-
-  const relayPort = 7781;
-  const relayUrl = `ws://localhost:${relayPort}`;
 
   const gatewayPrivateKey = TEST_PRIVATE_KEY;
   const gatewayPublicKey = getPublicKey(hexToBytes(gatewayPrivateKey));
@@ -91,107 +90,115 @@ describe('NostrMCPGateway per-client MCP routing', () => {
   };
 
   beforeAll(async () => {
-    relayProcess = Bun.spawn(['bun', 'src/__mocks__/mock-relay.ts'], {
-      env: {
-        ...process.env,
-        PORT: `${relayPort}`,
-      },
-      stdout: 'inherit',
-      stderr: 'inherit',
-    });
-
-    await sleep(100);
+    const relay = await spawnMockRelay();
+    relayUrl = relay.relayUrl;
+    stopRelay = relay.stop;
 
     logger.info('Relay started', { relayUrl });
   }, 20000);
 
   afterAll(async () => {
-    relayProcess?.kill();
+    stopRelay?.();
     await sleep(100);
   });
 
-  test('should create a distinct MCP transport per client pubkey', async () => {
-    const { gateway, getCreatedCount } = await createGateway({
-      maxSessions: 10,
-    });
-    const client1 = new Client({ name: 'client-1', version: '1.0.0' });
-    const client2 = new Client({ name: 'client-2', version: '1.0.0' });
+  test.serial(
+    'should create a distinct MCP transport per client pubkey',
+    async () => {
+      const { gateway, getCreatedCount } = await createGateway({
+        maxSessions: 10,
+      });
+      const client1 = new Client({ name: 'client-1', version: '1.0.0' });
+      const client2 = new Client({ name: 'client-2', version: '1.0.0' });
 
-    await client1.connect(createClientTransport(client1PrivateKey));
-    await client2.connect(createClientTransport(client2PrivateKey));
+      await client1.connect(createClientTransport(client1PrivateKey));
+      await client2.connect(createClientTransport(client2PrivateKey));
 
-    const tools1 = await client1.listTools();
-    const tools2 = await client2.listTools();
+      const tools1 = await client1.listTools();
+      const tools2 = await client2.listTools();
 
-    expect(tools1.tools.map((t) => t.name)).toContain('add');
-    expect(tools2.tools.map((t) => t.name)).toContain('add');
+      expect(tools1.tools.map((t) => t.name)).toContain('add');
+      expect(tools2.tools.map((t) => t.name)).toContain('add');
 
-    expect(getCreatedCount()).toBe(2);
+      expect(getCreatedCount()).toBe(2);
 
-    await client1.close();
-    await client2.close();
+      await client1.close();
+      await client2.close();
 
-    await gateway.stop();
-  }, 20000);
+      await gateway.stop();
+    },
+    20000,
+  );
 
-  test('should close per-client MCP transport when Nostr session is evicted', async () => {
-    const { gateway, getCloseByPubkey } = await createGateway({
-      maxSessions: 1,
-    });
-    const client1Pubkey = getPublicKey(hexToBytes(client1PrivateKey));
+  test.serial(
+    'should close per-client MCP transport when Nostr session is evicted',
+    async () => {
+      const { gateway, getCloseByPubkey } = await createGateway({
+        maxSessions: 1,
+      });
+      const client1Pubkey = getPublicKey(hexToBytes(client1PrivateKey));
 
-    const client1 = new Client({ name: 'evict-client-1', version: '1.0.0' });
-    await client1.connect(createClientTransport(client1PrivateKey));
-    await client1.listTools();
+      const client1 = new Client({ name: 'evict-client-1', version: '1.0.0' });
+      await client1.connect(createClientTransport(client1PrivateKey));
+      await client1.listTools();
 
-    const client2 = new Client({ name: 'evict-client-2', version: '1.0.0' });
-    await client2.connect(createClientTransport(client2PrivateKey));
-    await client2.listTools();
+      const client2 = new Client({ name: 'evict-client-2', version: '1.0.0' });
+      await client2.connect(createClientTransport(client2PrivateKey));
+      await client2.listTools();
 
-    // SessionStore eviction happens synchronously during insertion, but gateway cleanup is async.
-    await sleep(250);
+      // SessionStore eviction happens synchronously during insertion, but gateway cleanup is async.
+      await sleep(250);
 
-    expect(getCloseByPubkey().get(client1Pubkey)).toBe(true);
+      expect(getCloseByPubkey().get(client1Pubkey)).toBe(true);
 
-    await client1.close();
-    await client2.close();
+      await client1.close();
+      await client2.close();
 
-    await gateway.stop();
-  }, 20000);
+      await gateway.stop();
+    },
+    20000,
+  );
 
-  test('should recreate transport on client re-initialization', async () => {
-    const { gateway, getCreatedCount } = await createGateway({
-      maxSessions: 10,
-    });
+  test.serial(
+    'should recreate transport on client re-initialization',
+    async () => {
+      const { gateway, getCreatedCount } = await createGateway({
+        maxSessions: 10,
+      });
 
-    const client1 = new Client({ name: 'reconnect-client', version: '1.0.0' });
+      const client1 = new Client({
+        name: 'reconnect-client',
+        version: '1.0.0',
+      });
 
-    // First connection and initialization.
-    await client1.connect(createClientTransport(client1PrivateKey));
-    const tools1 = await client1.listTools();
-    expect(tools1.tools.map((t) => t.name)).toContain('add');
+      // First connection and initialization.
+      await client1.connect(createClientTransport(client1PrivateKey));
+      const tools1 = await client1.listTools();
+      expect(tools1.tools.map((t) => t.name)).toContain('add');
 
-    // Get the initial transport creation count.
-    const initialCreatedCount = getCreatedCount();
+      // Get the initial transport creation count.
+      const initialCreatedCount = getCreatedCount();
 
-    // Close the connection.
-    await client1.close();
-    await sleep(100);
+      // Close the connection.
+      await client1.close();
+      await sleep(100);
 
-    // Reconnect the same client - should trigger a new transport creation
-    // for the initialization request.
-    const client1Reconnect = new Client({
-      name: 'reconnect-client',
-      version: '1.0.0',
-    });
-    await client1Reconnect.connect(createClientTransport(client1PrivateKey));
-    const tools2 = await client1Reconnect.listTools();
-    expect(tools2.tools.map((t) => t.name)).toContain('add');
+      // Reconnect the same client - should trigger a new transport creation
+      // for the initialization request.
+      const client1Reconnect = new Client({
+        name: 'reconnect-client',
+        version: '1.0.0',
+      });
+      await client1Reconnect.connect(createClientTransport(client1PrivateKey));
+      const tools2 = await client1Reconnect.listTools();
+      expect(tools2.tools.map((t) => t.name)).toContain('add');
 
-    // Verify that a new transport was created for the re-initialization.
-    expect(getCreatedCount()).toBe(initialCreatedCount + 1);
+      // Verify that a new transport was created for the re-initialization.
+      expect(getCreatedCount()).toBe(initialCreatedCount + 1);
 
-    await client1Reconnect.close();
-    await gateway.stop();
-  }, 20000);
+      await client1Reconnect.close();
+      await gateway.stop();
+    },
+    20000,
+  );
 });

@@ -4,6 +4,7 @@ import {
   EncryptionMode,
   NostrSigner,
   RelayHandler,
+  GiftWrapMode,
 } from '../core/interfaces.js';
 import {
   CTXVM_MESSAGES_KIND,
@@ -28,7 +29,6 @@ import {
 } from '../core/utils/logger.js';
 import { TaskQueue } from '../core/utils/task-queue.js';
 import { ApplesauceRelayPool } from '../relay/applesauce-relay-pool.js';
-import { GiftWrapMode } from '../core/interfaces.js';
 
 /**
  * Base options for configuring Nostr-based transports.

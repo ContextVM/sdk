@@ -22,7 +22,7 @@ function makeCountingRelayHandler(counter: {
   } as unknown as RelayHandler;
 }
 
-describe('NostrServerTransport duplicate response prevention', () => {
+describe.serial('NostrServerTransport duplicate response prevention', () => {
   it('publishes at most once when send() is called concurrently with the same response id', async () => {
     const counter = { publishCalls: 0 };
 

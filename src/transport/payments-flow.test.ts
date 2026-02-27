@@ -6,7 +6,7 @@ import {
   expect,
   test,
 } from 'bun:test';
-import { sleep, type Subprocess } from 'bun';
+import { sleep } from 'bun';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type {
@@ -31,6 +31,10 @@ import {
   withServerPayments,
 } from '../payments/index.js';
 import type { PaymentProcessor } from '../payments/types.js';
+import {
+  spawnMockRelay,
+  clearRelayCache,
+} from '../__mocks__/test-relay-helpers.js';
 
 function capturePaymentRequiredPmi(
   message: JSONRPCMessage,
@@ -53,8 +57,8 @@ function capturePaymentRequiredPmi(
   return undefined;
 }
 
-const baseRelayPort = 7810;
-const relayUrl = `ws://localhost:${baseRelayPort}`;
+let relayUrl: string;
+let httpUrl: string;
 
 async function captureNextCtxvmEvent(params: {
   relayUrl: string;
@@ -83,32 +87,22 @@ async function captureNextCtxvmEvent(params: {
   });
 }
 
-describe('payments fake flow (transport-level)', () => {
-  let relayProcess: Subprocess;
+describe.serial('payments fake flow (transport-level)', () => {
+  let stopRelay: (() => void) | undefined;
 
   beforeAll(async () => {
-    relayProcess = Bun.spawn(['bun', 'src/__mocks__/mock-relay.ts'], {
-      env: {
-        ...process.env,
-        PORT: `${baseRelayPort}`,
-      },
-      stdout: 'inherit',
-      stderr: 'inherit',
-    });
-    await sleep(100);
+    const relay = await spawnMockRelay();
+    stopRelay = relay.stop;
+    relayUrl = relay.relayUrl;
+    httpUrl = relay.httpUrl;
   });
 
   afterEach(async () => {
-    try {
-      const clearUrl = relayUrl.replace('ws://', 'http://') + '/clear-cache';
-      await fetch(clearUrl, { method: 'POST' });
-    } catch {
-      // best-effort
-    }
+    await clearRelayCache(httpUrl);
   });
 
   afterAll(async () => {
-    relayProcess?.kill();
+    stopRelay?.();
     await sleep(100);
   });
 

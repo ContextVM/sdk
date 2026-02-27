@@ -6,7 +6,8 @@ import {
   test,
   expect,
 } from 'bun:test';
-import { sleep, type Subprocess } from 'bun';
+import { sleep } from 'bun';
+import type { MockRelayInstance } from '../__mocks__/mock-relay-server.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { NostrServerTransport } from './nostr-server-transport.js';
 import { NostrClientTransport } from './nostr-client-transport.js';
@@ -35,41 +36,54 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { withServerPayments } from '../payments/server-transport-payments.js';
 import { FakePaymentProcessor } from '../payments/fake-payment-processor.js';
+import {
+  spawnMockRelay,
+  clearRelayCache,
+} from '../__mocks__/test-relay-helpers.js';
 
-const baseRelayPort = 7790; // Use a different port to avoid conflicts
-const relayUrl = `ws://localhost:${baseRelayPort}`;
-
-describe('NostrServerTransport', () => {
-  let relayProcess: Subprocess;
+describe.serial('NostrServerTransport', () => {
+  let relay: MockRelayInstance;
+  let relayUrl: string;
+  let httpUrl: string;
 
   beforeAll(async () => {
-    relayProcess = Bun.spawn(['bun', 'src/__mocks__/mock-relay.ts'], {
-      env: {
-        ...process.env,
-        PORT: `${baseRelayPort}`,
-      },
-      stdout: 'inherit',
-      stderr: 'inherit',
-    });
-    await sleep(100);
+    // Start mock relay with dynamic port
+    const spawned = await spawnMockRelay();
+    relay = spawned.relay;
+    relayUrl = spawned.relayUrl;
+    httpUrl = spawned.httpUrl;
   });
 
   afterEach(async () => {
-    if (relayUrl) {
-      try {
-        const clearUrl = relayUrl.replace('ws://', 'http://') + '/clear-cache';
-        await fetch(clearUrl, { method: 'POST' });
-        console.log('[TEST] Event cache cleared');
-      } catch (error) {
-        console.warn('[TEST] Failed to clear event cache:', error);
-      }
-    }
+    await clearRelayCache(httpUrl);
   });
 
   afterAll(async () => {
-    relayProcess?.kill();
+    relay.stop();
     await sleep(100);
   });
+
+  const waitForNostrEvent = async (params: {
+    relayPool: ApplesauceRelayPool;
+    filters: Array<Record<string, unknown>>;
+    where: (event: NostrEvent) => boolean;
+    timeoutMs?: number;
+  }): Promise<NostrEvent> => {
+    const { relayPool, filters, where, timeoutMs = 5000 } = params;
+
+    return await new Promise<NostrEvent>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error('Timed out waiting for matching Nostr event'));
+      }, timeoutMs);
+
+      void relayPool.subscribe(filters as never, (event) => {
+        if (where(event)) {
+          clearTimeout(timeout);
+          resolve(event);
+        }
+      });
+    });
+  };
 
   // Helper function to create a client and its transport
   const createClientAndTransport = (
@@ -112,20 +126,18 @@ describe('NostrServerTransport', () => {
 
     await server.connect(transport);
 
-    let announcementEvent: NostrEvent | null = null;
     const relayPool = new ApplesauceRelayPool([relayUrl]);
     await relayPool.connect();
 
-    await relayPool.subscribe(
-      [{ kinds: [SERVER_ANNOUNCEMENT_KIND], authors: [serverPublicKey] }],
-      (event) => {
-        announcementEvent = event;
-      },
-    );
+    const announcementEvent = await waitForNostrEvent({
+      relayPool,
+      filters: [
+        { kinds: [SERVER_ANNOUNCEMENT_KIND], authors: [serverPublicKey] },
+      ],
+      where: () => true,
+      timeoutMs: 5000,
+    });
 
-    await sleep(100);
-
-    expect(announcementEvent).toBeDefined();
     expect(announcementEvent!.kind).toBe(SERVER_ANNOUNCEMENT_KIND);
     expect(announcementEvent!.pubkey).toBe(serverPublicKey);
     expect(JSON.parse(announcementEvent!.content).serverInfo.name).toBe(
@@ -275,7 +287,7 @@ describe('NostrServerTransport', () => {
       serverPublicKey,
     );
 
-    expect(
+    await expect(
       allowedClient.connect(allowedClientNostrTransport),
     ).resolves.toBeUndefined();
     await allowedClient.close();
@@ -330,13 +342,20 @@ describe('NostrServerTransport', () => {
   }, 10000);
 
   test('should allow call excluded capabilities for disallowed public keys', async () => {
-    const serverPrivateKey = TEST_PRIVATE_KEY;
+    // Use a unique server key per test to avoid cross-pollution with other
+    // concurrently running files that may also use TEST_PRIVATE_KEY.
+    const serverPrivateKey = bytesToHex(generateSecretKey());
     const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
 
     const allowedClientPublicKey = getPublicKey(
       hexToBytes(bytesToHex(generateSecretKey())), // Generate a dummy key for the allowed list
     );
     const disallowedClientPrivateKey = bytesToHex(generateSecretKey());
+
+    // Use unique tool names to avoid collision with concurrent tests
+    const uniqueSuffix = Math.random().toString(36).substring(2, 8);
+    const toolAdd = `add_${uniqueSuffix}`;
+    const toolDummy = `dummy_${uniqueSuffix}`;
 
     const server = new McpServer({
       name: 'Disallowed Server',
@@ -345,7 +364,7 @@ describe('NostrServerTransport', () => {
 
     // Add an addition tool
     server.registerTool(
-      'add',
+      toolAdd,
       {
         title: 'Addition Tool',
         description: 'Add two numbers',
@@ -357,7 +376,7 @@ describe('NostrServerTransport', () => {
     );
 
     server.registerTool(
-      'dummy',
+      toolDummy,
       {
         title: 'Dummy Tool',
         description: 'Dummy description',
@@ -374,7 +393,7 @@ describe('NostrServerTransport', () => {
       allowedPublicKeys: [allowedClientPublicKey], // Only allow the dummy key
       excludedCapabilities: [
         { method: 'tools/list' }, // Exclude specific capability
-        { method: 'tools/call', name: 'dummy' }, // Exclude specific capability
+        { method: 'tools/call', name: toolDummy }, // Exclude specific capability
       ],
     });
 
@@ -391,7 +410,16 @@ describe('NostrServerTransport', () => {
 
     await disallowedClient.connect(disallowedClientNostrTransport);
 
+    // Wait for the server to be ready by checking we get the right tools
     const listToolsResult = await disallowedClient.listTools();
+
+    // Validate we got tools from OUR server (not a concurrent test's server)
+    const hasOurAddTool = listToolsResult.tools.some((t) => t.name === toolAdd);
+    const hasOurDummyTool = listToolsResult.tools.some(
+      (t) => t.name === toolDummy,
+    );
+    expect(hasOurAddTool).toBe(true);
+    expect(hasOurDummyTool).toBe(true);
 
     const timeoutPromise = new Promise<string>((resolve) => {
       sleep(1000).then(() => {
@@ -400,12 +428,12 @@ describe('NostrServerTransport', () => {
     });
 
     const callRestrictedToolResult = disallowedClient.callTool({
-      name: 'add',
+      name: toolAdd,
       arguments: { a: 1, b: 2 },
     });
 
     const callExcludedToolResult = disallowedClient.callTool({
-      name: 'dummy',
+      name: toolDummy,
       arguments: {},
     });
 
@@ -415,7 +443,9 @@ describe('NostrServerTransport', () => {
     ]);
     expect(result).toBe('timeout');
     expect(listToolsResult).toBeDefined();
-    expect(callExcludedToolResult).toBeDefined();
+    await expect(callExcludedToolResult).resolves.toBeDefined();
+    await disallowedClient.close();
+    await disallowedClientNostrTransport.close();
     await server.close();
   }, 10000);
 
@@ -442,27 +472,24 @@ describe('NostrServerTransport', () => {
 
     await server.connect(transport);
 
-    // Subscribe to announcement events
-    let announcementEvent: NostrEvent | null = null;
     const relayPool = new ApplesauceRelayPool([relayUrl]);
     await relayPool.connect();
 
-    await relayPool.subscribe(
-      [{ kinds: [SERVER_ANNOUNCEMENT_KIND], authors: [serverPublicKey] }],
-      (event) => {
-        announcementEvent = event;
-      },
-    );
+    const announcementEvent = await waitForNostrEvent({
+      relayPool,
+      filters: [
+        { kinds: [SERVER_ANNOUNCEMENT_KIND], authors: [serverPublicKey] },
+      ],
+      where: () => true,
+      timeoutMs: 5000,
+    });
 
-    await sleep(100);
-
-    expect(announcementEvent).toBeDefined();
-    expect(announcementEvent!.tags).toBeDefined();
-    expect(Array.isArray(announcementEvent!.tags)).toBe(true);
+    expect(announcementEvent.tags).toBeDefined();
+    expect(Array.isArray(announcementEvent.tags)).toBe(true);
 
     // Convert tags to an object for easier testing
     const tagsObject: { [key: string]: string } = {};
-    announcementEvent!.tags.forEach((tag: string[]) => {
+    announcementEvent.tags.forEach((tag: string[]) => {
       if (
         tag.length >= 2 &&
         typeof tag[0] === 'string' &&
@@ -479,7 +506,7 @@ describe('NostrServerTransport', () => {
     expect(tagsObject.picture).toBe('http://localhost/logo.png');
 
     // Verify support_encryption tag is present
-    const supportEncryptionTag = announcementEvent!.tags.find(
+    const supportEncryptionTag = announcementEvent.tags.find(
       (tag: string[]) => tag.length === 1 && tag[0] === 'support_encryption',
     );
     expect(supportEncryptionTag).toBeDefined();
@@ -509,32 +536,29 @@ describe('NostrServerTransport', () => {
 
     await server.connect(transport);
 
-    // Subscribe to announcement events
-    let announcementEvent: NostrEvent | null = null;
     const relayPool = new ApplesauceRelayPool([relayUrl]);
     await relayPool.connect();
 
-    await relayPool.subscribe(
-      [{ kinds: [SERVER_ANNOUNCEMENT_KIND], authors: [serverPublicKey] }],
-      (event) => {
-        announcementEvent = event;
-      },
-    );
+    const announcementEvent = await waitForNostrEvent({
+      relayPool,
+      filters: [
+        { kinds: [SERVER_ANNOUNCEMENT_KIND], authors: [serverPublicKey] },
+      ],
+      where: () => true,
+      timeoutMs: 5000,
+    });
 
-    await sleep(100);
-
-    expect(announcementEvent).toBeDefined();
-    expect(announcementEvent!.tags).toBeDefined();
+    expect(announcementEvent.tags).toBeDefined();
 
     // Check that only the name tag is present
-    const nameTags = announcementEvent!.tags.filter(
+    const nameTags = announcementEvent.tags.filter(
       (tag: string[]) => tag.length >= 2 && tag[0] === 'name',
     );
     expect(nameTags.length).toBe(1);
     expect(nameTags[0][1]).toBe('Minimal Server');
 
     // Check that no support_encryption tag is present
-    const supportEncryptionTag = announcementEvent!.tags.find(
+    const supportEncryptionTag = announcementEvent.tags.find(
       (tag: string[]) => tag.length === 1 && tag[0] === 'support_encryption',
     );
     expect(supportEncryptionTag).toBeUndefined();
@@ -905,18 +929,40 @@ describe('NostrServerTransport', () => {
       encryptionMode: EncryptionMode.DISABLED,
     });
     await client.connect(clientTransport);
-    await sleep(200);
 
     // Observe outgoing events from server.
-    const observedEvents: NostrEvent[] = [];
+    // NOTE: applesauce subscription setup is async; ensure it's active before sending.
     const relayPool = new ApplesauceRelayPool([relayUrl]);
     await relayPool.connect();
-    await relayPool.subscribe(
-      [{ kinds: [CTXVM_MESSAGES_KIND], authors: [serverPublicKey] }],
-      (event) => {
-        observedEvents.push(event);
+    await new Promise<void>((resolve) => {
+      relayPool.subscribe(
+        [
+          {
+            kinds: [CTXVM_MESSAGES_KIND],
+            authors: [serverPublicKey],
+            limit: 0,
+          },
+        ],
+        () => {},
+        () => resolve(),
+      );
+      // Safety: EOSE may not fire in some edge conditions; don't hang the test.
+      setTimeout(resolve, 250);
+    });
+
+    const sentPromise = waitForNostrEvent({
+      relayPool,
+      filters: [{ kinds: [CTXVM_MESSAGES_KIND], authors: [serverPublicKey] }],
+      where: (ev) => {
+        try {
+          const msg = JSON.parse(ev.content) as { method?: string };
+          return msg.method === 'notifications/payment_required';
+        } catch {
+          return false;
+        }
       },
-    );
+      timeoutMs: 5000,
+    });
 
     const correlatedEventId = 'f'.repeat(64);
     await serverTransport.sendNotification(
@@ -928,23 +974,14 @@ describe('NostrServerTransport', () => {
       },
       correlatedEventId,
     );
-    await sleep(150);
 
-    const sent = observedEvents.find((ev) => {
-      try {
-        const msg = JSON.parse(ev.content) as { method?: string };
-        return msg.method === 'notifications/payment_required';
-      } catch {
-        return false;
-      }
-    });
+    const sent = await sentPromise;
 
-    expect(sent).toBeDefined();
     expect(
-      sent!.tags.some((t) => t[0] === 'e' && t[1] === correlatedEventId),
+      sent.tags.some((t) => t[0] === 'e' && t[1] === correlatedEventId),
     ).toBe(true);
     expect(
-      sent!.tags.some((t) => t[0] === 'p' && t[1] === clientPublicKey),
+      sent.tags.some((t) => t[0] === 'p' && t[1] === clientPublicKey),
     ).toBe(true);
 
     await client.close();

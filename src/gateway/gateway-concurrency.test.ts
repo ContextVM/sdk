@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, test, expect } from 'bun:test';
-import { sleep, type Subprocess } from 'bun';
+import { sleep } from 'bun';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { TEST_PRIVATE_KEY } from '../__mocks__/fixtures.js';
@@ -9,13 +9,12 @@ import { PrivateKeySigner } from '../signer/private-key-signer.js';
 import { generateSecretKey, getPublicKey } from 'nostr-tools';
 import { bytesToHex, hexToBytes } from 'nostr-tools/utils';
 import { ApplesauceRelayPool } from '../relay/applesauce-relay-pool.js';
+import { spawnMockRelay } from '../__mocks__/test-relay-helpers.js';
 
 describe('NostrMCPGateway End-to-End Test', () => {
-  let relayProcess: Subprocess;
+  let stopRelay: (() => void) | undefined;
   let gateway: NostrMCPGateway;
-
-  const relayPort = 7780;
-  const relayUrl = `ws://localhost:${relayPort}`;
+  let relayUrl: string;
 
   // Generate a test private key for the gateway
   const gatewayPrivateKey = TEST_PRIVATE_KEY;
@@ -23,18 +22,9 @@ describe('NostrMCPGateway End-to-End Test', () => {
 
   beforeAll(async () => {
     // Start the mock relay
-    relayProcess = Bun.spawn(['bun', 'src/__mocks__/mock-relay.ts'], {
-      env: {
-        ...process.env,
-        PORT: `${relayPort}`,
-        DISABLE_MOCK_RESPONSES: 'true',
-      },
-      stdout: 'inherit',
-      stderr: 'inherit',
-    });
-
-    // Wait for relay to start
-    await sleep(100);
+    const relay = await spawnMockRelay();
+    relayUrl = relay.relayUrl;
+    stopRelay = relay.stop;
 
     // Create the gateway with the mock server transport
     const mcpServerTransport = new StdioClientTransport({
@@ -68,8 +58,7 @@ describe('NostrMCPGateway End-to-End Test', () => {
       await gateway.stop();
     }
 
-    // Kill processes
-    relayProcess?.kill();
+    stopRelay?.();
 
     // Wait for cleanup
     await sleep(100);

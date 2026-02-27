@@ -44,6 +44,10 @@ export interface ApplesauceRelayPoolOptions {
   pingFrequencyMs?: number;
   /** Ping timeout in ms (default: 20000) */
   pingTimeoutMs?: number;
+  /** Reconnect backoff base delay in ms (default: 3000) */
+  reconnectBaseDelayMs?: number;
+  /** Reconnect backoff max delay in ms (default: 30000) */
+  reconnectMaxDelayMs?: number;
 }
 
 /**
@@ -59,9 +63,9 @@ export class ApplesauceRelayPool implements RelayHandler {
   private static readonly PUBLISH_RETRY_INTERVAL_MS = 500;
   private static readonly PUBLISH_ERROR_LOG_INTERVAL_MS = 10_000;
 
-  // Reconnect backoff policy
-  private static readonly RECONNECT_BASE_DELAY_MS = 3_000;
-  private static readonly RECONNECT_MAX_DELAY_MS = 30_000;
+  // Reconnect backoff policy (instance-configurable)
+  private readonly reconnectBaseDelayMs: number;
+  private readonly reconnectMaxDelayMs: number;
 
   // Liveness ping policy (instance-configurable)
   private readonly pingFrequencyMs: number;
@@ -230,8 +234,8 @@ export class ApplesauceRelayPool implements RelayHandler {
       tries = 0,
     ): Observable<number> => {
       const delay = Math.min(
-        Math.pow(1.5, tries) * ApplesauceRelayPool.RECONNECT_BASE_DELAY_MS,
-        ApplesauceRelayPool.RECONNECT_MAX_DELAY_MS,
+        Math.pow(1.5, tries) * this.reconnectBaseDelayMs,
+        this.reconnectMaxDelayMs,
       );
       return timer(delay);
     };
@@ -266,6 +270,8 @@ export class ApplesauceRelayPool implements RelayHandler {
     this.relayUrls = relayUrls;
     this.pingFrequencyMs = opts?.pingFrequencyMs ?? 120_000;
     this.pingTimeoutMs = opts?.pingTimeoutMs ?? 20_000;
+    this.reconnectBaseDelayMs = opts?.reconnectBaseDelayMs ?? 3_000;
+    this.reconnectMaxDelayMs = opts?.reconnectMaxDelayMs ?? 30_000;
 
     this.relays = relayUrls.map((url) => this.createRelay(url));
     this.relayGroup = new RelayGroup(this.relays);

@@ -25,4 +25,4 @@ jobs:
       - name: Run tests
         env:
           NODE_ENV: test
-        run: bun test
+        run: bun test --concurrent --timeout=60000

@@ -6,7 +6,7 @@ import {
   test,
   expect,
 } from 'bun:test';
-import { sleep, type Subprocess } from 'bun';
+import type { MockRelayInstance } from '../__mocks__/mock-relay-server.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { NostrServerTransport } from './nostr-server-transport.js';
 import { NostrClientTransport } from './nostr-client-transport.js';
@@ -22,39 +22,29 @@ import {
   GIFT_WRAP_KIND,
 } from '../core/constants.js';
 import { ApplesauceRelayPool } from '../relay/applesauce-relay-pool.js';
+import {
+  spawnMockRelay,
+  clearRelayCache,
+} from '../__mocks__/test-relay-helpers.js';
 
-const baseRelayPort = 7791;
-const relayUrl = `ws://localhost:${baseRelayPort}`;
-
-describe('NostrTransport Encryption', () => {
-  let relayProcess: Subprocess;
+describe.serial('NostrTransport Encryption', () => {
+  let relay: MockRelayInstance;
+  let relayUrl: string;
+  let httpUrl: string;
 
   beforeAll(async () => {
-    relayProcess = Bun.spawn(['bun', 'src/__mocks__/mock-relay.ts'], {
-      env: {
-        ...process.env,
-        PORT: `${baseRelayPort}`,
-      },
-      stdout: 'inherit',
-      stderr: 'inherit',
-    });
-    await sleep(100);
+    const spawned = await spawnMockRelay();
+    relay = spawned.relay;
+    relayUrl = spawned.relayUrl;
+    httpUrl = spawned.httpUrl;
   });
 
   afterEach(async () => {
-    if (relayUrl) {
-      try {
-        const clearUrl = relayUrl.replace('ws://', 'http://') + '/clear-cache';
-        await fetch(clearUrl, { method: 'POST' });
-      } catch (error) {
-        console.log('Error clearing relay cache:', error);
-      }
-    }
+    await clearRelayCache(httpUrl);
   });
 
   afterAll(async () => {
-    relayProcess?.kill();
-    await sleep(100);
+    relay.stop();
   });
 
   // Helper to create a client and its transport
@@ -64,12 +54,12 @@ describe('NostrTransport Encryption', () => {
     encryptionMode: EncryptionMode,
     giftWrapMode?: GiftWrapMode,
     isStateless?: boolean,
-    relayHandler?: ApplesauceRelayPool,
+    clientRelayHandler?: ApplesauceRelayPool,
   ) => {
     const client = new Client({ name: 'TestClient', version: '1.0.0' });
     const clientNostrTransport = new NostrClientTransport({
       signer: new PrivateKeySigner(privateKey),
-      relayHandler: relayHandler ?? new ApplesauceRelayPool([relayUrl]),
+      relayHandler: clientRelayHandler ?? new ApplesauceRelayPool([relayUrl]),
       serverPubkey: serverPublicKey,
       encryptionMode,
       giftWrapMode,
@@ -83,7 +73,7 @@ describe('NostrTransport Encryption', () => {
     privateKey: string,
     encryptionMode: EncryptionMode,
     giftWrapMode?: GiftWrapMode,
-    relayHandler?: ApplesauceRelayPool,
+    serverRelayHandler?: ApplesauceRelayPool,
   ) => {
     const server = new McpServer({ name: 'TestServer', version: '1.0.0' });
     // Ensure the default MCP server has at least one capability so listTools succeeds.
@@ -97,7 +87,7 @@ describe('NostrTransport Encryption', () => {
     );
     const serverTransport = new NostrServerTransport({
       signer: new PrivateKeySigner(privateKey),
-      relayHandler: relayHandler ?? new ApplesauceRelayPool([relayUrl]),
+      relayHandler: serverRelayHandler ?? new ApplesauceRelayPool([relayUrl]),
       encryptionMode,
       giftWrapMode,
       serverInfo: {},
@@ -122,7 +112,7 @@ describe('NostrTransport Encryption', () => {
       EncryptionMode.OPTIONAL,
     );
 
-    expect(client.connect(clientNostrTransport)).resolves.toBeUndefined();
+    await expect(client.connect(clientNostrTransport)).resolves.toBeUndefined();
 
     await client.close();
     await server.close();
@@ -145,7 +135,7 @@ describe('NostrTransport Encryption', () => {
       EncryptionMode.REQUIRED,
     );
 
-    expect(client.connect(clientNostrTransport)).resolves.toBeUndefined();
+    await expect(client.connect(clientNostrTransport)).resolves.toBeUndefined();
 
     await client.close();
     await server.close();
@@ -168,7 +158,7 @@ describe('NostrTransport Encryption', () => {
       EncryptionMode.OPTIONAL,
     );
 
-    expect(client.connect(clientNostrTransport)).resolves.toBeUndefined();
+    await expect(client.connect(clientNostrTransport)).resolves.toBeUndefined();
 
     await client.close();
     await server.close();
@@ -191,7 +181,7 @@ describe('NostrTransport Encryption', () => {
       EncryptionMode.REQUIRED,
     );
 
-    expect(client.connect(clientNostrTransport)).resolves.toBeUndefined();
+    await expect(client.connect(clientNostrTransport)).resolves.toBeUndefined();
 
     await client.close();
     await server.close();
@@ -219,7 +209,7 @@ describe('NostrTransport Encryption', () => {
       setTimeout(() => resolve('timeout'), 2000),
     );
 
-    expect(Promise.race([connectPromise, timeoutPromise])).resolves.toBe(
+    await expect(Promise.race([connectPromise, timeoutPromise])).resolves.toBe(
       'timeout',
     );
 
@@ -244,7 +234,7 @@ describe('NostrTransport Encryption', () => {
       EncryptionMode.DISABLED,
     );
 
-    expect(client.connect(clientNostrTransport)).resolves.toBeUndefined();
+    await expect(client.connect(clientNostrTransport)).resolves.toBeUndefined();
 
     await client.close();
     await server.close();
@@ -274,7 +264,7 @@ describe('NostrTransport Encryption', () => {
       setTimeout(() => resolve('timeout'), 2000),
     );
 
-    expect(Promise.race([connectPromise, timeoutPromise])).resolves.toBe(
+    await expect(Promise.race([connectPromise, timeoutPromise])).resolves.toBe(
       'timeout',
     );
 
@@ -292,7 +282,6 @@ describe('NostrTransport Encryption', () => {
       EncryptionMode.OPTIONAL,
     );
     await server.connect(serverTransport);
-    await Bun.sleep(100);
 
     const { client, clientNostrTransport } = createClientAndTransport(
       clientPrivateKey,
@@ -321,7 +310,6 @@ describe('NostrTransport Encryption', () => {
       EncryptionMode.OPTIONAL,
     );
     await server.connect(serverTransport);
-    await Bun.sleep(100);
 
     const { client, clientNostrTransport } = createClientAndTransport(
       clientPrivateKey,
@@ -352,7 +340,6 @@ describe('NostrTransport Encryption', () => {
       GiftWrapMode.EPHEMERAL,
     );
     await server.connect(serverTransport);
-    await Bun.sleep(100);
 
     const { client, clientNostrTransport } = createClientAndTransport(
       clientPrivateKey,
@@ -394,7 +381,6 @@ describe('NostrTransport Encryption', () => {
       serverRelayHandler,
     );
     await server.connect(serverTransport);
-    await Bun.sleep(100);
 
     const { client, clientNostrTransport } = createClientAndTransport(
       clientPrivateKey,

@@ -6,7 +6,7 @@ import {
   test,
   expect,
 } from 'bun:test';
-import { sleep, type Subprocess } from 'bun';
+import { sleep } from 'bun';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import {
   StdioClientTransport,
@@ -19,13 +19,16 @@ import { generateSecretKey, getPublicKey } from 'nostr-tools';
 import { bytesToHex, hexToBytes } from 'nostr-tools/utils';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { ApplesauceRelayPool } from '../relay/applesauce-relay-pool.js';
-
-const baseRelayPort = 7780;
-const relayUrl = `ws://localhost:${baseRelayPort}`;
+import {
+  spawnMockRelayWithEnv,
+  clearRelayCache,
+} from '../__mocks__/test-relay-helpers.js';
 
 describe('Proxy-Gateway E2E Test (Without Mock Responses)', () => {
-  let relayProcess: Subprocess;
+  let stopRelay: (() => void) | undefined;
   let gateway: NostrMCPGateway;
+  let relayUrl: string;
+  let httpUrl: string;
 
   // Generate keys for gateway and proxy
   const gatewayPrivateKey = TEST_PRIVATE_KEY;
@@ -34,21 +37,13 @@ describe('Proxy-Gateway E2E Test (Without Mock Responses)', () => {
   const proxyPrivateKey = bytesToHex(generateSecretKey());
 
   beforeAll(async () => {
-    // Find an available port
-
     // Start the mock relay without predefined responses
-    relayProcess = Bun.spawn(['bun', 'src/__mocks__/mock-relay.ts'], {
-      env: {
-        ...process.env,
-        PORT: `${baseRelayPort}`,
-        DISABLE_MOCK_RESPONSES: 'true', // This is key - no predefined responses
-      },
-      stdout: 'inherit',
-      stderr: 'inherit',
+    const relay = await spawnMockRelayWithEnv({
+      DISABLE_MOCK_RESPONSES: 'true',
     });
-
-    // Wait for relay to start
-    await sleep(100);
+    relayUrl = relay.relayUrl;
+    httpUrl = relay.httpUrl;
+    stopRelay = relay.stop;
 
     // Create the gateway with the mock MCP server transport
     const mcpClientTransport = new StdioClientTransportForGateway({
@@ -74,19 +69,7 @@ describe('Proxy-Gateway E2E Test (Without Mock Responses)', () => {
   });
 
   afterEach(async () => {
-    // Give some time for any client connections to close properly
-    await sleep(100);
-
-    // // Clear the mock relay's event cache to prevent cross-test contamination
-    if (relayUrl) {
-      try {
-        const clearUrl = relayUrl.replace('ws://', 'http://') + '/clear-cache';
-        await fetch(clearUrl, { method: 'POST' });
-        console.log('[TEST] Event cache cleared');
-      } catch (error) {
-        console.warn('[TEST] Failed to clear event cache:', error);
-      }
-    }
+    await clearRelayCache(httpUrl);
   });
 
   afterAll(async () => {
@@ -96,7 +79,7 @@ describe('Proxy-Gateway E2E Test (Without Mock Responses)', () => {
     }
 
     // Kill processes
-    relayProcess?.kill();
+    stopRelay?.();
 
     // Wait for cleanup
     await sleep(100);
