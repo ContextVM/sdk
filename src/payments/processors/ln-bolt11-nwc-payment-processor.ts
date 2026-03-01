@@ -163,12 +163,9 @@ export class LnBolt11NwcPaymentProcessor implements PaymentProcessor {
   }
 
   private isSettledInvoice(result: NwcInvoiceResult | null): boolean {
-    // Wallets vary: some set `state`, some only set `settled_at`, some include `preimage`.
-    // Treat any of these signals as settlement.
     if (!result) return false;
     if (result.state === 'settled') return true;
-    if (typeof result.settled_at === 'number') return true;
-    if (typeof result.preimage === 'string' && result.preimage.length > 0)
+    if (typeof result.settled_at === 'number' && result.settled_at > 0)
       return true;
     return false;
   }

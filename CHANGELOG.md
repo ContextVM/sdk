@@ -1,5 +1,11 @@
 # @contextvm/sdk
 
+## 0.6.2
+
+### Patch Changes
+
+- fix(payments): tighten settled invoice detection logic
+
 ## 0.6.1
 
 ### Patch Changes
