@@ -106,188 +106,250 @@ describe.serial('NostrServerTransport', () => {
     return { client, clientNostrTransport };
   };
 
-  test.serial('should publish a server announcement event when isPublicServer is true', async () => {
-    const serverPrivateKey = bytesToHex(generateSecretKey());
-    const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
+  test.serial(
+    'should publish a server announcement event when isPublicServer is true',
+    async () => {
+      const serverPrivateKey = bytesToHex(generateSecretKey());
+      const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
 
-    // Create a mock MCP server
-    const server = new McpServer({
-      name: 'Test Server',
-      version: '1.0.0',
-    });
-
-    const transport = new NostrServerTransport({
-      signer: new PrivateKeySigner(serverPrivateKey),
-      relayHandler: new ApplesauceRelayPool([relayUrl]),
-      serverInfo: {
+      // Create a mock MCP server
+      const server = new McpServer({
         name: 'Test Server',
-        website: 'http://localhost',
-      },
-      isPublicServer: true,
-    });
+        version: '1.0.0',
+      });
 
-    await server.connect(transport);
-
-    const relayPool = new ApplesauceRelayPool([relayUrl]);
-    await relayPool.connect();
-
-    const announcementEvent = await waitForNostrEvent({
-      relayPool,
-      filters: [
-        { kinds: [SERVER_ANNOUNCEMENT_KIND], authors: [serverPublicKey] },
-      ],
-      where: () => true,
-      timeoutMs: 5000,
-    });
-
-    expect(announcementEvent!.kind).toBe(SERVER_ANNOUNCEMENT_KIND);
-    expect(announcementEvent!.pubkey).toBe(serverPublicKey);
-    expect(JSON.parse(announcementEvent!.content).serverInfo.name).toBe(
-      'Test Server',
-    );
-    expect(
-      JSON.parse(announcementEvent!.content).protocolVersion,
-    ).toBeDefined();
-
-    await server.close();
-    await relayPool.disconnect();
-  }, 5000);
-
-  test.serial('should include server PMI and cap tags in announcement and tools list events when payments are configured', async () => {
-    const serverPrivateKey = bytesToHex(generateSecretKey());
-    const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
-
-    const server = new McpServer({ name: 'Paid Server', version: '1.0.0' });
-    server.registerTool(
-      'add',
-      {
-        title: 'Addition Tool',
-        description: 'Add two numbers',
-        inputSchema: { a: z.number(), b: z.number() },
-      },
-      async ({ a, b }) => ({
-        content: [{ type: 'text', text: String(a + b) }],
-      }),
-    );
-
-    const transport = new NostrServerTransport({
-      signer: new PrivateKeySigner(serverPrivateKey),
-      relayHandler: new ApplesauceRelayPool([relayUrl]),
-      isPublicServer: true,
-      serverInfo: { name: 'Paid Server' },
-      encryptionMode: EncryptionMode.DISABLED,
-    });
-
-    withServerPayments(transport, {
-      processors: [
-        new FakePaymentProcessor({ pmi: 'pmi:B', verifyDelayMs: 1 }),
-        new FakePaymentProcessor({ pmi: 'pmi:C', verifyDelayMs: 1 }),
-      ],
-      pricedCapabilities: [
-        {
-          method: 'tools/call',
-          name: 'add',
-          amount: 123,
-          currencyUnit: 'sats',
+      const transport = new NostrServerTransport({
+        signer: new PrivateKeySigner(serverPrivateKey),
+        relayHandler: new ApplesauceRelayPool([relayUrl]),
+        serverInfo: {
+          name: 'Test Server',
+          website: 'http://localhost',
         },
-      ],
-    });
+        isPublicServer: true,
+      });
 
-    await server.connect(transport);
+      await server.connect(transport);
 
-    const relayPool = new ApplesauceRelayPool([relayUrl]);
-    await relayPool.connect();
+      const relayPool = new ApplesauceRelayPool([relayUrl]);
+      await relayPool.connect();
 
-    const events: NostrEvent[] = [];
-    await relayPool.subscribe(
-      [
+      const announcementEvent = await waitForNostrEvent({
+        relayPool,
+        filters: [
+          { kinds: [SERVER_ANNOUNCEMENT_KIND], authors: [serverPublicKey] },
+        ],
+        where: () => true,
+        timeoutMs: 5000,
+      });
+
+      expect(announcementEvent!.kind).toBe(SERVER_ANNOUNCEMENT_KIND);
+      expect(announcementEvent!.pubkey).toBe(serverPublicKey);
+      expect(JSON.parse(announcementEvent!.content).serverInfo.name).toBe(
+        'Test Server',
+      );
+      expect(
+        JSON.parse(announcementEvent!.content).protocolVersion,
+      ).toBeDefined();
+
+      await server.close();
+      await relayPool.disconnect();
+    },
+    5000,
+  );
+
+  test.serial(
+    'should include server PMI and cap tags in announcement and tools list events when payments are configured',
+    async () => {
+      const serverPrivateKey = bytesToHex(generateSecretKey());
+      const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
+
+      const server = new McpServer({ name: 'Paid Server', version: '1.0.0' });
+      server.registerTool(
+        'add',
         {
-          kinds: [
-            SERVER_ANNOUNCEMENT_KIND,
-            TOOLS_LIST_KIND,
-            RESOURCES_LIST_KIND,
-            RESOURCETEMPLATES_LIST_KIND,
-            PROMPTS_LIST_KIND,
-          ],
-          authors: [serverPublicKey],
+          title: 'Addition Tool',
+          description: 'Add two numbers',
+          inputSchema: { a: z.number(), b: z.number() },
         },
-      ],
-      (event) => {
-        events.push(event);
-      },
-    );
+        async ({ a, b }) => ({
+          content: [{ type: 'text', text: String(a + b) }],
+        }),
+      );
 
-    await sleep(350);
+      const transport = new NostrServerTransport({
+        signer: new PrivateKeySigner(serverPrivateKey),
+        relayHandler: new ApplesauceRelayPool([relayUrl]),
+        isPublicServer: true,
+        serverInfo: { name: 'Paid Server' },
+        encryptionMode: EncryptionMode.DISABLED,
+      });
 
-    const announcement = events.find(
-      (ev) => ev.kind === SERVER_ANNOUNCEMENT_KIND,
-    );
-    expect(announcement).toBeDefined();
-    expect(announcement!.tags).toEqual(
-      expect.arrayContaining([
-        ['pmi', 'pmi:B'],
-        ['pmi', 'pmi:C'],
-        ['cap', 'tool:add', '123', 'sats'],
-      ]),
-    );
+      withServerPayments(transport, {
+        processors: [
+          new FakePaymentProcessor({ pmi: 'pmi:B', verifyDelayMs: 1 }),
+          new FakePaymentProcessor({ pmi: 'pmi:C', verifyDelayMs: 1 }),
+        ],
+        pricedCapabilities: [
+          {
+            method: 'tools/call',
+            name: 'add',
+            amount: 123,
+            currencyUnit: 'sats',
+          },
+        ],
+      });
 
-    const toolsList = events.find((ev) => ev.kind === TOOLS_LIST_KIND);
-    expect(toolsList).toBeDefined();
-    expect(toolsList!.tags).toEqual(
-      expect.arrayContaining([['cap', 'tool:add', '123', 'sats']]),
-    );
+      await server.connect(transport);
 
-    // Only assert list kinds the test server can actually respond to.
-    // Some MCP server instances may not implement resources/templates/list.
-    // If present, it should include pricing tags.
-    const resourceTemplatesList = events.find(
-      (ev) => ev.kind === RESOURCETEMPLATES_LIST_KIND,
-    );
-    if (resourceTemplatesList) {
-      expect(resourceTemplatesList.tags).toEqual(
+      const relayPool = new ApplesauceRelayPool([relayUrl]);
+      await relayPool.connect();
+
+      const events: NostrEvent[] = [];
+      await relayPool.subscribe(
+        [
+          {
+            kinds: [
+              SERVER_ANNOUNCEMENT_KIND,
+              TOOLS_LIST_KIND,
+              RESOURCES_LIST_KIND,
+              RESOURCETEMPLATES_LIST_KIND,
+              PROMPTS_LIST_KIND,
+            ],
+            authors: [serverPublicKey],
+          },
+        ],
+        (event) => {
+          events.push(event);
+        },
+      );
+
+      await sleep(350);
+
+      const announcement = events.find(
+        (ev) => ev.kind === SERVER_ANNOUNCEMENT_KIND,
+      );
+      expect(announcement).toBeDefined();
+      expect(announcement!.tags).toEqual(
+        expect.arrayContaining([
+          ['pmi', 'pmi:B'],
+          ['pmi', 'pmi:C'],
+          ['cap', 'tool:add', '123', 'sats'],
+        ]),
+      );
+
+      const toolsList = events.find((ev) => ev.kind === TOOLS_LIST_KIND);
+      expect(toolsList).toBeDefined();
+      expect(toolsList!.tags).toEqual(
         expect.arrayContaining([['cap', 'tool:add', '123', 'sats']]),
       );
-    }
 
-    await server.close();
-    await relayPool.disconnect();
-  }, 15000);
+      // Only assert list kinds the test server can actually respond to.
+      // Some MCP server instances may not implement resources/templates/list.
+      // If present, it should include pricing tags.
+      const resourceTemplatesList = events.find(
+        (ev) => ev.kind === RESOURCETEMPLATES_LIST_KIND,
+      );
+      if (resourceTemplatesList) {
+        expect(resourceTemplatesList.tags).toEqual(
+          expect.arrayContaining([['cap', 'tool:add', '123', 'sats']]),
+        );
+      }
 
-  test.serial('should publish relay list metadata by default for public servers', async () => {
-    const serverPrivateKey = bytesToHex(generateSecretKey());
-    const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
+      await server.close();
+      await relayPool.disconnect();
+    },
+    15000,
+  );
 
-    const server = new McpServer({
-      name: 'Test Server',
-      version: '1.0.0',
-    });
+  test.serial(
+    'should publish relay list metadata by default for public servers',
+    async () => {
+      const serverPrivateKey = bytesToHex(generateSecretKey());
+      const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
 
-    const transport = new NostrServerTransport({
-      signer: new PrivateKeySigner(serverPrivateKey),
-      relayHandler: new ApplesauceRelayPool([relayUrl]),
-      serverInfo: { name: 'Test Server' },
-      isPublicServer: true,
-    });
+      const server = new McpServer({
+        name: 'Test Server',
+        version: '1.0.0',
+      });
 
-    await server.connect(transport);
+      const transport = new NostrServerTransport({
+        signer: new PrivateKeySigner(serverPrivateKey),
+        relayHandler: new ApplesauceRelayPool([relayUrl]),
+        serverInfo: { name: 'Test Server' },
+        isPublicServer: true,
+      });
 
-    const relayPool = new ApplesauceRelayPool([relayUrl]);
-    await relayPool.connect();
+      await server.connect(transport);
 
-    const relayListEvent = await waitForNostrEvent({
-      relayPool,
-      filters: [
-        { kinds: [RELAY_LIST_METADATA_KIND], authors: [serverPublicKey] },
-      ],
-      where: () => true,
-    });
+      const relayPool = new ApplesauceRelayPool([relayUrl]);
+      await relayPool.connect();
 
-    expect(relayListEvent.kind).toBe(RELAY_LIST_METADATA_KIND);
-    expect(relayListEvent.tags).toEqual([['r', relayUrl]]);
+      const relayListEvent = await waitForNostrEvent({
+        relayPool,
+        filters: [
+          { kinds: [RELAY_LIST_METADATA_KIND], authors: [serverPublicKey] },
+        ],
+        where: () => true,
+      });
 
-    await server.close();
-    await relayPool.disconnect();
-  }, 10000);
+      expect(relayListEvent.kind).toBe(RELAY_LIST_METADATA_KIND);
+      expect(relayListEvent.tags).toEqual([['r', relayUrl]]);
+
+      await server.close();
+      await relayPool.disconnect();
+    },
+    10000,
+  );
+
+  test.serial(
+    'should publish relay list metadata by default for private servers',
+    async () => {
+      const serverPrivateKey = bytesToHex(generateSecretKey());
+      const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
+
+      const server = new McpServer({
+        name: 'Test Server',
+        version: '1.0.0',
+      });
+
+      const transport = new NostrServerTransport({
+        signer: new PrivateKeySigner(serverPrivateKey),
+        relayHandler: new ApplesauceRelayPool([relayUrl]),
+        serverInfo: { name: 'Test Server' },
+      });
+
+      await server.connect(transport);
+
+      const relayPool = new ApplesauceRelayPool([relayUrl]);
+      await relayPool.connect();
+
+      const relayListEvent = await waitForNostrEvent({
+        relayPool,
+        filters: [
+          { kinds: [RELAY_LIST_METADATA_KIND], authors: [serverPublicKey] },
+        ],
+        where: () => true,
+      });
+
+      expect(relayListEvent.kind).toBe(RELAY_LIST_METADATA_KIND);
+      expect(relayListEvent.tags).toEqual([['r', relayUrl]]);
+
+      await expect(
+        waitForNostrEvent({
+          relayPool,
+          filters: [
+            { kinds: [SERVER_ANNOUNCEMENT_KIND], authors: [serverPublicKey] },
+          ],
+          where: () => true,
+          timeoutMs: 750,
+        }),
+      ).rejects.toThrow('Timed out waiting for matching Nostr event');
+
+      await server.close();
+      await relayPool.disconnect();
+    },
+    10000,
+  );
 
   test('should not publish relay list metadata when publishRelayList is false', async () => {
     const serverPrivateKey = bytesToHex(generateSecretKey());
@@ -570,123 +632,131 @@ describe.serial('NostrServerTransport', () => {
     await server.close();
   }, 10000);
 
-  test.serial('should include all server metadata tags in announcement events', async () => {
-    const serverPrivateKey = bytesToHex(generateSecretKey());
-    const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
+  test.serial(
+    'should include all server metadata tags in announcement events',
+    async () => {
+      const serverPrivateKey = bytesToHex(generateSecretKey());
+      const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
 
-    const server = new McpServer({
-      name: 'Test Server',
-      version: '1.0.0',
-    });
-
-    const transport = new NostrServerTransport({
-      signer: new PrivateKeySigner(serverPrivateKey),
-      relayHandler: new ApplesauceRelayPool([relayUrl]),
-      serverInfo: {
+      const server = new McpServer({
         name: 'Test Server',
-        about: 'A test server for CTXVM',
-        website: 'http://localhost',
-        picture: 'http://localhost/logo.png',
-      },
-      isPublicServer: true,
-    });
+        version: '1.0.0',
+      });
 
-    await server.connect(transport);
+      const transport = new NostrServerTransport({
+        signer: new PrivateKeySigner(serverPrivateKey),
+        relayHandler: new ApplesauceRelayPool([relayUrl]),
+        serverInfo: {
+          name: 'Test Server',
+          about: 'A test server for CTXVM',
+          website: 'http://localhost',
+          picture: 'http://localhost/logo.png',
+        },
+        isPublicServer: true,
+      });
 
-    const relayPool = new ApplesauceRelayPool([relayUrl]);
-    await relayPool.connect();
+      await server.connect(transport);
 
-    const announcementEvent = await waitForNostrEvent({
-      relayPool,
-      filters: [
-        { kinds: [SERVER_ANNOUNCEMENT_KIND], authors: [serverPublicKey] },
-      ],
-      where: () => true,
-      timeoutMs: 5000,
-    });
+      const relayPool = new ApplesauceRelayPool([relayUrl]);
+      await relayPool.connect();
 
-    expect(announcementEvent.tags).toBeDefined();
-    expect(Array.isArray(announcementEvent.tags)).toBe(true);
+      const announcementEvent = await waitForNostrEvent({
+        relayPool,
+        filters: [
+          { kinds: [SERVER_ANNOUNCEMENT_KIND], authors: [serverPublicKey] },
+        ],
+        where: () => true,
+        timeoutMs: 5000,
+      });
 
-    // Convert tags to an object for easier testing
-    const tagsObject: { [key: string]: string } = {};
-    announcementEvent.tags.forEach((tag: string[]) => {
-      if (
-        tag.length >= 2 &&
-        typeof tag[0] === 'string' &&
-        typeof tag[1] === 'string'
-      ) {
-        tagsObject[tag[0]] = tag[1];
-      }
-    });
+      expect(announcementEvent.tags).toBeDefined();
+      expect(Array.isArray(announcementEvent.tags)).toBe(true);
 
-    // Verify all server metadata tags are present
-    expect(tagsObject.name).toBe('Test Server');
-    expect(tagsObject.about).toBe('A test server for CTXVM');
-    expect(tagsObject.website).toBe('http://localhost');
-    expect(tagsObject.picture).toBe('http://localhost/logo.png');
+      // Convert tags to an object for easier testing
+      const tagsObject: { [key: string]: string } = {};
+      announcementEvent.tags.forEach((tag: string[]) => {
+        if (
+          tag.length >= 2 &&
+          typeof tag[0] === 'string' &&
+          typeof tag[1] === 'string'
+        ) {
+          tagsObject[tag[0]] = tag[1];
+        }
+      });
 
-    // Verify support_encryption tag is present
-    const supportEncryptionTag = announcementEvent.tags.find(
-      (tag: string[]) => tag.length === 1 && tag[0] === 'support_encryption',
-    );
-    expect(supportEncryptionTag).toBeDefined();
+      // Verify all server metadata tags are present
+      expect(tagsObject.name).toBe('Test Server');
+      expect(tagsObject.about).toBe('A test server for CTXVM');
+      expect(tagsObject.website).toBe('http://localhost');
+      expect(tagsObject.picture).toBe('http://localhost/logo.png');
 
-    await server.close();
-    await relayPool.disconnect();
-  }, 5000);
+      // Verify support_encryption tag is present
+      const supportEncryptionTag = announcementEvent.tags.find(
+        (tag: string[]) => tag.length === 1 && tag[0] === 'support_encryption',
+      );
+      expect(supportEncryptionTag).toBeDefined();
 
-  test.serial('should include only name tag when serverInfo is minimal and encryption disabled', async () => {
-    const serverPrivateKey = bytesToHex(generateSecretKey());
-    const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
+      await server.close();
+      await relayPool.disconnect();
+    },
+    5000,
+  );
 
-    const server = new McpServer({
-      name: 'Minimal Server',
-      version: '1.0.0',
-    });
+  test.serial(
+    'should include only name tag when serverInfo is minimal and encryption disabled',
+    async () => {
+      const serverPrivateKey = bytesToHex(generateSecretKey());
+      const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
 
-    const transport = new NostrServerTransport({
-      signer: new PrivateKeySigner(serverPrivateKey),
-      relayHandler: new ApplesauceRelayPool([relayUrl]),
-      serverInfo: {
+      const server = new McpServer({
         name: 'Minimal Server',
-      },
-      encryptionMode: EncryptionMode.DISABLED, // Disable encryption
-      isPublicServer: true,
-    });
+        version: '1.0.0',
+      });
 
-    await server.connect(transport);
+      const transport = new NostrServerTransport({
+        signer: new PrivateKeySigner(serverPrivateKey),
+        relayHandler: new ApplesauceRelayPool([relayUrl]),
+        serverInfo: {
+          name: 'Minimal Server',
+        },
+        encryptionMode: EncryptionMode.DISABLED, // Disable encryption
+        isPublicServer: true,
+      });
 
-    const relayPool = new ApplesauceRelayPool([relayUrl]);
-    await relayPool.connect();
+      await server.connect(transport);
 
-    const announcementEvent = await waitForNostrEvent({
-      relayPool,
-      filters: [
-        { kinds: [SERVER_ANNOUNCEMENT_KIND], authors: [serverPublicKey] },
-      ],
-      where: () => true,
-      timeoutMs: 5000,
-    });
+      const relayPool = new ApplesauceRelayPool([relayUrl]);
+      await relayPool.connect();
 
-    expect(announcementEvent.tags).toBeDefined();
+      const announcementEvent = await waitForNostrEvent({
+        relayPool,
+        filters: [
+          { kinds: [SERVER_ANNOUNCEMENT_KIND], authors: [serverPublicKey] },
+        ],
+        where: () => true,
+        timeoutMs: 5000,
+      });
 
-    // Check that only the name tag is present
-    const nameTags = announcementEvent.tags.filter(
-      (tag: string[]) => tag.length >= 2 && tag[0] === 'name',
-    );
-    expect(nameTags.length).toBe(1);
-    expect(nameTags[0][1]).toBe('Minimal Server');
+      expect(announcementEvent.tags).toBeDefined();
 
-    // Check that no support_encryption tag is present
-    const supportEncryptionTag = announcementEvent.tags.find(
-      (tag: string[]) => tag.length === 1 && tag[0] === 'support_encryption',
-    );
-    expect(supportEncryptionTag).toBeUndefined();
+      // Check that only the name tag is present
+      const nameTags = announcementEvent.tags.filter(
+        (tag: string[]) => tag.length >= 2 && tag[0] === 'name',
+      );
+      expect(nameTags.length).toBe(1);
+      expect(nameTags[0][1]).toBe('Minimal Server');
 
-    await server.close();
-    await relayPool.disconnect();
-  }, 5000);
+      // Check that no support_encryption tag is present
+      const supportEncryptionTag = announcementEvent.tags.find(
+        (tag: string[]) => tag.length === 1 && tag[0] === 'support_encryption',
+      );
+      expect(supportEncryptionTag).toBeUndefined();
+
+      await server.close();
+      await relayPool.disconnect();
+    },
+    5000,
+  );
 
   test('should store server initialize event after receiving it', async () => {
     const serverPrivateKey = TEST_PRIVATE_KEY;

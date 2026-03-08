@@ -123,7 +123,7 @@ export class AnnouncementManager {
   private readonly giftWrapMode: GiftWrapMode;
   private extraCommonTags: string[][];
   private pricingTags: string[][];
-  private readonly publishRelayList: boolean;
+  private readonly shouldPublishRelayList: boolean;
   private readonly relayListUrls?: string[];
   private readonly bootstrapRelayUrls: readonly string[];
   private readonly onDispatchMessage: (message: JSONRPCMessage) => void;
@@ -153,7 +153,7 @@ export class AnnouncementManager {
     this.giftWrapMode = options.giftWrapMode;
     this.extraCommonTags = options.extraCommonTags ?? [];
     this.pricingTags = options.pricingTags ?? [];
-    this.publishRelayList = options.publishRelayList ?? true;
+    this.shouldPublishRelayList = options.publishRelayList ?? true;
     this.relayListUrls = options.relayListUrls;
     this.bootstrapRelayUrls =
       options.bootstrapRelayUrls ?? DEFAULT_BOOTSTRAP_RELAY_URLS;
@@ -170,8 +170,8 @@ export class AnnouncementManager {
   /**
    * Publishes relay list metadata when enabled.
    */
-  private async publishRelayListMetadata(): Promise<void> {
-    if (!this.publishRelayList) {
+  public async publishRelayList(): Promise<void> {
+    if (!this.shouldPublishRelayList) {
       return;
     }
 
@@ -345,13 +345,10 @@ export class AnnouncementManager {
   }
 
   /**
-   * Publishes the server's discoverability metadata.
-   *
-   * This orchestrates both announcement publication and relay-list metadata publication.
+   * Publishes the server's public announcement metadata.
    */
-  public async publishDiscoverability(): Promise<void> {
+  public async publishPublicAnnouncements(): Promise<void> {
     await this.requestAnnouncementPublication();
-    await this.publishRelayListMetadata();
   }
 
   /**
@@ -417,7 +414,9 @@ export class AnnouncementManager {
    * The method will always resolve, allowing announcements to proceed.
    */
   private async waitForInitialization(): Promise<void> {
-    if (this.isInitialized) return;
+    if (this.isInitialized) {
+      return;
+    }
 
     if (!this.initializationPromise) {
       this.initializationPromise = new Promise((resolve) => {
@@ -425,9 +424,12 @@ export class AnnouncementManager {
       });
     }
 
-    const timeout = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error('Initialization timeout')), 10000),
-    );
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(() => {
+        reject(new Error('Initialization timeout'));
+      }, 10000);
+    });
 
     try {
       await Promise.race([this.initializationPromise, timeout]);
@@ -435,6 +437,10 @@ export class AnnouncementManager {
       this.logger.warn(
         'Server initialization not completed within timeout, proceeding with announcements',
       );
+    } finally {
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
     }
   }
 

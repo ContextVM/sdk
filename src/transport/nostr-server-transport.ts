@@ -281,8 +281,10 @@ export class NostrServerTransport
       });
 
       if (this.authorizationPolicy.isPublicServer) {
-        await this.announcementManager.publishDiscoverability();
+        await this.announcementManager.publishPublicAnnouncements();
       }
+
+      await this.announcementManager.publishRelayList();
     } catch (error) {
       this.onerror?.(error instanceof Error ? error : new Error(String(error)));
       this.logAndRethrowError('Error starting NostrServerTransport', error);
