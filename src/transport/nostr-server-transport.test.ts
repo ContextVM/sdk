@@ -106,7 +106,7 @@ describe.serial('NostrServerTransport', () => {
     return { client, clientNostrTransport };
   };
 
-  test('should publish a server announcement event when isPublicServer is true', async () => {
+  test.serial('should publish a server announcement event when isPublicServer is true', async () => {
     const serverPrivateKey = bytesToHex(generateSecretKey());
     const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
 
@@ -153,7 +153,7 @@ describe.serial('NostrServerTransport', () => {
     await relayPool.disconnect();
   }, 5000);
 
-  test('should include server PMI and cap tags in announcement and tools list events when payments are configured', async () => {
+  test.serial('should include server PMI and cap tags in announcement and tools list events when payments are configured', async () => {
     const serverPrivateKey = bytesToHex(generateSecretKey());
     const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
 
@@ -253,7 +253,7 @@ describe.serial('NostrServerTransport', () => {
     await relayPool.disconnect();
   }, 15000);
 
-  test('should publish relay list metadata by default for public servers', async () => {
+  test.serial('should publish relay list metadata by default for public servers', async () => {
     const serverPrivateKey = bytesToHex(generateSecretKey());
     const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
 
@@ -570,7 +570,7 @@ describe.serial('NostrServerTransport', () => {
     await server.close();
   }, 10000);
 
-  test('should include all server metadata tags in announcement events', async () => {
+  test.serial('should include all server metadata tags in announcement events', async () => {
     const serverPrivateKey = bytesToHex(generateSecretKey());
     const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
 
@@ -636,7 +636,7 @@ describe.serial('NostrServerTransport', () => {
     await relayPool.disconnect();
   }, 5000);
 
-  test('should include only name tag when serverInfo is minimal and encryption disabled', async () => {
+  test.serial('should include only name tag when serverInfo is minimal and encryption disabled', async () => {
     const serverPrivateKey = bytesToHex(generateSecretKey());
     const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
 
