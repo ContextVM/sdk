@@ -20,6 +20,7 @@ import {
   CTXVM_MESSAGES_KIND,
   INITIALIZE_METHOD,
   PROMPTS_LIST_KIND,
+  RELAY_LIST_METADATA_KIND,
   RESOURCES_LIST_KIND,
   RESOURCETEMPLATES_LIST_KIND,
   SERVER_ANNOUNCEMENT_KIND,
@@ -38,6 +39,7 @@ import { withServerPayments } from '../payments/server-transport-payments.js';
 import { FakePaymentProcessor } from '../payments/fake-payment-processor.js';
 import {
   spawnMockRelay,
+  spawnMockRelayOnPort,
   clearRelayCache,
 } from '../__mocks__/test-relay-helpers.js';
 
@@ -249,6 +251,125 @@ describe.serial('NostrServerTransport', () => {
 
     await server.close();
     await relayPool.disconnect();
+  }, 15000);
+
+  test('should publish relay list metadata by default for public servers', async () => {
+    const serverPrivateKey = bytesToHex(generateSecretKey());
+    const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
+
+    const server = new McpServer({
+      name: 'Test Server',
+      version: '1.0.0',
+    });
+
+    const transport = new NostrServerTransport({
+      signer: new PrivateKeySigner(serverPrivateKey),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      serverInfo: { name: 'Test Server' },
+      isPublicServer: true,
+    });
+
+    await server.connect(transport);
+
+    const relayPool = new ApplesauceRelayPool([relayUrl]);
+    await relayPool.connect();
+
+    const relayListEvent = await waitForNostrEvent({
+      relayPool,
+      filters: [
+        { kinds: [RELAY_LIST_METADATA_KIND], authors: [serverPublicKey] },
+      ],
+      where: () => true,
+    });
+
+    expect(relayListEvent.kind).toBe(RELAY_LIST_METADATA_KIND);
+    expect(relayListEvent.tags).toEqual([['r', relayUrl]]);
+
+    await server.close();
+    await relayPool.disconnect();
+  }, 10000);
+
+  test('should not publish relay list metadata when publishRelayList is false', async () => {
+    const serverPrivateKey = bytesToHex(generateSecretKey());
+    const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
+
+    const server = new McpServer({
+      name: 'Test Server',
+      version: '1.0.0',
+    });
+
+    const transport = new NostrServerTransport({
+      signer: new PrivateKeySigner(serverPrivateKey),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      serverInfo: { name: 'Test Server' },
+      isPublicServer: true,
+      publishRelayList: false,
+    });
+
+    await server.connect(transport);
+
+    const relayPool = new ApplesauceRelayPool([relayUrl]);
+    await relayPool.connect();
+
+    await expect(
+      waitForNostrEvent({
+        relayPool,
+        filters: [
+          { kinds: [RELAY_LIST_METADATA_KIND], authors: [serverPublicKey] },
+        ],
+        where: () => true,
+        timeoutMs: 750,
+      }),
+    ).rejects.toThrow('Timed out waiting for matching Nostr event');
+
+    await server.close();
+    await relayPool.disconnect();
+  }, 10000);
+
+  test('should publish discoverability metadata to bootstrap relays without advertising them in kind 10002', async () => {
+    const bootstrap = await spawnMockRelayOnPort(relay.port + 1);
+    const serverPrivateKey = bytesToHex(generateSecretKey());
+    const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
+
+    const server = new McpServer({
+      name: 'Test Server',
+      version: '1.0.0',
+    });
+
+    const transport = new NostrServerTransport({
+      signer: new PrivateKeySigner(serverPrivateKey),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      serverInfo: { name: 'Test Server' },
+      isPublicServer: true,
+      bootstrapRelayUrls: [bootstrap.relayUrl],
+    });
+
+    await server.connect(transport);
+
+    const bootstrapPool = new ApplesauceRelayPool([bootstrap.relayUrl]);
+    await bootstrapPool.connect();
+
+    const bootstrapAnnouncement = await waitForNostrEvent({
+      relayPool: bootstrapPool,
+      filters: [
+        { kinds: [SERVER_ANNOUNCEMENT_KIND], authors: [serverPublicKey] },
+      ],
+      where: () => true,
+    });
+    const bootstrapRelayList = await waitForNostrEvent({
+      relayPool: bootstrapPool,
+      filters: [
+        { kinds: [RELAY_LIST_METADATA_KIND], authors: [serverPublicKey] },
+      ],
+      where: () => true,
+    });
+
+    expect(bootstrapAnnouncement.kind).toBe(SERVER_ANNOUNCEMENT_KIND);
+    expect(bootstrapRelayList.tags).toEqual([['r', relayUrl]]);
+
+    await server.close();
+    await bootstrapPool.disconnect();
+    bootstrap.stop();
   }, 15000);
 
   test('should allow connection for allowed public keys', async () => {

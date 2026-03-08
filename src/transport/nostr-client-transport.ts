@@ -37,6 +37,11 @@ import {
   PendingRequest,
   type OriginalRequestContext,
 } from './nostr-client/correlation-store.js';
+import { parseServerIdentity } from './nostr-client/server-identity.js';
+import {
+  fetchServerRelayList,
+  selectOperationalRelayUrls,
+} from './nostr-client/server-relay-discovery.js';
 import { StatelessModeHandler } from './nostr-client/stateless-mode-handler.js';
 import { withTimeout } from '../core/utils/utils.js';
 
@@ -48,8 +53,10 @@ function hasSingleTag(tags: string[][], tag: string): boolean {
  * Options for configuring the NostrClientTransport.
  */
 export interface NostrTransportOptions extends BaseNostrTransportOptions {
-  /** The server's public key for targeting messages */
+  /** The server's identity for targeting messages. Accepts hex pubkey, npub, or nprofile. */
   serverPubkey: string;
+  /** Relay URLs used only for relay-list discovery when operational relays are not configured. */
+  discoveryRelayUrls?: string[];
   /** Whether to operate in stateless mode (emulates server responses) */
   isStateless?: boolean;
   /** Log level for the transport */
@@ -84,6 +91,10 @@ export class NostrClientTransport
   private readonly statelessHandler: StatelessModeHandler;
   /** Whether stateless mode is enabled */
   private readonly isStateless: boolean;
+  /** Relay hints extracted from the provided server identity. */
+  private readonly hintedRelayUrls: readonly string[];
+  /** Relay URLs used for CEP-17 discovery when no operational relays are configured. */
+  private readonly discoveryRelayUrls: readonly string[];
   /** Optional list of client-supported PMIs (ordered by preference). */
   private clientPmis: readonly string[] | undefined;
   /** The server's initialize event, if received */
@@ -111,17 +122,16 @@ export class NostrClientTransport
   /**
    * Creates a new NostrClientTransport instance.
    * @param options - Configuration options for the transport
-   * @throws Error if serverPubkey is not a valid hex public key
+   * @throws Error if serverPubkey is not a valid supported server identifier
    */
   constructor(options: NostrTransportOptions) {
     super('nostr-client-transport', options);
 
-    // Validate serverPubkey is valid hex
-    if (!/^[0-9a-f]{64}$/i.test(options.serverPubkey)) {
-      throw new Error(`Invalid serverPubkey format: ${options.serverPubkey}`);
-    }
+    const parsedServerIdentity = parseServerIdentity(options.serverPubkey);
 
-    this.serverPubkey = options.serverPubkey;
+    this.serverPubkey = parsedServerIdentity.pubkey;
+    this.hintedRelayUrls = parsedServerIdentity.relayUrls;
+    this.discoveryRelayUrls = options.discoveryRelayUrls ?? [];
     this.isStateless = options.isStateless ?? false;
     this.correlationStore = new ClientCorrelationStore({
       maxPendingRequests: DEFAULT_LRU_SIZE,
@@ -146,6 +156,8 @@ export class NostrClientTransport
    */
   public async start(): Promise<void> {
     try {
+      await this.resolveOperationalRelayHandler();
+
       // Execute independent async operations in parallel
       const [_connectionResult, pubkey] = await Promise.all([
         this.connect(),
@@ -569,6 +581,48 @@ export class NostrClientTransport
     return this.serverPromptsListEvent;
   }
 
+  private async resolveOperationalRelayHandler(): Promise<void> {
+    const configuredRelayUrls = this.relayHandler.getRelayUrls?.() ?? [];
+
+    if (configuredRelayUrls.length > 0) {
+      return;
+    }
+
+    if (this.hintedRelayUrls.length > 0) {
+      this.logger.info('Using relay hints from server identity', {
+        relayCount: this.hintedRelayUrls.length,
+      });
+      this.setRelayHandler([...this.hintedRelayUrls]);
+      return;
+    }
+
+    if (this.discoveryRelayUrls.length === 0) {
+      return;
+    }
+
+    const relayListEntries = await fetchServerRelayList({
+      serverPubkey: this.serverPubkey,
+      relayUrls: [...this.discoveryRelayUrls],
+    });
+    const resolvedRelayUrls = selectOperationalRelayUrls(relayListEntries);
+
+    if (resolvedRelayUrls.length > 0) {
+      this.logger.info('Resolved operational relays from server relay list', {
+        relayCount: resolvedRelayUrls.length,
+      });
+      this.setRelayHandler(resolvedRelayUrls);
+      return;
+    }
+
+    this.logger.warn(
+      'No operational relays discovered from kind 10002; falling back to discovery relays',
+      {
+        relayCount: this.discoveryRelayUrls.length,
+      },
+    );
+    this.setRelayHandler([...this.discoveryRelayUrls]);
+  }
+
   /**
    * Handles response messages by correlating them with pending requests.
    * @param correlatedEventId - The Nostr event ID used for correlation
@@ -645,6 +699,8 @@ export class NostrClientTransport
     return {
       correlationStore: this.correlationStore,
       statelessHandler: this.statelessHandler,
+      serverPubkey: this.serverPubkey,
+      relayUrls: this.relayHandler.getRelayUrls?.() ?? [],
       serverInitializeEvent: this.serverInitializeEvent,
       serverToolsListEvent: this.serverToolsListEvent,
       serverResourcesListEvent: this.serverResourcesListEvent,
