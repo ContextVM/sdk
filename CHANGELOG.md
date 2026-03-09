@@ -1,5 +1,11 @@
 # @contextvm/sdk
 
+## 0.7.1
+
+### Patch Changes
+
+- refactor(relay): downgrade publish log level to debug
+
 ## 0.7.0
 
 ### Minor Changes

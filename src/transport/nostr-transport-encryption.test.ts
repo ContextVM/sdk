@@ -95,327 +95,382 @@ describe.serial('NostrTransport Encryption', () => {
     return { server, serverTransport };
   };
 
-  test.serial('should connect successfully with OPTIONAL encryption on both ends', async () => {
-    const serverPrivateKey = bytesToHex(generateSecretKey());
-    const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
-    const clientPrivateKey = bytesToHex(generateSecretKey());
+  test.serial(
+    'should connect successfully with OPTIONAL encryption on both ends',
+    async () => {
+      const serverPrivateKey = bytesToHex(generateSecretKey());
+      const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
+      const clientPrivateKey = bytesToHex(generateSecretKey());
 
-    const { server, serverTransport } = createServerAndTransport(
-      serverPrivateKey,
-      EncryptionMode.OPTIONAL,
-    );
-    await server.connect(serverTransport);
+      const { server, serverTransport } = createServerAndTransport(
+        serverPrivateKey,
+        EncryptionMode.OPTIONAL,
+      );
+      await server.connect(serverTransport);
 
-    const { client, clientNostrTransport } = createClientAndTransport(
-      clientPrivateKey,
-      serverPublicKey,
-      EncryptionMode.OPTIONAL,
-    );
+      const { client, clientNostrTransport } = createClientAndTransport(
+        clientPrivateKey,
+        serverPublicKey,
+        EncryptionMode.OPTIONAL,
+      );
 
-    expect(client.connect(clientNostrTransport)).resolves.toBeUndefined();
+      expect(client.connect(clientNostrTransport)).resolves.toBeUndefined();
 
-    await client.close();
-    await server.close();
-  }, 5000);
+      await client.close();
+      await server.close();
+    },
+    5000,
+  );
 
-  test.serial('should connect with REQUIRED (client) and OPTIONAL (server)', async () => {
-    const serverPrivateKey = bytesToHex(generateSecretKey());
-    const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
-    const clientPrivateKey = bytesToHex(generateSecretKey());
+  test.serial(
+    'should connect with REQUIRED (client) and OPTIONAL (server)',
+    async () => {
+      const serverPrivateKey = bytesToHex(generateSecretKey());
+      const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
+      const clientPrivateKey = bytesToHex(generateSecretKey());
 
-    const { server, serverTransport } = createServerAndTransport(
-      serverPrivateKey,
-      EncryptionMode.OPTIONAL,
-    );
-    await server.connect(serverTransport);
+      const { server, serverTransport } = createServerAndTransport(
+        serverPrivateKey,
+        EncryptionMode.OPTIONAL,
+      );
+      await server.connect(serverTransport);
 
-    const { client, clientNostrTransport } = createClientAndTransport(
-      clientPrivateKey,
-      serverPublicKey,
-      EncryptionMode.REQUIRED,
-    );
+      const { client, clientNostrTransport } = createClientAndTransport(
+        clientPrivateKey,
+        serverPublicKey,
+        EncryptionMode.REQUIRED,
+      );
 
-    await expect(client.connect(clientNostrTransport)).resolves.toBeUndefined();
+      await expect(
+        client.connect(clientNostrTransport),
+      ).resolves.toBeUndefined();
 
-    await client.close();
-    await server.close();
-  }, 5000);
+      await client.close();
+      await server.close();
+    },
+    5000,
+  );
 
-  test.serial('should connect with OPTIONAL (client) and REQUIRED (server)', async () => {
-    const serverPrivateKey = bytesToHex(generateSecretKey());
-    const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
-    const clientPrivateKey = bytesToHex(generateSecretKey());
+  test.serial(
+    'should connect with OPTIONAL (client) and REQUIRED (server)',
+    async () => {
+      const serverPrivateKey = bytesToHex(generateSecretKey());
+      const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
+      const clientPrivateKey = bytesToHex(generateSecretKey());
 
-    const { server, serverTransport } = createServerAndTransport(
-      serverPrivateKey,
-      EncryptionMode.REQUIRED,
-    );
-    await server.connect(serverTransport);
+      const { server, serverTransport } = createServerAndTransport(
+        serverPrivateKey,
+        EncryptionMode.REQUIRED,
+      );
+      await server.connect(serverTransport);
 
-    const { client, clientNostrTransport } = createClientAndTransport(
-      clientPrivateKey,
-      serverPublicKey,
-      EncryptionMode.OPTIONAL,
-    );
+      const { client, clientNostrTransport } = createClientAndTransport(
+        clientPrivateKey,
+        serverPublicKey,
+        EncryptionMode.OPTIONAL,
+      );
 
-    await expect(client.connect(clientNostrTransport)).resolves.toBeUndefined();
+      await expect(
+        client.connect(clientNostrTransport),
+      ).resolves.toBeUndefined();
 
-    await client.close();
-    await server.close();
-  }, 5000);
+      await client.close();
+      await server.close();
+    },
+    5000,
+  );
 
-  test.serial('should connect with REQUIRED on both ends', async () => {
-    const serverPrivateKey = bytesToHex(generateSecretKey());
-    const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
-    const clientPrivateKey = bytesToHex(generateSecretKey());
+  test.serial(
+    'should connect with REQUIRED on both ends',
+    async () => {
+      const serverPrivateKey = bytesToHex(generateSecretKey());
+      const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
+      const clientPrivateKey = bytesToHex(generateSecretKey());
 
-    const { server, serverTransport } = createServerAndTransport(
-      serverPrivateKey,
-      EncryptionMode.REQUIRED,
-    );
-    await server.connect(serverTransport);
+      const { server, serverTransport } = createServerAndTransport(
+        serverPrivateKey,
+        EncryptionMode.REQUIRED,
+      );
+      await server.connect(serverTransport);
 
-    const { client, clientNostrTransport } = createClientAndTransport(
-      clientPrivateKey,
-      serverPublicKey,
-      EncryptionMode.REQUIRED,
-    );
+      const { client, clientNostrTransport } = createClientAndTransport(
+        clientPrivateKey,
+        serverPublicKey,
+        EncryptionMode.REQUIRED,
+      );
 
-    await expect(client.connect(clientNostrTransport)).resolves.toBeUndefined();
+      await expect(
+        client.connect(clientNostrTransport),
+      ).resolves.toBeUndefined();
 
-    await client.close();
-    await server.close();
-  }, 5000);
+      await client.close();
+      await server.close();
+    },
+    5000,
+  );
 
-  test.serial('should fail to connect if client requires encryption and server disables it', async () => {
-    const serverPrivateKey = bytesToHex(generateSecretKey());
-    const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
-    const clientPrivateKey = bytesToHex(generateSecretKey());
+  test.serial(
+    'should fail to connect if client requires encryption and server disables it',
+    async () => {
+      const serverPrivateKey = bytesToHex(generateSecretKey());
+      const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
+      const clientPrivateKey = bytesToHex(generateSecretKey());
 
-    const { server, serverTransport } = createServerAndTransport(
-      serverPrivateKey,
-      EncryptionMode.DISABLED,
-    );
-    await server.connect(serverTransport);
+      const { server, serverTransport } = createServerAndTransport(
+        serverPrivateKey,
+        EncryptionMode.DISABLED,
+      );
+      await server.connect(serverTransport);
 
-    const { client, clientNostrTransport } = createClientAndTransport(
-      clientPrivateKey,
-      serverPublicKey,
-      EncryptionMode.REQUIRED,
-    );
+      const { client, clientNostrTransport } = createClientAndTransport(
+        clientPrivateKey,
+        serverPublicKey,
+        EncryptionMode.REQUIRED,
+      );
 
-    const connectPromise = client.connect(clientNostrTransport);
-    const timeoutPromise = new Promise((resolve) =>
-      setTimeout(() => resolve('timeout'), 2000),
-    );
+      const connectPromise = client.connect(clientNostrTransport);
+      const timeoutPromise = new Promise((resolve) =>
+        setTimeout(() => resolve('timeout'), 2000),
+      );
 
-    await expect(Promise.race([connectPromise, timeoutPromise])).resolves.toBe(
-      'timeout',
-    );
+      await expect(
+        Promise.race([connectPromise, timeoutPromise]),
+      ).resolves.toBe('timeout');
 
-    await client.close();
-    await server.close();
-  }, 5000);
+      await client.close();
+      await server.close();
+    },
+    5000,
+  );
 
-  test.serial('should connect successfully if both client and server have encryption disabled', async () => {
-    const serverPrivateKey = bytesToHex(generateSecretKey());
-    const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
-    const clientPrivateKey = bytesToHex(generateSecretKey());
+  test.serial(
+    'should connect successfully if both client and server have encryption disabled',
+    async () => {
+      const serverPrivateKey = bytesToHex(generateSecretKey());
+      const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
+      const clientPrivateKey = bytesToHex(generateSecretKey());
 
-    const { server, serverTransport } = createServerAndTransport(
-      serverPrivateKey,
-      EncryptionMode.DISABLED,
-    );
-    await server.connect(serverTransport);
+      const { server, serverTransport } = createServerAndTransport(
+        serverPrivateKey,
+        EncryptionMode.DISABLED,
+      );
+      await server.connect(serverTransport);
 
-    const { client, clientNostrTransport } = createClientAndTransport(
-      clientPrivateKey,
-      serverPublicKey,
-      EncryptionMode.DISABLED,
-    );
+      const { client, clientNostrTransport } = createClientAndTransport(
+        clientPrivateKey,
+        serverPublicKey,
+        EncryptionMode.DISABLED,
+      );
 
-    await expect(client.connect(clientNostrTransport)).resolves.toBeUndefined();
+      await expect(
+        client.connect(clientNostrTransport),
+      ).resolves.toBeUndefined();
 
-    await client.close();
-    await server.close();
-  }, 5000);
+      await client.close();
+      await server.close();
+    },
+    5000,
+  );
 
-  test.serial('should fail to connect if client encryption is disabled and server requires it', async () => {
-    const serverPrivateKey = bytesToHex(generateSecretKey());
-    const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
-    const clientPrivateKey = bytesToHex(generateSecretKey());
+  test.serial(
+    'should fail to connect if client encryption is disabled and server requires it',
+    async () => {
+      const serverPrivateKey = bytesToHex(generateSecretKey());
+      const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
+      const clientPrivateKey = bytesToHex(generateSecretKey());
 
-    const { server, serverTransport } = createServerAndTransport(
-      serverPrivateKey,
-      EncryptionMode.REQUIRED, // Server requires encryption
-    );
-    await server.connect(serverTransport);
+      const { server, serverTransport } = createServerAndTransport(
+        serverPrivateKey,
+        EncryptionMode.REQUIRED, // Server requires encryption
+      );
+      await server.connect(serverTransport);
 
-    const { client, clientNostrTransport } = createClientAndTransport(
-      clientPrivateKey,
-      serverPublicKey,
-      EncryptionMode.DISABLED, // Client encryption is disabled
-    );
+      const { client, clientNostrTransport } = createClientAndTransport(
+        clientPrivateKey,
+        serverPublicKey,
+        EncryptionMode.DISABLED, // Client encryption is disabled
+      );
 
-    // The client should not be able to connect because the server requires encryption
-    // but the client is trying to connect without encryption.
-    const connectPromise = client.connect(clientNostrTransport);
-    const timeoutPromise = new Promise((resolve) =>
-      setTimeout(() => resolve('timeout'), 2000),
-    );
+      // The client should not be able to connect because the server requires encryption
+      // but the client is trying to connect without encryption.
+      const connectPromise = client.connect(clientNostrTransport);
+      const timeoutPromise = new Promise((resolve) =>
+        setTimeout(() => resolve('timeout'), 2000),
+      );
 
-    await expect(Promise.race([connectPromise, timeoutPromise])).resolves.toBe(
-      'timeout',
-    );
+      await expect(
+        Promise.race([connectPromise, timeoutPromise]),
+      ).resolves.toBe('timeout');
 
-    await client.close();
-    await server.close();
-  }, 5000);
+      await client.close();
+      await server.close();
+    },
+    5000,
+  );
 
-  test.serial('should mirror the format of the request in EncryptionMode.OPTIONAL: client encryption is disabled', async () => {
-    const serverPrivateKey = bytesToHex(generateSecretKey());
-    const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
-    const clientPrivateKey = bytesToHex(generateSecretKey());
-    const collectedEvents: NostrEvent[] = [];
-    const { server, serverTransport } = createServerAndTransport(
-      serverPrivateKey,
-      EncryptionMode.OPTIONAL,
-    );
-    await server.connect(serverTransport);
+  test.serial(
+    'should mirror the format of the request in EncryptionMode.OPTIONAL: client encryption is disabled',
+    async () => {
+      const serverPrivateKey = bytesToHex(generateSecretKey());
+      const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
+      const clientPrivateKey = bytesToHex(generateSecretKey());
+      const collectedEvents: NostrEvent[] = [];
+      const { server, serverTransport } = createServerAndTransport(
+        serverPrivateKey,
+        EncryptionMode.OPTIONAL,
+      );
+      await server.connect(serverTransport);
 
-    const { client, clientNostrTransport } = createClientAndTransport(
-      clientPrivateKey,
-      serverPublicKey,
-      EncryptionMode.DISABLED,
-    );
+      const { client, clientNostrTransport } = createClientAndTransport(
+        clientPrivateKey,
+        serverPublicKey,
+        EncryptionMode.DISABLED,
+      );
 
-    const relayHandler = new ApplesauceRelayPool([relayUrl]);
-    relayHandler.subscribe([{ kinds: [CTXVM_MESSAGES_KIND] }], (event) => {
-      collectedEvents.push(event);
-    });
-    await client.connect(clientNostrTransport);
-    expect(collectedEvents.length).toBeGreaterThan(0);
+      const relayHandler = new ApplesauceRelayPool([relayUrl]);
+      relayHandler.subscribe([{ kinds: [CTXVM_MESSAGES_KIND] }], (event) => {
+        collectedEvents.push(event);
+      });
+      await client.connect(clientNostrTransport);
+      expect(collectedEvents.length).toBeGreaterThan(0);
 
-    await client.close();
-    await server.close();
-  }, 5000);
+      await client.close();
+      await server.close();
+    },
+    5000,
+  );
 
-  test.serial('should mirror the format of the request in EncryptionMode.OPTIONAL: client encryption is required', async () => {
-    const serverPrivateKey = bytesToHex(generateSecretKey());
-    const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
-    const clientPrivateKey = bytesToHex(generateSecretKey());
-    const collectedEvents: NostrEvent[] = [];
-    const { server, serverTransport } = createServerAndTransport(
-      serverPrivateKey,
-      EncryptionMode.OPTIONAL,
-    );
-    await server.connect(serverTransport);
+  test.serial(
+    'should mirror the format of the request in EncryptionMode.OPTIONAL: client encryption is required',
+    async () => {
+      const serverPrivateKey = bytesToHex(generateSecretKey());
+      const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
+      const clientPrivateKey = bytesToHex(generateSecretKey());
+      const collectedEvents: NostrEvent[] = [];
+      const { server, serverTransport } = createServerAndTransport(
+        serverPrivateKey,
+        EncryptionMode.OPTIONAL,
+      );
+      await server.connect(serverTransport);
 
-    const { client, clientNostrTransport } = createClientAndTransport(
-      clientPrivateKey,
-      serverPublicKey,
-      EncryptionMode.REQUIRED,
-    );
+      const { client, clientNostrTransport } = createClientAndTransport(
+        clientPrivateKey,
+        serverPublicKey,
+        EncryptionMode.REQUIRED,
+      );
 
-    const relayHandler = new ApplesauceRelayPool([relayUrl]);
-    relayHandler.subscribe([{ kinds: [GIFT_WRAP_KIND] }], (event) => {
-      collectedEvents.push(event);
-    });
-    await client.connect(clientNostrTransport);
-    expect(collectedEvents.length).toBeGreaterThan(0);
+      const relayHandler = new ApplesauceRelayPool([relayUrl]);
+      relayHandler.subscribe([{ kinds: [GIFT_WRAP_KIND] }], (event) => {
+        collectedEvents.push(event);
+      });
+      await client.connect(clientNostrTransport);
+      expect(collectedEvents.length).toBeGreaterThan(0);
 
-    await client.close();
-    await server.close();
-  }, 10000);
+      await client.close();
+      await server.close();
+    },
+    10000,
+  );
 
-  test.serial('client optional should use kind 21059 when server advertises support_encryption_ephemeral', async () => {
-    const serverPrivateKey = bytesToHex(generateSecretKey());
-    const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
-    const clientPrivateKey = bytesToHex(generateSecretKey());
-    const collectedEvents: NostrEvent[] = [];
+  test.serial(
+    'client optional should use kind 21059 when server advertises support_encryption_ephemeral',
+    async () => {
+      const serverPrivateKey = bytesToHex(generateSecretKey());
+      const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
+      const clientPrivateKey = bytesToHex(generateSecretKey());
+      const collectedEvents: NostrEvent[] = [];
 
-    const { server, serverTransport } = createServerAndTransport(
-      serverPrivateKey,
-      EncryptionMode.OPTIONAL,
-      GiftWrapMode.EPHEMERAL,
-    );
-    await server.connect(serverTransport);
+      const { server, serverTransport } = createServerAndTransport(
+        serverPrivateKey,
+        EncryptionMode.OPTIONAL,
+        GiftWrapMode.EPHEMERAL,
+      );
+      await server.connect(serverTransport);
 
-    const { client, clientNostrTransport } = createClientAndTransport(
-      clientPrivateKey,
-      serverPublicKey,
-      EncryptionMode.REQUIRED,
-      GiftWrapMode.EPHEMERAL,
-    );
+      const { client, clientNostrTransport } = createClientAndTransport(
+        clientPrivateKey,
+        serverPublicKey,
+        EncryptionMode.REQUIRED,
+        GiftWrapMode.EPHEMERAL,
+      );
 
-    const relayHandler = new ApplesauceRelayPool([relayUrl]);
-    relayHandler.subscribe([{ kinds: [EPHEMERAL_GIFT_WRAP_KIND] }], (event) => {
-      collectedEvents.push(event);
-    });
+      const relayHandler = new ApplesauceRelayPool([relayUrl]);
+      relayHandler.subscribe(
+        [{ kinds: [EPHEMERAL_GIFT_WRAP_KIND] }],
+        (event) => {
+          collectedEvents.push(event);
+        },
+      );
 
-    await client.connect(clientNostrTransport);
+      await client.connect(clientNostrTransport);
 
-    await client.listTools();
+      await client.listTools();
 
-    expect(collectedEvents.length).toBeGreaterThan(0);
+      expect(collectedEvents.length).toBeGreaterThan(0);
 
-    await client.close();
-    await server.close();
-  }, 10000);
+      await client.close();
+      await server.close();
+    },
+    10000,
+  );
 
-  test.serial('stateless client optional should switch to kind 21059 after first server response advertises support_encryption_ephemeral', async () => {
-    const serverPrivateKey = bytesToHex(generateSecretKey());
-    const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
-    const clientPrivateKey = bytesToHex(generateSecretKey());
+  test.serial(
+    'stateless client optional should switch to kind 21059 after first server response advertises support_encryption_ephemeral',
+    async () => {
+      const serverPrivateKey = bytesToHex(generateSecretKey());
+      const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
+      const clientPrivateKey = bytesToHex(generateSecretKey());
 
-    const giftWrapKindsObserved: number[] = [];
+      const giftWrapKindsObserved: number[] = [];
 
-    const serverRelayHandler = new ApplesauceRelayPool([relayUrl]);
-    const clientRelayHandler = new ApplesauceRelayPool([relayUrl]);
-    const observerRelayHandler = new ApplesauceRelayPool([relayUrl]);
+      const serverRelayHandler = new ApplesauceRelayPool([relayUrl]);
+      const clientRelayHandler = new ApplesauceRelayPool([relayUrl]);
+      const observerRelayHandler = new ApplesauceRelayPool([relayUrl]);
 
-    const { server, serverTransport } = createServerAndTransport(
-      serverPrivateKey,
-      EncryptionMode.OPTIONAL,
-      GiftWrapMode.OPTIONAL,
-      serverRelayHandler,
-    );
-    await server.connect(serverTransport);
+      const { server, serverTransport } = createServerAndTransport(
+        serverPrivateKey,
+        EncryptionMode.OPTIONAL,
+        GiftWrapMode.OPTIONAL,
+        serverRelayHandler,
+      );
+      await server.connect(serverTransport);
 
-    const { client, clientNostrTransport } = createClientAndTransport(
-      clientPrivateKey,
-      serverPublicKey,
-      EncryptionMode.REQUIRED,
-      GiftWrapMode.OPTIONAL,
-      true,
-      clientRelayHandler,
-    );
+      const { client, clientNostrTransport } = createClientAndTransport(
+        clientPrivateKey,
+        serverPublicKey,
+        EncryptionMode.REQUIRED,
+        GiftWrapMode.OPTIONAL,
+        true,
+        clientRelayHandler,
+      );
 
-    observerRelayHandler.subscribe(
-      [{ kinds: [GIFT_WRAP_KIND, EPHEMERAL_GIFT_WRAP_KIND] }],
-      (event) => {
-        // Collect only client->server envelopes by matching recipient tag.
-        // Client->server has a `p` tag of the server pubkey.
-        const pTags = event.tags.filter((t) => t[0] === 'p');
-        if (pTags.some((t) => t[1] === serverPublicKey)) {
-          giftWrapKindsObserved.push(event.kind);
-        }
-      },
-    );
+      observerRelayHandler.subscribe(
+        [{ kinds: [GIFT_WRAP_KIND, EPHEMERAL_GIFT_WRAP_KIND] }],
+        (event) => {
+          // Collect only client->server envelopes by matching recipient tag.
+          // Client->server has a `p` tag of the server pubkey.
+          const pTags = event.tags.filter((t) => t[0] === 'p');
+          if (pTags.some((t) => t[1] === serverPublicKey)) {
+            giftWrapKindsObserved.push(event.kind);
+          }
+        },
+      );
 
-    await client.connect(clientNostrTransport);
+      await client.connect(clientNostrTransport);
 
-    // First request: should default to persistent gift wrap (1059)
-    await client.listTools();
-    await Bun.sleep(50);
-    // Second request: after server response tags, should switch to ephemeral gift wrap (21059)
-    await client.listTools();
-    await Bun.sleep(50);
+      // First request: should default to persistent gift wrap (1059)
+      await client.listTools();
+      await Bun.sleep(50);
+      // Second request: after server response tags, should switch to ephemeral gift wrap (21059)
+      await client.listTools();
+      await Bun.sleep(50);
 
-    expect(giftWrapKindsObserved).toContain(GIFT_WRAP_KIND);
-    expect(giftWrapKindsObserved).toContain(EPHEMERAL_GIFT_WRAP_KIND);
+      expect(giftWrapKindsObserved).toContain(GIFT_WRAP_KIND);
+      expect(giftWrapKindsObserved).toContain(EPHEMERAL_GIFT_WRAP_KIND);
 
-    await client.close();
-    await server.close();
-  }, 30000);
+      await client.close();
+      await server.close();
+    },
+    30000,
+  );
 });
