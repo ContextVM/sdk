@@ -1,5 +1,25 @@
 # @contextvm/sdk
 
+## 0.7.0
+
+### Minor Changes
+
+- feat(transport): implement CEP-17 relay list metadata for discoverability
+
+  Add NIP-65 relay list metadata (kind 10002) support to enable server relay discoverability. Servers can now publish their operational relays, and clients can discover them via nprofile relay hints or by querying discovery relays.
+
+  Add RELAY_LIST_METADATA_KIND (10002) and DEFAULT_BOOTSTRAP_RELAY_URLS constants
+
+  Add server-identity.ts to parse npub/nprofile and extract relay hints
+
+  Add server-relay-discovery.ts to fetch and parse server relay lists
+
+  Update NostrClientTransport to resolve operational relays from hints or discovery
+
+  Update NostrServerTransport to publish relay list metadata for public servers
+
+  Add tests for npub/nprofile parsing, relay discovery, and server relay list publication
+
 ## 0.6.2
 
 ### Patch Changes
