@@ -47,10 +47,31 @@ export const RESOURCETEMPLATES_LIST_KIND = 11319;
 export const PROMPTS_LIST_KIND = 11320;
 
 /**
+ * Replaceable relay list metadata event following NIP-65.
+ */
+export const RELAY_LIST_METADATA_KIND = 10002;
+
+/**
+ * Default relay targets for discoverability publication.
+ *
+ * These relays are used as additional publication targets for server metadata,
+ * even when they are not part of the server's operational relay list.
+ */
+export const DEFAULT_BOOTSTRAP_RELAY_URLS = [
+  'wss://relay.damus.io',
+  'wss://relay.primal.net',
+  'wss://nos.lol',
+  'wss://relay.snort.social/',
+  'wss://nostr.mom/',
+  'wss://nostr.oxtr.dev/',
+] as const;
+
+/**
  * CTXVM-specific Nostr event tags.
  */
 export const NOSTR_TAGS = {
   PUBKEY: 'p',
+  RELAY: 'r',
   /**
    * Event ID for correlating requests and responses.
    */

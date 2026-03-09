@@ -22,11 +22,13 @@ import { EventDeletion } from 'nostr-tools/kinds';
 import { LATEST_PROTOCOL_VERSION } from '@modelcontextprotocol/sdk/types.js';
 import {
   announcementMethods,
+  DEFAULT_BOOTSTRAP_RELAY_URLS,
   SERVER_ANNOUNCEMENT_KIND,
   TOOLS_LIST_KIND,
   RESOURCES_LIST_KIND,
   RESOURCETEMPLATES_LIST_KIND,
   PROMPTS_LIST_KIND,
+  RELAY_LIST_METADATA_KIND,
   NOSTR_TAGS,
   INITIALIZE_METHOD,
   NOTIFICATIONS_INITIALIZED_METHOD,
@@ -60,10 +62,21 @@ export interface AnnouncementManagerOptions {
 
   /** Optional capability pricing tags to include in announcement + capability list events (e.g. `cap`). */
   pricingTags?: string[][];
-  /** Callback to send a message to the MCP server */
-  onSendMessage: (message: JSONRPCMessage) => void;
+  /** Whether to publish relay list metadata (kind 10002). @default true */
+  publishRelayList?: boolean;
+  /** Explicit relay URLs to advertise in kind 10002 instead of inspecting the relay handler. */
+  relayListUrls?: string[];
+  /** Additional relays used only as publication targets for discoverability metadata. */
+  bootstrapRelayUrls?: readonly string[];
+  /** Callback to dispatch an internal MCP message to the server. */
+  onDispatchMessage: (message: JSONRPCMessage) => void;
   /** Callback to publish a Nostr event */
   onPublishEvent: (event: NostrEvent) => Promise<void>;
+  /** Callback to publish a Nostr event to a specific relay subset */
+  onPublishEventToRelays?: (
+    event: NostrEvent,
+    relayUrls: string[],
+  ) => Promise<void>;
   /** Callback to sign an event */
   onSignEvent: (eventTemplate: NostrEvent) => Promise<NostrEvent>;
   /** Callback to get the server's public key */
@@ -73,6 +86,8 @@ export interface AnnouncementManagerOptions {
     filters: Filter[],
     onEvent: (event: NostrEvent) => void,
   ) => Promise<void>;
+  /** Callback to inspect the transport's operational relay URLs. */
+  onGetRelayUrls?: () => string[] | undefined;
   /** Logger for debug output */
   logger: {
     info: (message: string, meta?: unknown) => void;
@@ -108,8 +123,14 @@ export class AnnouncementManager {
   private readonly giftWrapMode: GiftWrapMode;
   private extraCommonTags: string[][];
   private pricingTags: string[][];
-  private readonly onSendMessage: (message: JSONRPCMessage) => void;
+  private readonly shouldPublishRelayList: boolean;
+  private readonly relayListUrls?: string[];
+  private readonly bootstrapRelayUrls: readonly string[];
+  private readonly onDispatchMessage: (message: JSONRPCMessage) => void;
   private readonly onPublishEvent: (event: NostrEvent) => Promise<void>;
+  private readonly onPublishEventToRelays:
+    | ((event: NostrEvent, relayUrls: string[]) => Promise<void>)
+    | undefined;
   private readonly onSignEvent: (
     eventTemplate: NostrEvent,
   ) => Promise<NostrEvent>;
@@ -118,6 +139,7 @@ export class AnnouncementManager {
     filters: Filter[],
     onEvent: (event: NostrEvent) => void,
   ) => Promise<void>;
+  private readonly onGetRelayUrls: (() => string[] | undefined) | undefined;
   private readonly logger: AnnouncementManagerOptions['logger'];
 
   private isInitialized = false;
@@ -131,12 +153,58 @@ export class AnnouncementManager {
     this.giftWrapMode = options.giftWrapMode;
     this.extraCommonTags = options.extraCommonTags ?? [];
     this.pricingTags = options.pricingTags ?? [];
-    this.onSendMessage = options.onSendMessage;
+    this.shouldPublishRelayList = options.publishRelayList ?? true;
+    this.relayListUrls = options.relayListUrls;
+    this.bootstrapRelayUrls =
+      options.bootstrapRelayUrls ?? DEFAULT_BOOTSTRAP_RELAY_URLS;
+    this.onDispatchMessage = options.onDispatchMessage;
     this.onPublishEvent = options.onPublishEvent;
+    this.onPublishEventToRelays = options.onPublishEventToRelays;
     this.onSignEvent = options.onSignEvent;
     this.onGetPublicKey = options.onGetPublicKey;
     this.onSubscribe = options.onSubscribe;
+    this.onGetRelayUrls = options.onGetRelayUrls;
     this.logger = options.logger;
+  }
+
+  /**
+   * Publishes relay list metadata when enabled.
+   */
+  public async publishRelayList(): Promise<void> {
+    if (!this.shouldPublishRelayList) {
+      return;
+    }
+
+    const relayUrls = this.getAdvertisedRelayUrls();
+    if (!relayUrls.length) {
+      this.logger.warn(
+        'Skipping relay list publication: no relay URLs available from configuration or relay handler',
+      );
+      return;
+    }
+
+    try {
+      const publicKey = await this.onGetPublicKey();
+      const eventTemplate = {
+        kind: RELAY_LIST_METADATA_KIND,
+        content: '',
+        tags: relayUrls.map((relayUrl) => [NOSTR_TAGS.RELAY, relayUrl]),
+        created_at: Math.floor(Date.now() / 1000),
+        pubkey: publicKey,
+      };
+
+      const signedEvent = await this.onSignEvent(eventTemplate as NostrEvent);
+      await this.publishDiscoverabilityEvent(signedEvent);
+      this.logger.debug('Published relay list metadata event', {
+        eventId: signedEvent.id,
+        relayCount: relayUrls.length,
+      });
+    } catch (error) {
+      this.logger.error('Error publishing relay list metadata', {
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+      });
+    }
   }
 
   /**
@@ -277,11 +345,17 @@ export class AnnouncementManager {
   }
 
   /**
-   * Initiates the process of fetching announcement data from the server's internal logic.
-   * This method properly handles the initialization handshake by first sending
-   * the initialize request, waiting for the response, and then proceeding with other announcements.
+   * Publishes the server's public announcement metadata.
    */
-  async getAnnouncementData(): Promise<void> {
+  public async publishPublicAnnouncements(): Promise<void> {
+    await this.requestAnnouncementPublication();
+  }
+
+  /**
+   * Requests announcement snapshots from the local MCP server by running the
+   * internal initialize handshake and dispatching announcement-triggering methods.
+   */
+  private async requestAnnouncementPublication(): Promise<void> {
     try {
       const initializeParams: InitializeRequest['params'] = {
         protocolVersion: LATEST_PROTOCOL_VERSION,
@@ -302,7 +376,7 @@ export class AnnouncementManager {
         };
 
         this.logger.info('Sending initialize request for announcement');
-        this.onSendMessage(initializeMessage);
+        this.onDispatchMessage(initializeMessage);
       }
 
       try {
@@ -318,7 +392,7 @@ export class AnnouncementManager {
             method: methodValue,
             params: key === 'server' ? initializeParams : {},
           };
-          this.onSendMessage(message);
+          this.onDispatchMessage(message);
         }
       } catch (error) {
         this.logger.warn(
@@ -327,7 +401,7 @@ export class AnnouncementManager {
         );
       }
     } catch (error) {
-      this.logger.error('Error in getAnnouncementData', {
+      this.logger.error('Error requesting announcement publication', {
         error: error instanceof Error ? error.message : String(error),
         stack: error instanceof Error ? error.stack : undefined,
       });
@@ -340,7 +414,9 @@ export class AnnouncementManager {
    * The method will always resolve, allowing announcements to proceed.
    */
   private async waitForInitialization(): Promise<void> {
-    if (this.isInitialized) return;
+    if (this.isInitialized) {
+      return;
+    }
 
     if (!this.initializationPromise) {
       this.initializationPromise = new Promise((resolve) => {
@@ -348,9 +424,12 @@ export class AnnouncementManager {
       });
     }
 
-    const timeout = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error('Initialization timeout')), 10000),
-    );
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(() => {
+        reject(new Error('Initialization timeout'));
+      }, 10000);
+    });
 
     try {
       await Promise.race([this.initializationPromise, timeout]);
@@ -358,6 +437,10 @@ export class AnnouncementManager {
       this.logger.warn(
         'Server initialization not completed within timeout, proceeding with announcements',
       );
+    } finally {
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
     }
   }
 
@@ -391,21 +474,23 @@ export class AnnouncementManager {
         jsonrpc: '2.0',
         method: NOTIFICATIONS_INITIALIZED_METHOD,
       };
-      this.onSendMessage(initializedNotification);
+      this.onDispatchMessage(initializedNotification);
       this.logger.info('Initialized');
     }
 
     // Publish the announcement as a Nostr event
-    await this.publishAnnouncement(message.result as JSONRPCMessage);
+    await this.publishAnnouncementEvent(message.result as JSONRPCMessage);
 
     return true;
   }
 
   /**
-   * Publishes an announcement as a Nostr event.
+   * Publishes a single announcement result as a Nostr event.
    * @param result The announcement result to publish.
    */
-  private async publishAnnouncement(result: JSONRPCMessage): Promise<void> {
+  private async publishAnnouncementEvent(
+    result: JSONRPCMessage,
+  ): Promise<void> {
     try {
       const recipientPubkey = await this.onGetPublicKey();
       const announcementMapping = this.getAnnouncementMapping();
@@ -423,7 +508,7 @@ export class AnnouncementManager {
           const signedEvent = await this.onSignEvent(
             eventTemplate as NostrEvent,
           );
-          await this.onPublishEvent(signedEvent);
+          await this.publishDiscoverabilityEvent(signedEvent);
           this.logger.debug('Published announcement event', {
             kind: mapping.kind,
             eventId: signedEvent.id,
@@ -432,7 +517,7 @@ export class AnnouncementManager {
         }
       }
     } catch (error) {
-      this.logger.error('Error publishing announcement', {
+      this.logger.error('Error publishing announcement event', {
         error: error instanceof Error ? error.message : String(error),
         stack: error instanceof Error ? error.stack : undefined,
       });
@@ -511,5 +596,35 @@ export class AnnouncementManager {
    */
   get initialized(): boolean {
     return this.isInitialized;
+  }
+
+  private getAdvertisedRelayUrls(): string[] {
+    if (this.relayListUrls?.length) {
+      return this.dedupeRelayUrls(this.relayListUrls);
+    }
+
+    const relayUrls = this.onGetRelayUrls?.();
+    return relayUrls?.length ? this.dedupeRelayUrls(relayUrls) : [];
+  }
+
+  private getDiscoverabilityPublishRelayUrls(): string[] {
+    return this.dedupeRelayUrls([
+      ...this.getAdvertisedRelayUrls(),
+      ...this.bootstrapRelayUrls,
+    ]);
+  }
+
+  private dedupeRelayUrls(relayUrls: readonly string[]): string[] {
+    return [...new Set(relayUrls.filter((relayUrl) => relayUrl.length > 0))];
+  }
+
+  private async publishDiscoverabilityEvent(event: NostrEvent): Promise<void> {
+    const relayUrls = this.getDiscoverabilityPublishRelayUrls();
+    if (relayUrls.length && this.onPublishEventToRelays) {
+      await this.onPublishEventToRelays(event, relayUrls);
+      return;
+    }
+
+    await this.onPublishEvent(event);
   }
 }

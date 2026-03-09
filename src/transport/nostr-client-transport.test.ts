@@ -14,6 +14,7 @@ import { NostrClientTransport } from './nostr-client-transport.js';
 import { PrivateKeySigner } from '../signer/private-key-signer.js';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import type { NostrEvent } from 'nostr-tools';
+import { nip19 } from 'nostr-tools';
 import { bytesToHex, hexToBytes } from 'nostr-tools/utils';
 import { ApplesauceRelayPool } from '../relay/applesauce-relay-pool.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -420,5 +421,105 @@ describe('NostrClientTransport instance shape', () => {
     expect(
       Object.prototype.hasOwnProperty.call(transport, 'onmessageWithContext'),
     ).toBe(true);
+  });
+
+  test('accepts npub as serverPubkey input and normalizes it to hex', () => {
+    const transport = new NostrClientTransport({
+      serverPubkey: nip19.npubEncode('a'.repeat(64)),
+      signer: new PrivateKeySigner('a'.repeat(64)),
+      relayHandler: [],
+    });
+
+    expect(transport.getInternalStateForTesting().serverPubkey).toBe(
+      'a'.repeat(64),
+    );
+  });
+
+  test('accepts nprofile as serverPubkey input and normalizes it to hex', () => {
+    const transport = new NostrClientTransport({
+      serverPubkey: nip19.nprofileEncode({
+        pubkey: 'b'.repeat(64),
+        relays: ['wss://relay.example.com'],
+      }),
+      signer: new PrivateKeySigner('a'.repeat(64)),
+      relayHandler: [],
+    });
+
+    expect(transport.getInternalStateForTesting().serverPubkey).toBe(
+      'b'.repeat(64),
+    );
+  });
+
+  test('throws a clear error for unsupported serverPubkey formats', () => {
+    expect(
+      () =>
+        new NostrClientTransport({
+          serverPubkey: 'not-a-valid-identifier',
+          signer: new PrivateKeySigner('a'.repeat(64)),
+          relayHandler: [],
+        }),
+    ).toThrow(
+      'Invalid serverPubkey format: not-a-valid-identifier. Expected hex pubkey, npub, or nprofile.',
+    );
+  });
+
+  test('uses nprofile relay hints when no operational relays are configured', async () => {
+    const relayHintUrl = 'wss://relay.example.com';
+    const transport = new NostrClientTransport({
+      serverPubkey: nip19.nprofileEncode({
+        pubkey: 'b'.repeat(64),
+        relays: [relayHintUrl],
+      }),
+      signer: new PrivateKeySigner('a'.repeat(64)),
+      relayHandler: [],
+    });
+
+    await transport['resolveOperationalRelayHandler']();
+
+    expect(transport.getInternalStateForTesting().relayUrls).toEqual([
+      relayHintUrl,
+    ]);
+  });
+
+  test('resolves relay-list metadata from discovery relays when no operational relays are configured', async () => {
+    const spawned = await spawnMockRelay();
+    const discoveryRelayUrl = spawned.relayUrl;
+    const serverSigner = new PrivateKeySigner('c'.repeat(64));
+    const serverPubkey = await serverSigner.getPublicKey();
+
+    try {
+      const relayListPublisher = new ApplesauceRelayPool([discoveryRelayUrl]);
+      await relayListPublisher.connect();
+
+      const relayListEvent = await serverSigner.signEvent({
+        kind: 10002,
+        content: '',
+        created_at: Math.floor(Date.now() / 1000),
+        pubkey: serverPubkey,
+        tags: [
+          ['r', 'wss://relay-1.example.com'],
+          ['r', 'wss://relay-2.example.com'],
+        ],
+      });
+      await relayListPublisher.publish(relayListEvent);
+      await relayListPublisher.disconnect();
+
+      const transport = new NostrClientTransport({
+        serverPubkey,
+        signer: new PrivateKeySigner('a'.repeat(64)),
+        relayHandler: [],
+        discoveryRelayUrls: [discoveryRelayUrl],
+      });
+
+      await transport['resolveOperationalRelayHandler']();
+
+      expect(transport.getInternalStateForTesting().relayUrls).toEqual([
+        'wss://relay-1.example.com',
+        'wss://relay-2.example.com',
+      ]);
+    } finally {
+      spawned.stop();
+      await sleep(100);
+    }
   });
 });

@@ -95,7 +95,7 @@ describe.serial('NostrTransport Encryption', () => {
     return { server, serverTransport };
   };
 
-  test('should connect successfully with OPTIONAL encryption on both ends', async () => {
+  test.serial('should connect successfully with OPTIONAL encryption on both ends', async () => {
     const serverPrivateKey = bytesToHex(generateSecretKey());
     const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
     const clientPrivateKey = bytesToHex(generateSecretKey());
@@ -112,13 +112,13 @@ describe.serial('NostrTransport Encryption', () => {
       EncryptionMode.OPTIONAL,
     );
 
-    await expect(client.connect(clientNostrTransport)).resolves.toBeUndefined();
+    expect(client.connect(clientNostrTransport)).resolves.toBeUndefined();
 
     await client.close();
     await server.close();
   }, 5000);
 
-  test('should connect with REQUIRED (client) and OPTIONAL (server)', async () => {
+  test.serial('should connect with REQUIRED (client) and OPTIONAL (server)', async () => {
     const serverPrivateKey = bytesToHex(generateSecretKey());
     const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
     const clientPrivateKey = bytesToHex(generateSecretKey());
@@ -141,7 +141,7 @@ describe.serial('NostrTransport Encryption', () => {
     await server.close();
   }, 5000);
 
-  test('should connect with OPTIONAL (client) and REQUIRED (server)', async () => {
+  test.serial('should connect with OPTIONAL (client) and REQUIRED (server)', async () => {
     const serverPrivateKey = bytesToHex(generateSecretKey());
     const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
     const clientPrivateKey = bytesToHex(generateSecretKey());
@@ -164,7 +164,7 @@ describe.serial('NostrTransport Encryption', () => {
     await server.close();
   }, 5000);
 
-  test('should connect with REQUIRED on both ends', async () => {
+  test.serial('should connect with REQUIRED on both ends', async () => {
     const serverPrivateKey = bytesToHex(generateSecretKey());
     const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
     const clientPrivateKey = bytesToHex(generateSecretKey());
@@ -187,7 +187,7 @@ describe.serial('NostrTransport Encryption', () => {
     await server.close();
   }, 5000);
 
-  test('should fail to connect if client requires encryption and server disables it', async () => {
+  test.serial('should fail to connect if client requires encryption and server disables it', async () => {
     const serverPrivateKey = bytesToHex(generateSecretKey());
     const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
     const clientPrivateKey = bytesToHex(generateSecretKey());
@@ -217,7 +217,7 @@ describe.serial('NostrTransport Encryption', () => {
     await server.close();
   }, 5000);
 
-  test('should connect successfully if both client and server have encryption disabled', async () => {
+  test.serial('should connect successfully if both client and server have encryption disabled', async () => {
     const serverPrivateKey = bytesToHex(generateSecretKey());
     const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
     const clientPrivateKey = bytesToHex(generateSecretKey());
@@ -240,7 +240,7 @@ describe.serial('NostrTransport Encryption', () => {
     await server.close();
   }, 5000);
 
-  test('should fail to connect if client encryption is disabled and server requires it', async () => {
+  test.serial('should fail to connect if client encryption is disabled and server requires it', async () => {
     const serverPrivateKey = bytesToHex(generateSecretKey());
     const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
     const clientPrivateKey = bytesToHex(generateSecretKey());
@@ -272,7 +272,7 @@ describe.serial('NostrTransport Encryption', () => {
     await server.close();
   }, 5000);
 
-  test('should mirror the format of the request in EncryptionMode.OPTIONAL: client encryption is disabled', async () => {
+  test.serial('should mirror the format of the request in EncryptionMode.OPTIONAL: client encryption is disabled', async () => {
     const serverPrivateKey = bytesToHex(generateSecretKey());
     const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
     const clientPrivateKey = bytesToHex(generateSecretKey());
@@ -300,7 +300,7 @@ describe.serial('NostrTransport Encryption', () => {
     await server.close();
   }, 5000);
 
-  test('should mirror the format of the request in EncryptionMode.OPTIONAL: client encryption is required', async () => {
+  test.serial('should mirror the format of the request in EncryptionMode.OPTIONAL: client encryption is required', async () => {
     const serverPrivateKey = bytesToHex(generateSecretKey());
     const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
     const clientPrivateKey = bytesToHex(generateSecretKey());
@@ -328,7 +328,7 @@ describe.serial('NostrTransport Encryption', () => {
     await server.close();
   }, 10000);
 
-  test('client optional should use kind 21059 when server advertises support_encryption_ephemeral', async () => {
+  test.serial('client optional should use kind 21059 when server advertises support_encryption_ephemeral', async () => {
     const serverPrivateKey = bytesToHex(generateSecretKey());
     const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
     const clientPrivateKey = bytesToHex(generateSecretKey());
@@ -363,7 +363,7 @@ describe.serial('NostrTransport Encryption', () => {
     await server.close();
   }, 10000);
 
-  test('stateless client optional should switch to kind 21059 after first server response advertises support_encryption_ephemeral', async () => {
+  test.serial('stateless client optional should switch to kind 21059 after first server response advertises support_encryption_ephemeral', async () => {
     const serverPrivateKey = bytesToHex(generateSecretKey());
     const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
     const clientPrivateKey = bytesToHex(generateSecretKey());

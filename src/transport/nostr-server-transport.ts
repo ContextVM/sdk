@@ -35,6 +35,7 @@ import { injectClientPubkey, withTimeout } from '../core/utils/utils.js';
 import { CorrelationStore } from './nostr-server/correlation-store.js';
 import { ClientSession, SessionStore } from './nostr-server/session-store.js';
 import { LruCache } from '../core/utils/lru-cache.js';
+import { ApplesauceRelayPool } from '../relay/applesauce-relay-pool.js';
 import {
   AuthorizationPolicy,
   CapabilityExclusion,
@@ -43,6 +44,7 @@ import {
   AnnouncementManager,
   ServerInfo,
 } from './nostr-server/announcement-manager.js';
+import type { RelayHandler } from '../core/interfaces.js';
 
 /**
  * Options for configuring the NostrServerTransport.
@@ -50,6 +52,12 @@ import {
 export interface NostrServerTransportOptions extends BaseNostrTransportOptions {
   serverInfo?: ServerInfo;
   isPublicServer?: boolean;
+  /** Whether to publish kind 10002 relay list metadata. @default true */
+  publishRelayList?: boolean;
+  /** Explicit relay URLs to advertise in kind 10002. Falls back to relayHandler.getRelayUrls() when omitted. */
+  relayListUrls?: string[];
+  /** Additional relays used only as discoverability publication targets. */
+  bootstrapRelayUrls?: readonly string[];
   allowedPublicKeys?: string[];
   /** List of capabilities that are excluded from public key whitelisting requirements */
   excludedCapabilities?: CapabilityExclusion[];
@@ -199,10 +207,16 @@ export class NostrServerTransport
       giftWrapMode: this.giftWrapMode,
       extraCommonTags: [],
       pricingTags: [],
-      onSendMessage: (message) => this.onmessage?.(message),
+      publishRelayList: options.publishRelayList,
+      relayListUrls: options.relayListUrls,
+      bootstrapRelayUrls: options.bootstrapRelayUrls,
+      onDispatchMessage: (message) => this.onmessage?.(message),
       onPublishEvent: (event) => this.publishEvent(event),
+      onPublishEventToRelays: (event, relayUrls) =>
+        this.publishEventToRelayUrls(event, relayUrls),
       onSignEvent: (eventTemplate) => this.signer.signEvent(eventTemplate),
       onGetPublicKey: () => this.getPublicKey(),
+      onGetRelayUrls: () => this.getRelayUrls(this.relayHandler),
       onSubscribe: (filters, onEvent) =>
         this.relayHandler.subscribe(filters, onEvent).then(() => undefined),
       logger: this.logger,
@@ -267,8 +281,10 @@ export class NostrServerTransport
       });
 
       if (this.authorizationPolicy.isPublicServer) {
-        await this.announcementManager.getAnnouncementData();
+        await this.announcementManager.publishPublicAnnouncements();
       }
+
+      await this.announcementManager.publishRelayList();
     } catch (error) {
       this.onerror?.(error instanceof Error ? error : new Error(String(error)));
       this.logAndRethrowError('Error starting NostrServerTransport', error);
@@ -344,6 +360,44 @@ export class NostrServerTransport
       this.logger.info(`Session created for ${clientPubkey}`);
     }
     return session;
+  }
+
+  private getRelayUrls(relayHandler: RelayHandler): string[] | undefined {
+    return relayHandler.getRelayUrls?.();
+  }
+
+  private async publishEventToRelayUrls(
+    event: NostrEvent,
+    relayUrls: string[],
+  ): Promise<void> {
+    const relayPool = new ApplesauceRelayPool(relayUrls);
+    try {
+      await withTimeout(
+        relayPool.connect(),
+        DEFAULT_TIMEOUT_MS,
+        'Connection to discoverability relays timed out',
+      );
+
+      const controller = new AbortController();
+      try {
+        await withTimeout(
+          relayPool.publish(event, {
+            abortSignal: controller.signal,
+          }),
+          DEFAULT_TIMEOUT_MS,
+          'Publish event to discoverability relays timed out',
+        );
+      } finally {
+        controller.abort();
+      }
+    } finally {
+      await relayPool.disconnect().catch((error) => {
+        this.logger.warn('Failed to disconnect discoverability relay pool', {
+          error: error instanceof Error ? error.message : String(error),
+          relayCount: relayUrls.length,
+        });
+      });
+    }
   }
 
   /**
