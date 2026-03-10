@@ -15,6 +15,7 @@ import {
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import {
   CTXVM_MESSAGES_KIND,
+  DEFAULT_BOOTSTRAP_RELAY_URLS,
   DEFAULT_TIMEOUT_MS,
   EPHEMERAL_GIFT_WRAP_KIND,
   GIFT_WRAP_KIND,
@@ -52,10 +53,21 @@ function hasSingleTag(tags: string[][], tag: string): boolean {
 /**
  * Options for configuring the NostrClientTransport.
  */
-export interface NostrTransportOptions extends BaseNostrTransportOptions {
+export interface NostrTransportOptions extends Omit<
+  BaseNostrTransportOptions,
+  'relayHandler'
+> {
   /** The server's identity for targeting messages. Accepts hex pubkey, npub, or nprofile. */
   serverPubkey: string;
-  /** Relay URLs used only for relay-list discovery when operational relays are not configured. */
+  /**
+   * Optional operational relays to use immediately.
+   * When omitted, the client resolves relays from identity hints or CEP-17 discovery.
+   */
+  relayHandler?: BaseNostrTransportOptions['relayHandler'];
+  /**
+   * Relay URLs used only for relay-list discovery when operational relays are not configured.
+   * Overrides the default bootstrap discovery relays when provided.
+   */
   discoveryRelayUrls?: string[];
   /** Whether to operate in stateless mode (emulates server responses) */
   isStateless?: boolean;
@@ -125,13 +137,17 @@ export class NostrClientTransport
    * @throws Error if serverPubkey is not a valid supported server identifier
    */
   constructor(options: NostrTransportOptions) {
-    super('nostr-client-transport', options);
+    super('nostr-client-transport', {
+      ...options,
+      relayHandler: options.relayHandler ?? [],
+    });
 
     const parsedServerIdentity = parseServerIdentity(options.serverPubkey);
 
     this.serverPubkey = parsedServerIdentity.pubkey;
     this.hintedRelayUrls = parsedServerIdentity.relayUrls;
-    this.discoveryRelayUrls = options.discoveryRelayUrls ?? [];
+    this.discoveryRelayUrls =
+      options.discoveryRelayUrls ?? DEFAULT_BOOTSTRAP_RELAY_URLS;
     this.isStateless = options.isStateless ?? false;
     this.correlationStore = new ClientCorrelationStore({
       maxPendingRequests: DEFAULT_LRU_SIZE,
@@ -700,6 +716,7 @@ export class NostrClientTransport
       correlationStore: this.correlationStore,
       statelessHandler: this.statelessHandler,
       serverPubkey: this.serverPubkey,
+      discoveryRelayUrls: [...this.discoveryRelayUrls],
       relayUrls: this.relayHandler.getRelayUrls?.() ?? [],
       serverInitializeEvent: this.serverInitializeEvent,
       serverToolsListEvent: this.serverToolsListEvent,

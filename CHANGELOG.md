@@ -1,5 +1,11 @@
 # @contextvm/sdk
 
+## 0.7.2
+
+### Patch Changes
+
+- feat(nostr-client): default discovery to bootstrap relays and make relayHandler optional
+
 ## 0.7.1
 
 ### Patch Changes

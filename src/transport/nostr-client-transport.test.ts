@@ -25,7 +25,10 @@ import {
   ToolResultContent,
 } from '@modelcontextprotocol/sdk/types.js';
 import { EncryptionMode } from '../core/interfaces.js';
-import { CTXVM_MESSAGES_KIND } from '../core/constants.js';
+import {
+  CTXVM_MESSAGES_KIND,
+  DEFAULT_BOOTSTRAP_RELAY_URLS,
+} from '../core/constants.js';
 import { withServerPayments } from '../payments/server-transport-payments.js';
 import { FakePaymentProcessor } from '../payments/fake-payment-processor.js';
 import {
@@ -478,6 +481,41 @@ describe('NostrClientTransport instance shape', () => {
 
     expect(transport.getInternalStateForTesting().relayUrls).toEqual([
       relayHintUrl,
+    ]);
+  });
+
+  test('uses bootstrap discovery relays by default when none are provided', () => {
+    const transport = new NostrClientTransport({
+      serverPubkey: 'b'.repeat(64),
+      signer: new PrivateKeySigner('a'.repeat(64)),
+    });
+
+    expect(transport.getInternalStateForTesting().discoveryRelayUrls).toEqual([
+      ...DEFAULT_BOOTSTRAP_RELAY_URLS,
+    ]);
+  });
+
+  test('explicit discovery relays override bootstrap discovery relays', () => {
+    const transport = new NostrClientTransport({
+      serverPubkey: 'b'.repeat(64),
+      signer: new PrivateKeySigner('a'.repeat(64)),
+      discoveryRelayUrls: ['wss://relay.example.com'],
+    });
+
+    expect(transport.getInternalStateForTesting().discoveryRelayUrls).toEqual([
+      'wss://relay.example.com',
+    ]);
+  });
+
+  test('allows omitting relayHandler when using discovery-based resolution', () => {
+    const transport = new NostrClientTransport({
+      serverPubkey: 'b'.repeat(64),
+      signer: new PrivateKeySigner('a'.repeat(64)),
+    });
+
+    expect(transport.getInternalStateForTesting().relayUrls).toEqual([]);
+    expect(transport.getInternalStateForTesting().discoveryRelayUrls).toEqual([
+      ...DEFAULT_BOOTSTRAP_RELAY_URLS,
     ]);
   });
 
