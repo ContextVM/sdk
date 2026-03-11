@@ -240,96 +240,100 @@ describe.serial('NostrClientTransport', () => {
     await newServer.close();
   }, 15000);
 
-  test.serial('should expose minimal initialize event convenience accessors', async () => {
-    await server.close();
+  test.serial(
+    'should expose minimal initialize event convenience accessors',
+    async () => {
+      await server.close();
 
-    const metadataServer = new McpServer({
-      name: 'Metadata Server',
-      version: '1.0.0',
-    });
-
-    const metadataServerTransport = new NostrServerTransport({
-      signer: new PrivateKeySigner(serverPrivateKey),
-      relayHandler: new ApplesauceRelayPool([relayUrl]),
-      serverInfo: {
+      const metadataServer = new McpServer({
         name: 'Metadata Server',
-        about: 'Server metadata for initialize tags',
-        website: 'https://example.com',
-        picture: 'https://example.com/logo.png',
-      },
-      encryptionMode: EncryptionMode.OPTIONAL,
-    });
+        version: '1.0.0',
+      });
 
-    await metadataServer.connect(metadataServerTransport);
+      const metadataServerTransport = new NostrServerTransport({
+        signer: new PrivateKeySigner(serverPrivateKey),
+        relayHandler: new ApplesauceRelayPool([relayUrl]),
+        serverInfo: {
+          name: 'Metadata Server',
+          about: 'Server metadata for initialize tags',
+          website: 'https://example.com',
+          picture: 'https://example.com/logo.png',
+        },
+        encryptionMode: EncryptionMode.OPTIONAL,
+      });
 
-    const client = new Client({
-      name: 'Metadata Client',
-      version: '1.0.0',
-    });
-    const clientPrivateKey = bytesToHex(generateSecretKey());
+      await metadataServer.connect(metadataServerTransport);
 
-    const clientTransport = new NostrClientTransport({
-      signer: new PrivateKeySigner(clientPrivateKey),
-      relayHandler: new ApplesauceRelayPool([relayUrl]),
-      serverPubkey: serverPublicKey,
-      encryptionMode: EncryptionMode.DISABLED,
-    });
+      const client = new Client({
+        name: 'Metadata Client',
+        version: '1.0.0',
+      });
+      const clientPrivateKey = bytesToHex(generateSecretKey());
 
-    await client.connect(clientTransport);
-    await sleep(200);
+      const clientTransport = new NostrClientTransport({
+        signer: new PrivateKeySigner(clientPrivateKey),
+        relayHandler: new ApplesauceRelayPool([relayUrl]),
+        serverPubkey: serverPublicKey,
+        encryptionMode: EncryptionMode.DISABLED,
+      });
 
-    const initializeEvent = clientTransport.getServerInitializeEvent();
-    expect(initializeEvent).toBeDefined();
-    expect(
-      initializeEvent!.tags.some(
-        (tag) => tag.length === 1 && tag[0] === NOSTR_TAGS.SUPPORT_ENCRYPTION,
-      ),
-    ).toBe(true);
+      await client.connect(clientTransport);
+      await sleep(200);
 
-    const initializeResult = clientTransport.getServerInitializeResult();
-    expect(initializeResult).toBeDefined();
-    expect((initializeResult as InitializeResult).serverInfo.name).toBe(
-      'Metadata Server',
-    );
-    expect(clientTransport.serverSupportsEncryption()).toBe(true);
-    expect(clientTransport.serverSupportsEphemeralEncryption()).toBe(true);
-    expect(clientTransport.getServerInitializeName()).toBe('Metadata Server');
-    expect(clientTransport.getServerInitializeAbout()).toBe(
-      'Server metadata for initialize tags',
-    );
-    expect(clientTransport.getServerInitializeWebsite()).toBe(
-      'https://example.com',
-    );
-    expect(clientTransport.getServerInitializePicture()).toBe(
-      'https://example.com/logo.png',
-    );
+      const initializeEvent = clientTransport.getServerInitializeEvent();
+      expect(initializeEvent).toBeDefined();
+      expect(
+        initializeEvent!.tags.some(
+          (tag) => tag.length === 1 && tag[0] === NOSTR_TAGS.SUPPORT_ENCRYPTION,
+        ),
+      ).toBe(true);
 
-    await client.close();
-    await metadataServer.close();
+      const initializeResult = clientTransport.getServerInitializeResult();
+      expect(initializeResult).toBeDefined();
+      expect((initializeResult as InitializeResult).serverInfo.name).toBe(
+        'Metadata Server',
+      );
+      expect(clientTransport.serverSupportsEncryption()).toBe(true);
+      expect(clientTransport.serverSupportsEphemeralEncryption()).toBe(true);
+      expect(clientTransport.getServerInitializeName()).toBe('Metadata Server');
+      expect(clientTransport.getServerInitializeAbout()).toBe(
+        'Server metadata for initialize tags',
+      );
+      expect(clientTransport.getServerInitializeWebsite()).toBe(
+        'https://example.com',
+      );
+      expect(clientTransport.getServerInitializePicture()).toBe(
+        'https://example.com/logo.png',
+      );
 
-    server = new McpServer({
-      name: 'Test-Server-For-Client-Test',
-      version: '1.0.0',
-    });
+      await client.close();
+      await metadataServer.close();
 
-    server.registerTool(
-      'add',
-      {
-        title: 'Addition Tool',
-        description: 'Add two numbers',
-        inputSchema: { a: z.number(), b: z.number() },
-      },
-      async ({ a, b }) => ({
-        content: [{ type: 'text', text: String(a + b) }],
-      }),
-    );
+      server = new McpServer({
+        name: 'Test-Server-For-Client-Test',
+        version: '1.0.0',
+      });
 
-    serverTransport = new NostrServerTransport({
-      signer: new PrivateKeySigner(serverPrivateKey),
-      relayHandler: new ApplesauceRelayPool([relayUrl]),
-    });
-    await server.connect(serverTransport);
-  }, 15000);
+      server.registerTool(
+        'add',
+        {
+          title: 'Addition Tool',
+          description: 'Add two numbers',
+          inputSchema: { a: z.number(), b: z.number() },
+        },
+        async ({ a, b }) => ({
+          content: [{ type: 'text', text: String(a + b) }],
+        }),
+      );
+
+      serverTransport = new NostrServerTransport({
+        signer: new PrivateKeySigner(serverPrivateKey),
+        relayHandler: new ApplesauceRelayPool([relayUrl]),
+      });
+      await server.connect(serverTransport);
+    },
+    15000,
+  );
 
   test('should route correlated notifications (with e tag) as notifications even when e is unknown', async () => {
     const clientPrivateKey = bytesToHex(generateSecretKey());
