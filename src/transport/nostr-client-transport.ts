@@ -1,4 +1,5 @@
 import {
+  InitializeResult,
   InitializeResultSchema,
   ListPromptsResultSchema,
   ListResourcesResultSchema,
@@ -48,6 +49,12 @@ import { withTimeout } from '../core/utils/utils.js';
 
 function hasSingleTag(tags: string[][], tag: string): boolean {
   return tags.some((t) => t.length === 1 && t[0] === tag);
+}
+
+function hasEventTag(event: NostrEvent | undefined, tag: string): boolean {
+  return (
+    Array.isArray(event?.tags) && hasSingleTag(event.tags as string[][], tag)
+  );
 }
 
 /**
@@ -575,6 +582,92 @@ export class NostrClientTransport
    */
   public getServerInitializeEvent(): NostrEvent | undefined {
     return this.serverInitializeEvent;
+  }
+
+  /**
+   * Gets the parsed initialize result from the server's initialize event content.
+   * @returns The parsed initialize result or undefined when unavailable or invalid
+   */
+  public getServerInitializeResult(): InitializeResult | undefined {
+    if (!this.serverInitializeEvent) {
+      return undefined;
+    }
+
+    try {
+      const content = JSON.parse(this.serverInitializeEvent.content) as {
+        result?: unknown;
+      };
+      const parse = InitializeResultSchema.safeParse(content.result);
+      return parse.success ? parse.data : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Returns whether the server initialize event advertises encrypted transport support.
+   * @returns True when the initialize event contains the support_encryption tag
+   */
+  public serverSupportsEncryption(): boolean {
+    return hasEventTag(
+      this.serverInitializeEvent,
+      NOSTR_TAGS.SUPPORT_ENCRYPTION,
+    );
+  }
+
+  /**
+   * Returns whether the server initialize event advertises ephemeral gift wrap support.
+   * @returns True when the initialize event contains the support_encryption_ephemeral tag
+   */
+  public serverSupportsEphemeralEncryption(): boolean {
+    return hasEventTag(
+      this.serverInitializeEvent,
+      NOSTR_TAGS.SUPPORT_ENCRYPTION_EPHEMERAL,
+    );
+  }
+
+  /**
+   * Gets the server name tag from the initialize event.
+   * @returns The name tag value or undefined
+   */
+  public getServerInitializeName(): string | undefined {
+    return getNostrEventTag(
+      this.serverInitializeEvent?.tags ?? [],
+      NOSTR_TAGS.NAME,
+    );
+  }
+
+  /**
+   * Gets the server about tag from the initialize event.
+   * @returns The about tag value or undefined
+   */
+  public getServerInitializeAbout(): string | undefined {
+    return getNostrEventTag(
+      this.serverInitializeEvent?.tags ?? [],
+      NOSTR_TAGS.ABOUT,
+    );
+  }
+
+  /**
+   * Gets the server website tag from the initialize event.
+   * @returns The website tag value or undefined
+   */
+  public getServerInitializeWebsite(): string | undefined {
+    return getNostrEventTag(
+      this.serverInitializeEvent?.tags ?? [],
+      NOSTR_TAGS.WEBSITE,
+    );
+  }
+
+  /**
+   * Gets the server picture tag from the initialize event.
+   * @returns The picture tag value or undefined
+   */
+  public getServerInitializePicture(): string | undefined {
+    return getNostrEventTag(
+      this.serverInitializeEvent?.tags ?? [],
+      NOSTR_TAGS.PICTURE,
+    );
   }
 
   /** Gets the server's most recently observed tools/list event envelope, if any. */

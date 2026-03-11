@@ -1,5 +1,11 @@
 # @contextvm/sdk
 
+## 0.7.3
+
+### Patch Changes
+
+- feat(transport): expose server initialize event convenience accessors
+
 ## 0.7.2
 
 ### Patch Changes
