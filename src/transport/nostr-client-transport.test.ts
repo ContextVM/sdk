@@ -240,7 +240,7 @@ describe.serial('NostrClientTransport', () => {
     await newServer.close();
   }, 15000);
 
-  test('should expose minimal initialize event convenience accessors', async () => {
+  test.serial('should expose minimal initialize event convenience accessors', async () => {
     await server.close();
 
     const metadataServer = new McpServer({
