@@ -3,6 +3,7 @@ import type { NostrEvent, Filter } from 'nostr-tools';
 import { RelayHandler } from '../core/interfaces.js';
 import { createLogger } from '../core/utils/logger.js';
 import { sleep } from '../core/utils/utils.js';
+import { ensureWebSocket } from '../core/utils/websocket.js';
 import {
   lastValueFrom,
   Subscription,
@@ -218,6 +219,8 @@ export class ApplesauceRelayPool implements RelayHandler {
   }
 
   private createRelay(url: string): Relay {
+    ensureWebSocket();
+
     // NOTE: applesauce-relay uses `keepAlive` as the delay before tearing down the
     // websocket after the last subscription is unsubscribed.
     //

@@ -1,5 +1,13 @@
 # @contextvm/sdk
 
+## 0.7.4
+
+### Patch Changes
+
+- feat(relay): add websocket support for relay connections
+
+  Adds the `ws` package as a dependency and implements websocket utilities to enable websocket connections in the relay pool. The new `src/core/utils/websocket.ts` module provides the `ensureWebSocket` function which is called when creating relays in `ApplesauceRelayPool`.
+
 ## 0.7.3
 
 ### Patch Changes
