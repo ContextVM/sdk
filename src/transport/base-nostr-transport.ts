@@ -56,7 +56,7 @@ export abstract class BaseNostrTransport {
   ]);
 
   protected readonly signer: NostrSigner;
-  protected readonly relayHandler: RelayHandler;
+  protected relayHandler: RelayHandler;
   protected readonly encryptionMode: EncryptionMode;
   protected readonly giftWrapMode: GiftWrapMode;
   protected logger: Logger;
@@ -78,6 +78,12 @@ export abstract class BaseNostrTransport {
     this.giftWrapMode = options.giftWrapMode ?? GiftWrapMode.OPTIONAL;
     this.logger = createLogger(module, { level: options.logLevel });
     this.taskQueue = new TaskQueue(5);
+  }
+
+  protected setRelayHandler(relayHandler: RelayHandler | string[]): void {
+    this.relayHandler = Array.isArray(relayHandler)
+      ? new ApplesauceRelayPool(relayHandler)
+      : relayHandler;
   }
 
   protected isGiftWrapKindAllowed(kind: number): boolean {

@@ -56,6 +56,7 @@ const transport = new NostrServerTransport({
     about:
       'Lorem ipsum dolor sit amet, consectetur adipiscing elit. Mauris sed ligula maximus, porta mauris non, finibus est. Etiam quis enim augue. In posuere sed lorem vitae posuere. Nullam mattis nisl sit amet purus blandit molestie vel eget lorem. Cras ligula ex, pharetra et ex vitae, tincidunt pretium ex. Morbi et eros quam. Aliquam non ex non orci tristique dictum sed quis nisi. Mauris lacus eros, lacinia eu ipsum at, rhoncus laoreet urna. Donec id interdum mauris. Donec ultrices, eros eget tristique tempus, metus odio vehicula diam, eu varius lectus elit viverra mi. Aliquam erat volutpat. Aenean efficitur ullamcorper efficitur. Quisque posuere enim elit, nec pulvinar nisi finibus nec. Morbi sollicitudin nibh arcu, at gravida tellus tincidunt et. Maecenas sagittis ex vel vulputate bibendum. Phasellus luctus metus ut enim commodo vestibulum. Sed malesuada blandit sollicitudin. Donec at lobortis tortor, et vulputate ipsum. Etiam vulputate luctus maximus. Donec tincidunt lectus nec tellus iaculis tincidunt',
   },
+  publishRelayList: false,
 });
 
 await server.connect(transport);

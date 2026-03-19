@@ -332,11 +332,14 @@ export class ApplesauceRelayPool implements RelayHandler {
         if (successCount === 0) throw new Error('Failed to publish event');
 
         if (failedCount > 0) {
-          logger.warn('Failed to publish event to some relays', {
-            eventId: event.id,
-            failedCount,
-            successCount,
-          });
+          logger.debug(
+            'Best-effort publish completed; some relays did not acknowledge',
+            {
+              eventId: event.id,
+              failedCount,
+              successCount,
+            },
+          );
         } else {
           logger.debug('Event published successfully', { eventId: event.id });
         }

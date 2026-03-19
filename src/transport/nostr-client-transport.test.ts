@@ -14,17 +14,23 @@ import { NostrClientTransport } from './nostr-client-transport.js';
 import { PrivateKeySigner } from '../signer/private-key-signer.js';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import type { NostrEvent } from 'nostr-tools';
+import { nip19 } from 'nostr-tools';
 import { bytesToHex, hexToBytes } from 'nostr-tools/utils';
 import { ApplesauceRelayPool } from '../relay/applesauce-relay-pool.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import {
+  InitializeResult,
   ListToolsResult,
   TextContent,
   ToolResultContent,
 } from '@modelcontextprotocol/sdk/types.js';
 import { EncryptionMode } from '../core/interfaces.js';
-import { CTXVM_MESSAGES_KIND } from '../core/constants.js';
+import {
+  CTXVM_MESSAGES_KIND,
+  DEFAULT_BOOTSTRAP_RELAY_URLS,
+  NOSTR_TAGS,
+} from '../core/constants.js';
 import { withServerPayments } from '../payments/server-transport-payments.js';
 import { FakePaymentProcessor } from '../payments/fake-payment-processor.js';
 import {
@@ -234,6 +240,101 @@ describe.serial('NostrClientTransport', () => {
     await newServer.close();
   }, 15000);
 
+  test.serial(
+    'should expose minimal initialize event convenience accessors',
+    async () => {
+      await server.close();
+
+      const metadataServer = new McpServer({
+        name: 'Metadata Server',
+        version: '1.0.0',
+      });
+
+      const metadataServerTransport = new NostrServerTransport({
+        signer: new PrivateKeySigner(serverPrivateKey),
+        relayHandler: new ApplesauceRelayPool([relayUrl]),
+        serverInfo: {
+          name: 'Metadata Server',
+          about: 'Server metadata for initialize tags',
+          website: 'https://example.com',
+          picture: 'https://example.com/logo.png',
+        },
+        encryptionMode: EncryptionMode.OPTIONAL,
+      });
+
+      await metadataServer.connect(metadataServerTransport);
+
+      const client = new Client({
+        name: 'Metadata Client',
+        version: '1.0.0',
+      });
+      const clientPrivateKey = bytesToHex(generateSecretKey());
+
+      const clientTransport = new NostrClientTransport({
+        signer: new PrivateKeySigner(clientPrivateKey),
+        relayHandler: new ApplesauceRelayPool([relayUrl]),
+        serverPubkey: serverPublicKey,
+        encryptionMode: EncryptionMode.DISABLED,
+      });
+
+      await client.connect(clientTransport);
+      await sleep(200);
+
+      const initializeEvent = clientTransport.getServerInitializeEvent();
+      expect(initializeEvent).toBeDefined();
+      expect(
+        initializeEvent!.tags.some(
+          (tag) => tag.length === 1 && tag[0] === NOSTR_TAGS.SUPPORT_ENCRYPTION,
+        ),
+      ).toBe(true);
+
+      const initializeResult = clientTransport.getServerInitializeResult();
+      expect(initializeResult).toBeDefined();
+      expect((initializeResult as InitializeResult).serverInfo.name).toBe(
+        'Metadata Server',
+      );
+      expect(clientTransport.serverSupportsEncryption()).toBe(true);
+      expect(clientTransport.serverSupportsEphemeralEncryption()).toBe(true);
+      expect(clientTransport.getServerInitializeName()).toBe('Metadata Server');
+      expect(clientTransport.getServerInitializeAbout()).toBe(
+        'Server metadata for initialize tags',
+      );
+      expect(clientTransport.getServerInitializeWebsite()).toBe(
+        'https://example.com',
+      );
+      expect(clientTransport.getServerInitializePicture()).toBe(
+        'https://example.com/logo.png',
+      );
+
+      await client.close();
+      await metadataServer.close();
+
+      server = new McpServer({
+        name: 'Test-Server-For-Client-Test',
+        version: '1.0.0',
+      });
+
+      server.registerTool(
+        'add',
+        {
+          title: 'Addition Tool',
+          description: 'Add two numbers',
+          inputSchema: { a: z.number(), b: z.number() },
+        },
+        async ({ a, b }) => ({
+          content: [{ type: 'text', text: String(a + b) }],
+        }),
+      );
+
+      serverTransport = new NostrServerTransport({
+        signer: new PrivateKeySigner(serverPrivateKey),
+        relayHandler: new ApplesauceRelayPool([relayUrl]),
+      });
+      await server.connect(serverTransport);
+    },
+    15000,
+  );
+
   test('should route correlated notifications (with e tag) as notifications even when e is unknown', async () => {
     const clientPrivateKey = bytesToHex(generateSecretKey());
     const clientPublicKey = getPublicKey(hexToBytes(clientPrivateKey));
@@ -420,5 +521,140 @@ describe('NostrClientTransport instance shape', () => {
     expect(
       Object.prototype.hasOwnProperty.call(transport, 'onmessageWithContext'),
     ).toBe(true);
+  });
+
+  test('accepts npub as serverPubkey input and normalizes it to hex', () => {
+    const transport = new NostrClientTransport({
+      serverPubkey: nip19.npubEncode('a'.repeat(64)),
+      signer: new PrivateKeySigner('a'.repeat(64)),
+      relayHandler: [],
+    });
+
+    expect(transport.getInternalStateForTesting().serverPubkey).toBe(
+      'a'.repeat(64),
+    );
+  });
+
+  test('accepts nprofile as serverPubkey input and normalizes it to hex', () => {
+    const transport = new NostrClientTransport({
+      serverPubkey: nip19.nprofileEncode({
+        pubkey: 'b'.repeat(64),
+        relays: ['wss://relay.example.com'],
+      }),
+      signer: new PrivateKeySigner('a'.repeat(64)),
+      relayHandler: [],
+    });
+
+    expect(transport.getInternalStateForTesting().serverPubkey).toBe(
+      'b'.repeat(64),
+    );
+  });
+
+  test('throws a clear error for unsupported serverPubkey formats', () => {
+    expect(
+      () =>
+        new NostrClientTransport({
+          serverPubkey: 'not-a-valid-identifier',
+          signer: new PrivateKeySigner('a'.repeat(64)),
+          relayHandler: [],
+        }),
+    ).toThrow(
+      'Invalid serverPubkey format: not-a-valid-identifier. Expected hex pubkey, npub, or nprofile.',
+    );
+  });
+
+  test('uses nprofile relay hints when no operational relays are configured', async () => {
+    const relayHintUrl = 'wss://relay.example.com';
+    const transport = new NostrClientTransport({
+      serverPubkey: nip19.nprofileEncode({
+        pubkey: 'b'.repeat(64),
+        relays: [relayHintUrl],
+      }),
+      signer: new PrivateKeySigner('a'.repeat(64)),
+      relayHandler: [],
+    });
+
+    await transport['resolveOperationalRelayHandler']();
+
+    expect(transport.getInternalStateForTesting().relayUrls).toEqual([
+      relayHintUrl,
+    ]);
+  });
+
+  test('uses bootstrap discovery relays by default when none are provided', () => {
+    const transport = new NostrClientTransport({
+      serverPubkey: 'b'.repeat(64),
+      signer: new PrivateKeySigner('a'.repeat(64)),
+    });
+
+    expect(transport.getInternalStateForTesting().discoveryRelayUrls).toEqual([
+      ...DEFAULT_BOOTSTRAP_RELAY_URLS,
+    ]);
+  });
+
+  test('explicit discovery relays override bootstrap discovery relays', () => {
+    const transport = new NostrClientTransport({
+      serverPubkey: 'b'.repeat(64),
+      signer: new PrivateKeySigner('a'.repeat(64)),
+      discoveryRelayUrls: ['wss://relay.example.com'],
+    });
+
+    expect(transport.getInternalStateForTesting().discoveryRelayUrls).toEqual([
+      'wss://relay.example.com',
+    ]);
+  });
+
+  test('allows omitting relayHandler when using discovery-based resolution', () => {
+    const transport = new NostrClientTransport({
+      serverPubkey: 'b'.repeat(64),
+      signer: new PrivateKeySigner('a'.repeat(64)),
+    });
+
+    expect(transport.getInternalStateForTesting().relayUrls).toEqual([]);
+    expect(transport.getInternalStateForTesting().discoveryRelayUrls).toEqual([
+      ...DEFAULT_BOOTSTRAP_RELAY_URLS,
+    ]);
+  });
+
+  test('resolves relay-list metadata from discovery relays when no operational relays are configured', async () => {
+    const spawned = await spawnMockRelay();
+    const discoveryRelayUrl = spawned.relayUrl;
+    const serverSigner = new PrivateKeySigner('c'.repeat(64));
+    const serverPubkey = await serverSigner.getPublicKey();
+
+    try {
+      const relayListPublisher = new ApplesauceRelayPool([discoveryRelayUrl]);
+      await relayListPublisher.connect();
+
+      const relayListEvent = await serverSigner.signEvent({
+        kind: 10002,
+        content: '',
+        created_at: Math.floor(Date.now() / 1000),
+        pubkey: serverPubkey,
+        tags: [
+          ['r', 'wss://relay-1.example.com'],
+          ['r', 'wss://relay-2.example.com'],
+        ],
+      });
+      await relayListPublisher.publish(relayListEvent);
+      await relayListPublisher.disconnect();
+
+      const transport = new NostrClientTransport({
+        serverPubkey,
+        signer: new PrivateKeySigner('a'.repeat(64)),
+        relayHandler: [],
+        discoveryRelayUrls: [discoveryRelayUrl],
+      });
+
+      await transport['resolveOperationalRelayHandler']();
+
+      expect(transport.getInternalStateForTesting().relayUrls).toEqual([
+        'wss://relay-1.example.com',
+        'wss://relay-2.example.com',
+      ]);
+    } finally {
+      spawned.stop();
+      await sleep(100);
+    }
   });
 });

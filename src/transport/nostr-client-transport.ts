@@ -1,4 +1,5 @@
 import {
+  InitializeResult,
   InitializeResultSchema,
   ListPromptsResultSchema,
   ListResourcesResultSchema,
@@ -15,6 +16,7 @@ import {
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import {
   CTXVM_MESSAGES_KIND,
+  DEFAULT_BOOTSTRAP_RELAY_URLS,
   DEFAULT_TIMEOUT_MS,
   EPHEMERAL_GIFT_WRAP_KIND,
   GIFT_WRAP_KIND,
@@ -37,6 +39,11 @@ import {
   PendingRequest,
   type OriginalRequestContext,
 } from './nostr-client/correlation-store.js';
+import { parseServerIdentity } from './nostr-client/server-identity.js';
+import {
+  fetchServerRelayList,
+  selectOperationalRelayUrls,
+} from './nostr-client/server-relay-discovery.js';
 import { StatelessModeHandler } from './nostr-client/stateless-mode-handler.js';
 import { withTimeout } from '../core/utils/utils.js';
 
@@ -44,12 +51,31 @@ function hasSingleTag(tags: string[][], tag: string): boolean {
   return tags.some((t) => t.length === 1 && t[0] === tag);
 }
 
+function hasEventTag(event: NostrEvent | undefined, tag: string): boolean {
+  return (
+    Array.isArray(event?.tags) && hasSingleTag(event.tags as string[][], tag)
+  );
+}
+
 /**
  * Options for configuring the NostrClientTransport.
  */
-export interface NostrTransportOptions extends BaseNostrTransportOptions {
-  /** The server's public key for targeting messages */
+export interface NostrTransportOptions extends Omit<
+  BaseNostrTransportOptions,
+  'relayHandler'
+> {
+  /** The server's identity for targeting messages. Accepts hex pubkey, npub, or nprofile. */
   serverPubkey: string;
+  /**
+   * Optional operational relays to use immediately.
+   * When omitted, the client resolves relays from identity hints or CEP-17 discovery.
+   */
+  relayHandler?: BaseNostrTransportOptions['relayHandler'];
+  /**
+   * Relay URLs used only for relay-list discovery when operational relays are not configured.
+   * Overrides the default bootstrap discovery relays when provided.
+   */
+  discoveryRelayUrls?: string[];
   /** Whether to operate in stateless mode (emulates server responses) */
   isStateless?: boolean;
   /** Log level for the transport */
@@ -84,6 +110,10 @@ export class NostrClientTransport
   private readonly statelessHandler: StatelessModeHandler;
   /** Whether stateless mode is enabled */
   private readonly isStateless: boolean;
+  /** Relay hints extracted from the provided server identity. */
+  private readonly hintedRelayUrls: readonly string[];
+  /** Relay URLs used for CEP-17 discovery when no operational relays are configured. */
+  private readonly discoveryRelayUrls: readonly string[];
   /** Optional list of client-supported PMIs (ordered by preference). */
   private clientPmis: readonly string[] | undefined;
   /** The server's initialize event, if received */
@@ -111,17 +141,20 @@ export class NostrClientTransport
   /**
    * Creates a new NostrClientTransport instance.
    * @param options - Configuration options for the transport
-   * @throws Error if serverPubkey is not a valid hex public key
+   * @throws Error if serverPubkey is not a valid supported server identifier
    */
   constructor(options: NostrTransportOptions) {
-    super('nostr-client-transport', options);
+    super('nostr-client-transport', {
+      ...options,
+      relayHandler: options.relayHandler ?? [],
+    });
 
-    // Validate serverPubkey is valid hex
-    if (!/^[0-9a-f]{64}$/i.test(options.serverPubkey)) {
-      throw new Error(`Invalid serverPubkey format: ${options.serverPubkey}`);
-    }
+    const parsedServerIdentity = parseServerIdentity(options.serverPubkey);
 
-    this.serverPubkey = options.serverPubkey;
+    this.serverPubkey = parsedServerIdentity.pubkey;
+    this.hintedRelayUrls = parsedServerIdentity.relayUrls;
+    this.discoveryRelayUrls =
+      options.discoveryRelayUrls ?? DEFAULT_BOOTSTRAP_RELAY_URLS;
     this.isStateless = options.isStateless ?? false;
     this.correlationStore = new ClientCorrelationStore({
       maxPendingRequests: DEFAULT_LRU_SIZE,
@@ -146,6 +179,8 @@ export class NostrClientTransport
    */
   public async start(): Promise<void> {
     try {
+      await this.resolveOperationalRelayHandler();
+
       // Execute independent async operations in parallel
       const [_connectionResult, pubkey] = await Promise.all([
         this.connect(),
@@ -549,6 +584,92 @@ export class NostrClientTransport
     return this.serverInitializeEvent;
   }
 
+  /**
+   * Gets the parsed initialize result from the server's initialize event content.
+   * @returns The parsed initialize result or undefined when unavailable or invalid
+   */
+  public getServerInitializeResult(): InitializeResult | undefined {
+    if (!this.serverInitializeEvent) {
+      return undefined;
+    }
+
+    try {
+      const content = JSON.parse(this.serverInitializeEvent.content) as {
+        result?: unknown;
+      };
+      const parse = InitializeResultSchema.safeParse(content.result);
+      return parse.success ? parse.data : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Returns whether the server initialize event advertises encrypted transport support.
+   * @returns True when the initialize event contains the support_encryption tag
+   */
+  public serverSupportsEncryption(): boolean {
+    return hasEventTag(
+      this.serverInitializeEvent,
+      NOSTR_TAGS.SUPPORT_ENCRYPTION,
+    );
+  }
+
+  /**
+   * Returns whether the server initialize event advertises ephemeral gift wrap support.
+   * @returns True when the initialize event contains the support_encryption_ephemeral tag
+   */
+  public serverSupportsEphemeralEncryption(): boolean {
+    return hasEventTag(
+      this.serverInitializeEvent,
+      NOSTR_TAGS.SUPPORT_ENCRYPTION_EPHEMERAL,
+    );
+  }
+
+  /**
+   * Gets the server name tag from the initialize event.
+   * @returns The name tag value or undefined
+   */
+  public getServerInitializeName(): string | undefined {
+    return getNostrEventTag(
+      this.serverInitializeEvent?.tags ?? [],
+      NOSTR_TAGS.NAME,
+    );
+  }
+
+  /**
+   * Gets the server about tag from the initialize event.
+   * @returns The about tag value or undefined
+   */
+  public getServerInitializeAbout(): string | undefined {
+    return getNostrEventTag(
+      this.serverInitializeEvent?.tags ?? [],
+      NOSTR_TAGS.ABOUT,
+    );
+  }
+
+  /**
+   * Gets the server website tag from the initialize event.
+   * @returns The website tag value or undefined
+   */
+  public getServerInitializeWebsite(): string | undefined {
+    return getNostrEventTag(
+      this.serverInitializeEvent?.tags ?? [],
+      NOSTR_TAGS.WEBSITE,
+    );
+  }
+
+  /**
+   * Gets the server picture tag from the initialize event.
+   * @returns The picture tag value or undefined
+   */
+  public getServerInitializePicture(): string | undefined {
+    return getNostrEventTag(
+      this.serverInitializeEvent?.tags ?? [],
+      NOSTR_TAGS.PICTURE,
+    );
+  }
+
   /** Gets the server's most recently observed tools/list event envelope, if any. */
   public getServerToolsListEvent(): NostrEvent | undefined {
     return this.serverToolsListEvent;
@@ -567,6 +688,48 @@ export class NostrClientTransport
   /** Gets the server's most recently observed prompts/list event envelope, if any. */
   public getServerPromptsListEvent(): NostrEvent | undefined {
     return this.serverPromptsListEvent;
+  }
+
+  private async resolveOperationalRelayHandler(): Promise<void> {
+    const configuredRelayUrls = this.relayHandler.getRelayUrls?.() ?? [];
+
+    if (configuredRelayUrls.length > 0) {
+      return;
+    }
+
+    if (this.hintedRelayUrls.length > 0) {
+      this.logger.info('Using relay hints from server identity', {
+        relayCount: this.hintedRelayUrls.length,
+      });
+      this.setRelayHandler([...this.hintedRelayUrls]);
+      return;
+    }
+
+    if (this.discoveryRelayUrls.length === 0) {
+      return;
+    }
+
+    const relayListEntries = await fetchServerRelayList({
+      serverPubkey: this.serverPubkey,
+      relayUrls: [...this.discoveryRelayUrls],
+    });
+    const resolvedRelayUrls = selectOperationalRelayUrls(relayListEntries);
+
+    if (resolvedRelayUrls.length > 0) {
+      this.logger.info('Resolved operational relays from server relay list', {
+        relayCount: resolvedRelayUrls.length,
+      });
+      this.setRelayHandler(resolvedRelayUrls);
+      return;
+    }
+
+    this.logger.warn(
+      'No operational relays discovered from kind 10002; falling back to discovery relays',
+      {
+        relayCount: this.discoveryRelayUrls.length,
+      },
+    );
+    this.setRelayHandler([...this.discoveryRelayUrls]);
   }
 
   /**
@@ -645,6 +808,9 @@ export class NostrClientTransport
     return {
       correlationStore: this.correlationStore,
       statelessHandler: this.statelessHandler,
+      serverPubkey: this.serverPubkey,
+      discoveryRelayUrls: [...this.discoveryRelayUrls],
+      relayUrls: this.relayHandler.getRelayUrls?.() ?? [],
       serverInitializeEvent: this.serverInitializeEvent,
       serverToolsListEvent: this.serverToolsListEvent,
       serverResourcesListEvent: this.serverResourcesListEvent,
