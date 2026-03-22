@@ -1,8 +1,8 @@
 import {
   McpServer,
   ResourceTemplate,
-} from '@modelcontextprotocol/sdk/server/mcp.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+} from '@contextvm/mcp-sdk/server';
+import { StdioServerTransport } from '@contextvm/mcp-sdk/server';
 import { z } from 'zod';
 
 // Create an MCP server
@@ -17,12 +17,13 @@ server.registerTool(
   {
     title: 'Addition Tool',
     description: 'Add two numbers',
-    inputSchema: { a: z.number(), b: z.number() },
+    inputSchema: z.object({ a: z.number(), b: z.number() }),
   },
   async ({ a, b }) => ({
     content: [{ type: 'text', text: String(a + b) }],
   }),
 );
+
 
 // Add a dynamic greeting resource
 server.registerResource(

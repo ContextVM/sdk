@@ -1,4 +1,4 @@
-import { type JSONRPCRequest } from '@modelcontextprotocol/sdk/types.js';
+import { type JSONRPCRequest } from '@contextvm/mcp-sdk';
 import {
   CorrelatedNotificationSender,
   PaymentAcceptedNotification,

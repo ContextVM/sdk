@@ -2,7 +2,7 @@ import type {
   JSONRPCMessage,
   JSONRPCNotification,
   JSONRPCRequest,
-} from '@modelcontextprotocol/sdk/types.js';
+} from '@contextvm/mcp-sdk';
 
 /**
  * A priced capability pattern, consistent with server-side authorization exclusions.

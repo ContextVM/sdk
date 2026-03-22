@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { StdioServerTransport } from '@contextvm/mcp-sdk/server';
 import { NostrMCPProxy } from '../proxy/index.js';
 import { PrivateKeySigner } from '../signer/private-key-signer.js';
 import { bytesToHex } from 'nostr-tools/utils';

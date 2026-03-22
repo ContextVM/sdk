@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
-import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js';
+import type { Transport } from '@contextvm/mcp-sdk';
+import type { JSONRPCMessage } from '@contextvm/mcp-sdk';
 import { withClientPayments } from './client-payments.js';
 import type { PaymentHandlerRequest } from './types.js';
 import { NostrClientTransport } from '../transport/nostr-client-transport.js';

@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { sleep } from 'bun';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { Client } from '@contextvm/mcp-sdk/client';
+import { StdioClientTransport } from '@contextvm/mcp-sdk/client';
 import { getPublicKey } from 'nostr-tools';
 import { hexToBytes } from 'nostr-tools/utils';
 import { TEST_PRIVATE_KEY } from '../__mocks__/fixtures.js';

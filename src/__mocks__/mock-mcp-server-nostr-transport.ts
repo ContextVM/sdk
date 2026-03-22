@@ -1,7 +1,7 @@
 import {
   McpServer,
   ResourceTemplate,
-} from '@modelcontextprotocol/sdk/server/mcp.js';
+} from '@contextvm/mcp-sdk/server';
 import { z } from 'zod';
 import { NostrServerTransport } from '../transport/nostr-server-transport.js';
 import { PrivateKeySigner } from '../signer/private-key-signer.js';
@@ -19,7 +19,7 @@ server.registerTool(
   {
     title: 'Addition Tool',
     description: 'Add two numbers',
-    inputSchema: { a: z.number(), b: z.number() },
+    inputSchema: z.object({ a: z.number(), b: z.number() }),
   },
   async ({ a, b }) => ({
     content: [{ type: 'text', text: String(a + b) }],

@@ -8,19 +8,20 @@ import {
 } from 'bun:test';
 import { sleep } from 'bun';
 import type { MockRelayInstance } from '../__mocks__/mock-relay-server.js';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { Client } from '@contextvm/mcp-sdk/client';
 import { NostrServerTransport } from './nostr-server-transport.js';
 import { NostrClientTransport } from './nostr-client-transport.js';
 import { PrivateKeySigner } from '../signer/private-key-signer.js';
 import { generateSecretKey, getPublicKey } from 'nostr-tools';
 import { bytesToHex, hexToBytes } from 'nostr-tools/utils';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { McpServer } from '@contextvm/mcp-sdk/server';
 import { ApplesauceRelayPool } from '../relay/applesauce-relay-pool.js';
 import { EncryptionMode } from '../core/interfaces.js';
 import {
   spawnMockRelay,
   clearRelayCache,
 } from '../__mocks__/test-relay-helpers.js';
+import z from 'zod';
 
 describe('NostrServerTransport Auth', () => {
   let relay: MockRelayInstance;
@@ -81,7 +82,7 @@ describe('NostrServerTransport Auth', () => {
       {
         title: 'Dummy Tool',
         description: 'A dummy tool',
-        inputSchema: {},
+        inputSchema: z.object({}),
       },
       async () => ({ content: [{ type: 'text', text: 'dummy' }] }),
     );

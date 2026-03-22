@@ -1,5 +1,5 @@
-import { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
-import { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js';
+import { Transport } from '@contextvm/mcp-sdk/';
+import { JSONRPCMessage } from '@contextvm/mcp-sdk';
 import {
   NostrClientTransport,
   NostrTransportOptions,

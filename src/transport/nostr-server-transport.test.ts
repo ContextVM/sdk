@@ -8,7 +8,7 @@ import {
 } from 'bun:test';
 import { sleep } from 'bun';
 import type { MockRelayInstance } from '../__mocks__/mock-relay-server.js';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { Client } from '@contextvm/mcp-sdk/client';
 import { NostrServerTransport } from './nostr-server-transport.js';
 import { NostrClientTransport } from './nostr-client-transport.js';
 import { PrivateKeySigner } from '../signer/private-key-signer.js';
@@ -26,7 +26,7 @@ import {
   SERVER_ANNOUNCEMENT_KIND,
   TOOLS_LIST_KIND,
 } from '../core/constants.js';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { McpServer } from '@contextvm/mcp-sdk/server';
 import { EncryptionMode, GiftWrapMode } from '../core/interfaces.js';
 import { ApplesauceRelayPool } from '../relay/applesauce-relay-pool.js';
 import { z } from 'zod';
@@ -34,7 +34,7 @@ import { injectClientPubkey } from '../core/utils/utils.js';
 import {
   isJSONRPCRequest,
   JSONRPCMessage,
-} from '@modelcontextprotocol/sdk/types.js';
+} from '@contextvm/mcp-sdk';
 import { withServerPayments } from '../payments/server-transport-payments.js';
 import { FakePaymentProcessor } from '../payments/fake-payment-processor.js';
 import {

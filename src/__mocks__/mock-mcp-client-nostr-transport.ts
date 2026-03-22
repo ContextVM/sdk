@@ -1,4 +1,4 @@
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { Client } from '@contextvm/mcp-sdk/client';
 import { NostrClientTransport } from '../transport/nostr-client-transport.js';
 import { bytesToHex } from 'nostr-tools/utils';
 import { generateSecretKey } from 'nostr-tools';

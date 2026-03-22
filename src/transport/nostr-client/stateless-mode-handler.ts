@@ -6,8 +6,8 @@ import type {
   JSONRPCMessage,
   InitializeResult,
   JSONRPCResultResponse,
-} from '@modelcontextprotocol/sdk/types.js';
-import { LATEST_PROTOCOL_VERSION } from '@modelcontextprotocol/sdk/types.js';
+} from '@contextvm/mcp-sdk';
+import { LATEST_PROTOCOL_VERSION } from '@contextvm/mcp-sdk';
 /**
  * Manages stateless mode emulation for public Nostr servers.
  * Provides emulated initialize responses for clients that cannot

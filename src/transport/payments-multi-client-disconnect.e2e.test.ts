@@ -7,8 +7,8 @@ import {
   test,
 } from 'bun:test';
 import { sleep } from 'bun';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { Client } from '@contextvm/mcp-sdk/client';
+import { McpServer } from '@contextvm/mcp-sdk/server';
 import { z } from 'zod';
 import { bytesToHex } from 'nostr-tools/utils';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';

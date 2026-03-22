@@ -1,4 +1,4 @@
-import type { JSONRPCResponse } from '@modelcontextprotocol/sdk/types.js';
+import type { JSONRPCResponse } from '@contextvm/mcp-sdk';
 import { LruCache } from '../../core/utils/lru-cache.js';
 
 /**

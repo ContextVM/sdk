@@ -1,20 +1,4 @@
 import {
-  InitializeResultSchema,
-  ListPromptsResultSchema,
-  ListResourcesResultSchema,
-  ListResourceTemplatesResultSchema,
-  ListToolsResultSchema,
-  isJSONRPCRequest,
-  isJSONRPCNotification,
-  type JSONRPCMessage,
-  type JSONRPCRequest,
-  type JSONRPCResponse,
-  isJSONRPCResultResponse,
-  isJSONRPCErrorResponse,
-  JSONRPCErrorResponse,
-} from '@modelcontextprotocol/sdk/types.js';
-import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
-import {
   BaseNostrTransport,
   BaseNostrTransportOptions,
 } from './base-nostr-transport.js';
@@ -45,6 +29,7 @@ import {
   ServerInfo,
 } from './nostr-server/announcement-manager.js';
 import type { RelayHandler } from '../core/interfaces.js';
+import { InitializeResultSchema, isJSONRPCErrorResponse, isJSONRPCNotification, isJSONRPCRequest, isJSONRPCResultResponse, JSONRPCErrorResponse, JSONRPCMessage, JSONRPCRequest, JSONRPCResponse, ListPromptsResultSchema, ListResourcesResultSchema, ListResourceTemplatesResultSchema, ListToolsResultSchema, Transport } from '@contextvm/mcp-sdk';
 
 /**
  * Options for configuring the NostrServerTransport.

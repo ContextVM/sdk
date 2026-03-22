@@ -7,14 +7,14 @@ import {
   expect,
 } from 'bun:test';
 import type { MockRelayInstance } from '../__mocks__/mock-relay-server.js';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { Client } from '@contextvm/mcp-sdk/client';
 import { NostrServerTransport } from './nostr-server-transport.js';
 import { NostrClientTransport } from './nostr-client-transport.js';
 import { PrivateKeySigner } from '../signer/private-key-signer.js';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import type { NostrEvent } from 'nostr-tools';
 import { bytesToHex, hexToBytes } from 'nostr-tools/utils';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { McpServer } from '@contextvm/mcp-sdk/server';
 import { EncryptionMode, GiftWrapMode } from '../core/interfaces.js';
 import {
   CTXVM_MESSAGES_KIND,

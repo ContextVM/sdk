@@ -2,7 +2,7 @@
 import { NostrMCPGateway } from '../gateway/index.js';
 import { PrivateKeySigner } from '../signer/private-key-signer.js';
 import { ApplesauceRelayPool } from '../relay/applesauce-relay-pool.js';
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { StdioClientTransport } from '@contextvm/mcp-sdk/client';
 import { bytesToHex } from 'nostr-tools/utils';
 import { generateSecretKey } from 'nostr-tools';
 

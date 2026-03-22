@@ -1,4 +1,4 @@
-import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js';
+import type { JSONRPCMessage } from '@contextvm/mcp-sdk';
 import type { Filter, NostrEvent } from 'nostr-tools';
 import {
   EncryptionMode,

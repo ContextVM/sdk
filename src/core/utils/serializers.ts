@@ -1,5 +1,5 @@
 import type { NostrEvent, UnsignedEvent } from 'nostr-tools';
-import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js';
+import type { JSONRPCMessage } from '@contextvm/mcp-sdk';
 import { createLogger } from './logger.js';
 
 const logger = createLogger('serializers');

@@ -1,8 +1,8 @@
 import {
   isInitializeRequest,
   type JSONRPCMessage,
-} from '@modelcontextprotocol/sdk/types.js';
-import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
+} from '@contextvm/mcp-sdk';
+import type { Transport } from '@contextvm/mcp-sdk';
 import {
   NostrServerTransport,
   NostrServerTransportOptions,

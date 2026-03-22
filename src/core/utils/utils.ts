@@ -2,7 +2,7 @@ import {
   JSONRPCMessage,
   JSONRPCMessageSchema,
   JSONRPCRequest,
-} from '@modelcontextprotocol/sdk/types.js';
+} from '@contextvm/mcp-sdk';
 
 /**
  * Sleeps for a specified number of milliseconds.
