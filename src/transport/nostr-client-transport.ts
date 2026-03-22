@@ -12,8 +12,8 @@ import {
   isJSONRPCResultResponse,
   isJSONRPCErrorResponse,
   type JSONRPCResponse,
-} from '@modelcontextprotocol/sdk/types.js';
-import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
+} from '@contextvm/mcp-sdk/types.js';
+import type { Transport } from '@contextvm/mcp-sdk/shared/transport.js';
 import {
   CTXVM_MESSAGES_KIND,
   DEFAULT_BOOTSTRAP_RELAY_URLS,
@@ -84,7 +84,7 @@ export interface NostrTransportOptions extends Omit<
 
 /**
  * A client transport layer for CTXVM that uses Nostr events for communication.
- * Implements the Transport interface from the @modelcontextprotocol/sdk.
+ * Implements the Transport interface from the @contextvm/mcp-sdk.
  * Handles request/response correlation and optional stateless mode emulation.
  */
 export class NostrClientTransport

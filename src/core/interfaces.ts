@@ -3,7 +3,7 @@ import {
   ListResourcesRequest,
   ListResourceTemplatesRequest,
   ListToolsRequest,
-} from '@modelcontextprotocol/sdk/types.js';
+} from '@contextvm/mcp-sdk/types.js';
 import type { EventTemplate, Filter, NostrEvent } from 'nostr-tools';
 
 /**

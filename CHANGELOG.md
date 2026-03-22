@@ -398,7 +398,7 @@ Additionally, tests have been updated to reflect the new async behavior and a ne
   the new eviction protection logic.
 
   Updated dependencies:
-  - @modelcontextprotocol/sdk to 1.25.3
+  - @contextvm/mcp-sdk to 1.25.3
   - pino to 10.2.1
   - typescript-eslint to 8.53.1
 
@@ -527,7 +527,7 @@ Additionally, tests have been updated to reflect the new async behavior and a ne
 ### Patch Changes
 
 - feat: update dependencies and enhance relay pool functionality
-  - Update @modelcontextprotocol/sdk from 1.24.2 to 1.25.1
+  - Update @contextvm/mcp-sdk from 1.24.2 to 1.25.1
   - Update devDependencies: @eslint/js, @types/bun, eslint, typescript-eslint
   - Update dependencies: nostr-tools
   - Switch mock transport to use ApplesauceRelayPool

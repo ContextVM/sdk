@@ -1,7 +1,4 @@
-import {
-  McpServer,
-  ResourceTemplate,
-} from '@modelcontextprotocol/sdk/server/mcp.js';
+import { McpServer, ResourceTemplate } from '@contextvm/mcp-sdk/server/mcp.js';
 import { z } from 'zod';
 import { NostrServerTransport } from '../transport/nostr-server-transport.js';
 import { PrivateKeySigner } from '../signer/private-key-signer.js';

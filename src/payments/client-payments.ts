@@ -1,11 +1,11 @@
-import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
+import type { Transport } from '@contextvm/mcp-sdk/shared/transport.js';
 import {
   isJSONRPCNotification,
   isJSONRPCResultResponse,
   isJSONRPCErrorResponse,
   JSONRPCNotification,
   type JSONRPCMessage,
-} from '@modelcontextprotocol/sdk/types.js';
+} from '@contextvm/mcp-sdk/types.js';
 import { NostrClientTransport } from '../transport/nostr-client-transport.js';
 import {
   PaymentHandler,

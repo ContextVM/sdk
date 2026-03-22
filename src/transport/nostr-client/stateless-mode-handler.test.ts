@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import { StatelessModeHandler } from './stateless-mode-handler.js';
-import { InitializeResult } from '@modelcontextprotocol/sdk/types.js';
+import { InitializeResult } from '@contextvm/mcp-sdk/types.js';
 import {
   INITIALIZE_METHOD,
   NOTIFICATIONS_INITIALIZED_METHOD,
