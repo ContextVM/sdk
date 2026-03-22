@@ -1,5 +1,13 @@
 # @contextvm/sdk
 
+## 0.7.5
+
+### Patch Changes
+
+- feat(transport): enable stateless clients to learn discovery tags from first response
+
+Previously, stateless clients couldn't receive server discovery tags (name, about, website, picture, encryption support) because they skip the initialize handshake. This change adds logic for the server to include discovery tags in its first response to a client, and for the client to learn and store these tags from that initial response. A new test verifies this behavior works correctly.
+
 ## 0.7.4
 
 ### Patch Changes
