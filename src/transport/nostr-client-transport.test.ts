@@ -508,6 +508,86 @@ describe.serial('NostrClientTransport', () => {
     await client.close();
     await paidServer.close();
   }, 20000);
+
+  test('learns discovery tags from first stateless server response', async () => {
+    await server.close();
+
+    const statelessServer = new McpServer({
+      name: 'Stateless Discovery Server',
+      version: '1.0.0',
+    });
+    statelessServer.registerTool(
+      'add',
+      {
+        title: 'Addition Tool',
+        description: 'Add two numbers',
+        inputSchema: { a: z.number(), b: z.number() },
+      },
+      async ({ a, b }) => ({
+        content: [{ type: 'text', text: String(a + b) }],
+      }),
+    );
+
+    const statelessServerTransport = new NostrServerTransport({
+      signer: new PrivateKeySigner(serverPrivateKey),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      serverInfo: {
+        name: 'Stateless Discovery Server',
+        about: 'Learns metadata from first response',
+        website: 'https://example.com/stateless',
+        picture: 'https://example.com/stateless.png',
+      },
+      encryptionMode: EncryptionMode.OPTIONAL,
+    });
+    statelessServerTransport.setAnnouncementExtraTags([
+      ['custom_discovery', 'supported'],
+    ]);
+
+    await statelessServer.connect(statelessServerTransport);
+
+    const client = new Client({ name: 'Stateless-Client', version: '1.0.0' });
+    const clientPrivateKey = bytesToHex(generateSecretKey());
+    const clientTransport = new NostrClientTransport({
+      signer: new PrivateKeySigner(clientPrivateKey),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      serverPubkey: serverPublicKey,
+      isStateless: true,
+      encryptionMode: EncryptionMode.DISABLED,
+    });
+
+    await client.connect(clientTransport);
+    await client.listTools();
+    await sleep(150);
+
+    const learnedEvent = clientTransport.getServerInitializeEvent();
+    expect(learnedEvent).toBeDefined();
+    expect(clientTransport.getServerInitializeName()).toBe(
+      'Stateless Discovery Server',
+    );
+    expect(clientTransport.getServerInitializeAbout()).toBe(
+      'Learns metadata from first response',
+    );
+    expect(clientTransport.getServerInitializeWebsite()).toBe(
+      'https://example.com/stateless',
+    );
+    expect(clientTransport.getServerInitializePicture()).toBe(
+      'https://example.com/stateless.png',
+    );
+    expect(clientTransport.serverSupportsEncryption()).toBe(true);
+    expect(learnedEvent!.tags).toEqual(
+      expect.arrayContaining([
+        [NOSTR_TAGS.NAME, 'Stateless Discovery Server'],
+        [NOSTR_TAGS.ABOUT, 'Learns metadata from first response'],
+        [NOSTR_TAGS.WEBSITE, 'https://example.com/stateless'],
+        [NOSTR_TAGS.PICTURE, 'https://example.com/stateless.png'],
+        [NOSTR_TAGS.SUPPORT_ENCRYPTION],
+        ['custom_discovery', 'supported'],
+      ]),
+    );
+
+    await client.close();
+    await statelessServer.close();
+  }, 20000);
 });
 
 describe('NostrClientTransport instance shape', () => {

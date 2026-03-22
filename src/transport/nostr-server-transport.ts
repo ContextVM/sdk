@@ -489,11 +489,11 @@ export class NostrServerTransport
     // Send the response back to the original requester
     const tags = this.createResponseTags(route.clientPubkey, nostrEventId);
 
-    // Attach transport capability tags on the first response for a client session.
-    // This enables capability discovery (e.g. support_encryption_ephemeral) even when
-    // clients operate in stateless mode and never observe a real initialize handshake.
+    // Attach discovery tags on the first response for a client session.
+    // This enables stateless clients to learn the same standard/custom discovery tags
+    // they would otherwise obtain from announcements or a real initialize handshake.
     if (!session.hasSentCommonTags) {
-      tags.push(...this.announcementManager.getCapabilityTags());
+      tags.push(...this.announcementManager.getCommonTags());
       session.hasSentCommonTags = true;
     }
 
@@ -508,10 +508,11 @@ export class NostrServerTransport
       }
     }
 
-    // Add server metadata tags for initialize responses (independent of encryption mode).
-    // Capability tags are already sent on the first response via `hasSentCommonTags`.
+    // Add server metadata tags for initialize responses when the first-response replay
+    // path did not already include them.
     if (
       isJSONRPCResultResponse(response) &&
+      !session.hasSentCommonTags &&
       InitializeResultSchema.safeParse(response.result).success
     ) {
       const serverInfoTags = this.announcementManager.getServerInfoTags();
