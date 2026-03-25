@@ -2,9 +2,8 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { sleep } from 'bun';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { getPublicKey } from 'nostr-tools';
-import { hexToBytes } from 'nostr-tools/utils';
-import { TEST_PRIVATE_KEY } from '../__mocks__/fixtures.js';
+import { generateSecretKey, getPublicKey } from 'nostr-tools';
+import { bytesToHex, hexToBytes } from 'nostr-tools/utils';
 import { createLogger } from '../core/utils/logger.js';
 import { ApplesauceRelayPool } from '../relay/applesauce-relay-pool.js';
 import { PrivateKeySigner } from '../signer/private-key-signer.js';
@@ -17,7 +16,7 @@ describe('NostrMCPGateway per-client MCP routing', () => {
   let relayUrl: string;
   const logger = createLogger('gateway-per-client-test');
 
-  const gatewayPrivateKey = TEST_PRIVATE_KEY;
+  const gatewayPrivateKey = bytesToHex(generateSecretKey());
   const gatewayPublicKey = getPublicKey(hexToBytes(gatewayPrivateKey));
 
   const client1PrivateKey = 'a'.repeat(64);

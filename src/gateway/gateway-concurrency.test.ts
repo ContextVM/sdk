@@ -2,7 +2,6 @@ import { afterAll, beforeAll, describe, test, expect } from 'bun:test';
 import { sleep } from 'bun';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { TEST_PRIVATE_KEY } from '../__mocks__/fixtures.js';
 import { NostrMCPGateway } from './index.js';
 import { NostrClientTransport } from '../transport/nostr-client-transport.js';
 import { PrivateKeySigner } from '../signer/private-key-signer.js';
@@ -17,7 +16,7 @@ describe('NostrMCPGateway End-to-End Test', () => {
   let relayUrl: string;
 
   // Generate a test private key for the gateway
-  const gatewayPrivateKey = TEST_PRIVATE_KEY;
+  const gatewayPrivateKey = bytesToHex(generateSecretKey());
   const gatewayPublicKey = getPublicKey(hexToBytes(gatewayPrivateKey));
 
   beforeAll(async () => {

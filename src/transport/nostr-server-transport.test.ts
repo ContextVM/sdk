@@ -15,7 +15,6 @@ import { PrivateKeySigner } from '../signer/private-key-signer.js';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import type { NostrEvent } from 'nostr-tools';
 import { bytesToHex, hexToBytes } from 'nostr-tools/utils';
-import { TEST_PRIVATE_KEY } from '../__mocks__/fixtures.js';
 import {
   CTXVM_MESSAGES_KIND,
   INITIALIZE_METHOD,
@@ -435,7 +434,7 @@ describe.serial('NostrServerTransport', () => {
   }, 15000);
 
   test('should allow connection for allowed public keys', async () => {
-    const serverPrivateKey = TEST_PRIVATE_KEY;
+    const serverPrivateKey = bytesToHex(generateSecretKey());
     const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
 
     const allowedClientPrivateKey = bytesToHex(generateSecretKey());
@@ -478,7 +477,7 @@ describe.serial('NostrServerTransport', () => {
   }, 10000);
 
   test('should allow connection for disallowed public keys', async () => {
-    const serverPrivateKey = TEST_PRIVATE_KEY;
+    const serverPrivateKey = bytesToHex(generateSecretKey());
     const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
 
     const allowedClientPublicKey = getPublicKey(
@@ -525,8 +524,7 @@ describe.serial('NostrServerTransport', () => {
   }, 10000);
 
   test('should allow call excluded capabilities for disallowed public keys', async () => {
-    // Use a unique server key per test to avoid cross-pollution with other
-    // concurrently running files that may also use TEST_PRIVATE_KEY.
+    // Use a unique server key per test to avoid cross-pollution with concurrent files.
     const serverPrivateKey = bytesToHex(generateSecretKey());
     const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
 
@@ -759,7 +757,7 @@ describe.serial('NostrServerTransport', () => {
   );
 
   test('should store server initialize event after receiving it', async () => {
-    const serverPrivateKey = TEST_PRIVATE_KEY;
+    const serverPrivateKey = bytesToHex(generateSecretKey());
     const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
 
     const clientPrivateKey = bytesToHex(generateSecretKey());

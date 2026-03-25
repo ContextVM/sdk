@@ -12,7 +12,6 @@ import {
   StdioClientTransport,
   StdioClientTransport as StdioClientTransportForGateway,
 } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { TEST_PRIVATE_KEY } from '../__mocks__/fixtures.js';
 import { NostrMCPGateway } from '../gateway/index.js';
 import { PrivateKeySigner } from '../signer/private-key-signer.js';
 import { generateSecretKey, getPublicKey } from 'nostr-tools';
@@ -31,7 +30,7 @@ describe('Proxy-Gateway E2E Test (Without Mock Responses)', () => {
   let httpUrl: string;
 
   // Generate keys for gateway and proxy
-  const gatewayPrivateKey = TEST_PRIVATE_KEY;
+  const gatewayPrivateKey = bytesToHex(generateSecretKey());
   const gatewayPublicKey = getPublicKey(hexToBytes(gatewayPrivateKey));
 
   const proxyPrivateKey = bytesToHex(generateSecretKey());

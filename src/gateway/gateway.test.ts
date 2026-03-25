@@ -2,12 +2,11 @@ import { afterAll, beforeAll, describe, test, expect } from 'bun:test';
 import { sleep } from 'bun';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { TEST_PRIVATE_KEY } from '../__mocks__/fixtures.js';
 import { NostrMCPGateway } from './index.js';
 import { NostrClientTransport } from '../transport/nostr-client-transport.js';
 import { PrivateKeySigner } from '../signer/private-key-signer.js';
-import { getPublicKey } from 'nostr-tools';
-import { hexToBytes } from 'nostr-tools/utils';
+import { generateSecretKey, getPublicKey } from 'nostr-tools';
+import { bytesToHex, hexToBytes } from 'nostr-tools/utils';
 import { createLogger } from '../core/utils/logger.js';
 import { ApplesauceRelayPool } from '../relay/applesauce-relay-pool.js';
 import { spawnMockRelay } from '../__mocks__/test-relay-helpers.js';
@@ -19,7 +18,7 @@ describe('NostrMCPGateway End-to-End Test', () => {
   const logger = createLogger('gateway-test');
 
   // Generate a test private key for the gateway
-  const gatewayPrivateKey = TEST_PRIVATE_KEY;
+  const gatewayPrivateKey = bytesToHex(generateSecretKey());
   const gatewayPublicKey = getPublicKey(hexToBytes(gatewayPrivateKey));
 
   // Generate a different private key for the client
