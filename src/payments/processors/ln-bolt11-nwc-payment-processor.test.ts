@@ -1,8 +1,11 @@
-import { describe, expect, test } from 'bun:test';
+import { beforeEach, describe, expect, test } from 'bun:test';
 
-import type { RelayHandler } from '../../core/interfaces.js';
 import type { NwcConnection } from '../nip47/types.js';
 import type { PaymentProcessorVerifyParams } from '../types.js';
+import {
+  LnBolt11NwcPaymentProcessor,
+  type NwcClientLike,
+} from './ln-bolt11-nwc-payment-processor.js';
 
 type NwcRequestCall = {
   method: string;
@@ -10,7 +13,7 @@ type NwcRequestCall = {
   resultType: string;
 };
 
-class MockNwcClient {
+class MockNwcClient implements NwcClientLike {
   public calls: NwcRequestCall[] = [];
 
   public responses: Array<unknown> = [];
@@ -56,66 +59,31 @@ class MockNwcClient {
   }
 }
 
-let mockClient: MockNwcClient | undefined;
+let mockClient: MockNwcClient;
 
-// Mock the connection parser so tests don't depend on URI parsing behavior.
-await import('bun:test').then(({ mock }) => {
-  mock.module('../nip47/connection.js', () => {
-    return {
-      parseNwcConnectionString(_s: string): NwcConnection {
-        return {
-          walletPubkey: 'f'.repeat(64),
-          relays: ['wss://relay.example'],
-          clientSecretKeyHex: '0'.repeat(64),
-        };
-      },
-    };
-  });
+const mockConnection: NwcConnection = {
+  walletPubkey: 'f'.repeat(64),
+  relays: ['wss://relay.example'],
+  clientSecretKeyHex: '0'.repeat(64),
+};
 
-  // Mock NwcClient so we can deterministically control request/response.
-  mock.module('../nip47/nwc-client.js', () => {
-    return {
-      NwcClient: class {
-        public constructor(_options: {
-          relayHandler: RelayHandler;
-          connection: NwcConnection;
-          responseTimeoutMs?: number;
-        }) {
-          mockClient = new MockNwcClient();
-        }
-
-        public async request<M extends string, P, R>(params: {
-          method: M;
-          request: { method: M; params: P };
-          resultType: M;
-        }): Promise<R> {
-          if (!mockClient) throw new Error('MockNwcClient not initialized');
-          return await mockClient.request(params);
-        }
-
-        public async fetchInfoNotificationTypes(): Promise<
-          ReadonlySet<string>
-        > {
-          if (!mockClient) throw new Error('MockNwcClient not initialized');
-          return await mockClient.fetchInfoNotificationTypes();
-        }
-
-        public async subscribeNotifications(params: {
-          onNotification: (payload: {
-            notification_type: string;
-            notification: unknown;
-          }) => void;
-        }): Promise<() => void> {
-          if (!mockClient) throw new Error('MockNwcClient not initialized');
-          return await mockClient.subscribeNotifications(params);
-        }
-      },
-    };
-  });
+beforeEach(() => {
+  mockClient = new MockNwcClient();
 });
 
-const { LnBolt11NwcPaymentProcessor } =
-  await import('./ln-bolt11-nwc-payment-processor.js');
+function createProcessor(
+  options: Omit<
+    ConstructorParameters<typeof LnBolt11NwcPaymentProcessor>[0],
+    'nwcConnectionString' | 'connection' | 'nwcClient'
+  > = {},
+): LnBolt11NwcPaymentProcessor {
+  return new LnBolt11NwcPaymentProcessor({
+    nwcConnectionString: 'nostr+walletconnect://test',
+    connection: mockConnection,
+    nwcClient: mockClient,
+    ...options,
+  });
+}
 
 function makeVerifyParams(params: {
   payReq: string;
@@ -131,9 +99,7 @@ function makeVerifyParams(params: {
 
 describe('LnBolt11NwcPaymentProcessor', () => {
   test('dedupes concurrent verifyPayment for the same invoice', async () => {
-    const processor = new LnBolt11NwcPaymentProcessor({
-      nwcConnectionString: 'nostr+walletconnect://test',
-    });
+    const processor = createProcessor();
 
     // One lookup that is immediately settled.
     mockClient!.responses.push({
@@ -162,9 +128,7 @@ describe('LnBolt11NwcPaymentProcessor', () => {
   });
 
   test('prefers lookup by payment_hash when wallet provided it on make_invoice', async () => {
-    const processor = new LnBolt11NwcPaymentProcessor({
-      nwcConnectionString: 'nostr+walletconnect://test',
-    });
+    const processor = createProcessor();
 
     mockClient!.responses.push({
       result_type: 'make_invoice',
@@ -203,8 +167,7 @@ describe('LnBolt11NwcPaymentProcessor', () => {
   });
 
   test('auto mode fetches info once and uses polling when notifications not supported', async () => {
-    const processor = new LnBolt11NwcPaymentProcessor({
-      nwcConnectionString: 'nostr+walletconnect://test',
+    const processor = createProcessor({
       enableNotificationVerification: undefined,
     });
 
@@ -226,8 +189,7 @@ describe('LnBolt11NwcPaymentProcessor', () => {
   });
 
   test('notification mode resolves verifyPayment from payment_received notification', async () => {
-    const processor = new LnBolt11NwcPaymentProcessor({
-      nwcConnectionString: 'nostr+walletconnect://test',
+    const processor = createProcessor({
       enableNotificationVerification: true,
     });
 
