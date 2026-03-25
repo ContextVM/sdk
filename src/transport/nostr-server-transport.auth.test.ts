@@ -1,13 +1,5 @@
-import {
-  afterAll,
-  afterEach,
-  beforeAll,
-  describe,
-  test,
-  expect,
-} from 'bun:test';
+import { afterAll, describe, test, expect } from 'bun:test';
 import { sleep } from 'bun';
-import type { MockRelayInstance } from '../__mocks__/mock-relay-server.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { NostrServerTransport } from './nostr-server-transport.js';
 import { NostrClientTransport } from './nostr-client-transport.js';
@@ -15,44 +7,28 @@ import { PrivateKeySigner } from '../signer/private-key-signer.js';
 import { generateSecretKey, getPublicKey } from 'nostr-tools';
 import { bytesToHex, hexToBytes } from 'nostr-tools/utils';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { ApplesauceRelayPool } from '../relay/applesauce-relay-pool.js';
 import { EncryptionMode } from '../core/interfaces.js';
-import {
-  spawnMockRelay,
-  clearRelayCache,
-} from '../__mocks__/test-relay-helpers.js';
+import { MockRelayHub } from '../__mocks__/mock-relay-handler.js';
 
-describe('NostrServerTransport Auth', () => {
-  let relay: MockRelayInstance;
-  let relayUrl: string;
-  let httpUrl: string;
-
-  beforeAll(async () => {
-    const spawned = await spawnMockRelay();
-    relay = spawned.relay;
-    relayUrl = spawned.relayUrl;
-    httpUrl = spawned.httpUrl;
-  });
-
-  afterEach(async () => {
-    await clearRelayCache(httpUrl);
-  });
-
+describe.serial('NostrServerTransport Auth', () => {
   afterAll(async () => {
-    relay.stop();
     await sleep(100);
   });
 
   // Helper function to create a client and its transport
   const createClientAndTransport = (
+    relayHub: MockRelayHub,
     privateKey: string,
     name: string,
     serverPublicKey: string,
-  ) => {
+  ): {
+    client: Client;
+    clientNostrTransport: NostrClientTransport;
+  } => {
     const client = new Client({ name, version: '1.0.0' });
     const clientNostrTransport = new NostrClientTransport({
       signer: new PrivateKeySigner(privateKey),
-      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      relayHandler: relayHub.createRelayHandler(),
       serverPubkey: serverPublicKey,
       encryptionMode: EncryptionMode.DISABLED,
     });
@@ -60,6 +36,7 @@ describe('NostrServerTransport Auth', () => {
   };
 
   test('should reject method calls from disallowed public keys', async () => {
+    const relayHub = new MockRelayHub();
     const serverPrivateKey = bytesToHex(generateSecretKey());
     const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
 
@@ -88,7 +65,7 @@ describe('NostrServerTransport Auth', () => {
 
     const serverTransport = new NostrServerTransport({
       signer: new PrivateKeySigner(serverPrivateKey),
-      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      relayHandler: relayHub.createRelayHandler(),
       allowedPublicKeys: [allowedClientPublicKey],
     });
 
@@ -98,6 +75,7 @@ describe('NostrServerTransport Auth', () => {
       client: disallowedClient,
       clientNostrTransport: disallowedClientNostrTransport,
     } = createClientAndTransport(
+      relayHub,
       disallowedClientPrivateKey,
       'Disallowed Client',
       serverPublicKey,
@@ -117,9 +95,12 @@ describe('NostrServerTransport Auth', () => {
     expect(result).toBe('timeout');
 
     await disallowedClient.close();
+    await initializePromise.catch(() => undefined);
     await server.close();
+    relayHub.clear();
   }, 10000);
   test('should receive error from public server if unauthorized', async () => {
+    const relayHub = new MockRelayHub();
     const serverPrivateKey = bytesToHex(generateSecretKey());
     const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
 
@@ -137,7 +118,7 @@ describe('NostrServerTransport Auth', () => {
 
     const serverTransport = new NostrServerTransport({
       signer: new PrivateKeySigner(serverPrivateKey),
-      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      relayHandler: relayHub.createRelayHandler(),
       allowedPublicKeys: [allowedClientPublicKey],
       isPublicServer: true,
     });
@@ -148,6 +129,7 @@ describe('NostrServerTransport Auth', () => {
       client: disallowedClient,
       clientNostrTransport: disallowedClientNostrTransport,
     } = createClientAndTransport(
+      relayHub,
       disallowedClientPrivateKey,
       'Disallowed Client',
       serverPublicKey,
@@ -159,9 +141,11 @@ describe('NostrServerTransport Auth', () => {
 
     await disallowedClient.close();
     await server.close();
+    relayHub.clear();
   }, 10000);
 
   test('should create session for authorized client on first message', async () => {
+    const relayHub = new MockRelayHub();
     const serverPrivateKey = bytesToHex(generateSecretKey());
     const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
 
@@ -179,7 +163,7 @@ describe('NostrServerTransport Auth', () => {
 
     const serverTransport = new NostrServerTransport({
       signer: new PrivateKeySigner(serverPrivateKey),
-      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      relayHandler: relayHub.createRelayHandler(),
       allowedPublicKeys: [allowedClientPublicKey],
       isPublicServer: true, // Public server to send unauthorized error
     });
@@ -187,6 +171,7 @@ describe('NostrServerTransport Auth', () => {
     await server.connect(serverTransport);
 
     const { client, clientNostrTransport } = createClientAndTransport(
+      relayHub,
       allowedClientPrivateKey,
       'Allowed Client',
       serverPublicKey,
@@ -196,6 +181,7 @@ describe('NostrServerTransport Auth', () => {
       client: unauthorizedClient,
       clientNostrTransport: unauthorizedClientNostrTransport,
     } = createClientAndTransport(
+      relayHub,
       unauthorizedClientPrivateKey,
       'Unauthorized Client',
       serverPublicKey,
@@ -222,6 +208,8 @@ describe('NostrServerTransport Auth', () => {
     expect(session!.isEncrypted).toBe(false); // Encryption is disabled in createClientAndTransport
     expect(internalState.sessionStore.sessionCount).toBe(1);
     await client.close();
+    await unauthorizedClient.close();
     await server.close();
+    relayHub.clear();
   }, 10000);
 });

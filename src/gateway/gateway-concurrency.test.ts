@@ -7,23 +7,20 @@ import { NostrClientTransport } from '../transport/nostr-client-transport.js';
 import { PrivateKeySigner } from '../signer/private-key-signer.js';
 import { generateSecretKey, getPublicKey } from 'nostr-tools';
 import { bytesToHex, hexToBytes } from 'nostr-tools/utils';
-import { ApplesauceRelayPool } from '../relay/applesauce-relay-pool.js';
-import { spawnMockRelay } from '../__mocks__/test-relay-helpers.js';
+import { MockRelayHub } from '../__mocks__/mock-relay-handler.js';
 
 describe('NostrMCPGateway End-to-End Test', () => {
   let stopRelay: (() => void) | undefined;
   let gateway: NostrMCPGateway;
-  let relayUrl: string;
+  let relayHub: MockRelayHub;
 
   // Generate a test private key for the gateway
   const gatewayPrivateKey = bytesToHex(generateSecretKey());
   const gatewayPublicKey = getPublicKey(hexToBytes(gatewayPrivateKey));
 
   beforeAll(async () => {
-    // Start the mock relay
-    const relay = await spawnMockRelay();
-    relayUrl = relay.relayUrl;
-    stopRelay = relay.stop;
+    relayHub = new MockRelayHub();
+    stopRelay = () => relayHub.clear();
 
     // Create the gateway with the mock server transport
     const mcpServerTransport = new StdioClientTransport({
@@ -32,13 +29,15 @@ describe('NostrMCPGateway End-to-End Test', () => {
     });
 
     const gatewaySigner = new PrivateKeySigner(gatewayPrivateKey);
-    const gatewayRelayHandler = new ApplesauceRelayPool([relayUrl]);
+    const gatewayRelayHandler = relayHub.createRelayHandler();
 
     gateway = new NostrMCPGateway({
       mcpClientTransport: mcpServerTransport,
       nostrTransportOptions: {
         signer: gatewaySigner,
         relayHandler: gatewayRelayHandler,
+        isPublicServer: false,
+        publishRelayList: false,
       },
     });
 
@@ -65,7 +64,7 @@ describe('NostrMCPGateway End-to-End Test', () => {
 
   const createClientTransport = (privateKey: string): NostrClientTransport => {
     const clientSigner = new PrivateKeySigner(privateKey);
-    const clientRelayHandler = new ApplesauceRelayPool([relayUrl]);
+    const clientRelayHandler = relayHub.createRelayHandler();
 
     return new NostrClientTransport({
       signer: clientSigner,
