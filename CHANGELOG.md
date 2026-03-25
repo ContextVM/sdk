@@ -693,7 +693,7 @@ Additionally, tests have been updated to reflect the new async behavior and a ne
 
 ### Patch Changes
 
-- feat(transport): feat(transport): add capability exclusion for whitelisting
+- feat(transport): add capability exclusion for whitelisting
 
   Add support for excluding specific capabilities from public key whitelisting
   requirements, allowing certain operations from disallowed public keys. This
