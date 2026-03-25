@@ -95,13 +95,13 @@
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-import": "^2.32.0",
     "prettier": "^3.8.1",
-    "typescript-eslint": "^8.57.1"
+    "typescript-eslint": "^8.57.2"
   },
   "peerDependencies": {
     "typescript": "^5.9.3"
   },
   "dependencies": {
-    "@contextvm/mcp-sdk": "^1.27.1-contextvm.2",
+    "@contextvm/mcp-sdk": "^1.28.0",
     "applesauce-relay": "^5.2.0",
     "nostr-tools": "~2.18.2",
     "pino": "^10.3.1",
