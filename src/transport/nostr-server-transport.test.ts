@@ -41,6 +41,7 @@ import {
   spawnMockRelayOnPort,
   clearRelayCache,
 } from '../__mocks__/test-relay-helpers.js';
+import { waitFor } from '../core/utils/test.utils.js';
 
 describe.serial('NostrServerTransport', () => {
   let relay: MockRelayInstance;
@@ -222,7 +223,15 @@ describe.serial('NostrServerTransport', () => {
         },
       );
 
-      await sleep(350);
+      await waitFor({
+        produce: () =>
+          events.length >= 2 &&
+          events.some((ev) => ev.kind === SERVER_ANNOUNCEMENT_KIND) &&
+          events.some((ev) => ev.kind === TOOLS_LIST_KIND)
+            ? events
+            : undefined,
+        timeoutMs: 5_000,
+      });
 
       const announcement = events.find(
         (ev) => ev.kind === SERVER_ANNOUNCEMENT_KIND,
@@ -789,12 +798,10 @@ describe.serial('NostrServerTransport', () => {
     // Connect the client
     await client.connect(clientNostrTransport);
 
-    // Wait for the initialize event to be processed
-    await sleep(200);
-
-    // Check that the client transport has stored the initialize event
-    const storedInitializeEvent =
-      clientNostrTransport.getServerInitializeEvent();
+    const storedInitializeEvent = await waitFor({
+      produce: () => clientNostrTransport.getServerInitializeEvent(),
+      timeoutMs: 5_000,
+    });
     expect(storedInitializeEvent).toBeDefined();
     expect(storedInitializeEvent).not.toBeNull();
     expect(storedInitializeEvent!.pubkey).toBe(serverPublicKey);
@@ -920,15 +927,17 @@ describe.serial('NostrServerTransport', () => {
     // Connect client (triggers initialize handshake)
     await client.connect(clientNostrTransport);
 
-    // Wait for response
-    await sleep(300);
+    const capturedInitializeResponseEvent = await waitFor({
+      produce: () => initializeResponseEvent ?? undefined,
+      timeoutMs: 5_000,
+    });
 
-    expect(initializeResponseEvent).toBeDefined();
+    expect(capturedInitializeResponseEvent).toBeDefined();
     expect(initializeResponseEvent!.tags).toBeDefined();
 
     // Convert tags to an object for easier testing
     const tagsObject: { [key: string]: string } = {};
-    initializeResponseEvent!.tags.forEach((tag: string[]) => {
+    capturedInitializeResponseEvent.tags.forEach((tag: string[]) => {
       if (
         tag.length >= 2 &&
         typeof tag[0] === 'string' &&
@@ -945,7 +954,7 @@ describe.serial('NostrServerTransport', () => {
     expect(tagsObject.picture).toBe('http://localhost/logo.png');
 
     // Verify support_encryption tag is present
-    const supportEncryptionTag = initializeResponseEvent!.tags.find(
+    const supportEncryptionTag = capturedInitializeResponseEvent.tags.find(
       (tag: string[]) => tag.length === 1 && tag[0] === 'support_encryption',
     );
     expect(supportEncryptionTag).toBeDefined();
@@ -985,10 +994,11 @@ describe.serial('NostrServerTransport', () => {
     );
 
     await client.connect(clientNostrTransport);
-    await sleep(200);
 
-    const initializeResponseEvent =
-      clientNostrTransport.getServerInitializeEvent();
+    const initializeResponseEvent = await waitFor({
+      produce: () => clientNostrTransport.getServerInitializeEvent(),
+      timeoutMs: 5_000,
+    });
     expect(initializeResponseEvent).toBeDefined();
     const supportEncryptionEphemeralTag = initializeResponseEvent!.tags.find(
       (tag: string[]) =>
@@ -1021,9 +1031,6 @@ describe.serial('NostrServerTransport', () => {
 
     await server.connect(serverTransport);
 
-    // Wait for announcements to be published
-    await sleep(200);
-
     // Collect all announcement events before deletion
     const announcementEventsByKind: { [kind: number]: NostrEvent[] } = {};
     const relayPool = new ApplesauceRelayPool([relayUrl]);
@@ -1045,8 +1052,11 @@ describe.serial('NostrServerTransport', () => {
           events.push(event);
         },
       );
-      await sleep(50);
-      if (events.length > 0) {
+      const settledEvents = await waitFor({
+        produce: () => (events.length > 0 ? events : undefined),
+        timeoutMs: 2_000,
+      }).catch(() => undefined);
+      if (settledEvents && settledEvents.length > 0) {
         announcementEventsByKind[kind] = events;
       }
     }

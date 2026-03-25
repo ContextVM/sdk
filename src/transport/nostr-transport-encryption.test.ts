@@ -22,6 +22,7 @@ import {
 } from '../core/constants.js';
 import type { RelayHandler } from '../core/interfaces.js';
 import { MockRelayHub } from '../__mocks__/mock-relay-handler.js';
+import { waitFor } from '../core/utils/test.utils.js';
 
 describe.serial('NostrTransport Encryption', () => {
   let relayHub: MockRelayHub;
@@ -325,6 +326,10 @@ describe.serial('NostrTransport Encryption', () => {
         collectedEvents.push(event);
       });
       await client.connect(clientNostrTransport);
+      await waitFor({
+        produce: () =>
+          collectedEvents.length > 0 ? collectedEvents : undefined,
+      });
       expect(collectedEvents.length).toBeGreaterThan(0);
 
       await client.close();
@@ -357,6 +362,10 @@ describe.serial('NostrTransport Encryption', () => {
         collectedEvents.push(event);
       });
       await client.connect(clientNostrTransport);
+      await waitFor({
+        produce: () =>
+          collectedEvents.length > 0 ? collectedEvents : undefined,
+      });
       expect(collectedEvents.length).toBeGreaterThan(0);
 
       await client.close();
@@ -399,6 +408,10 @@ describe.serial('NostrTransport Encryption', () => {
 
       await client.listTools();
 
+      await waitFor({
+        produce: () =>
+          collectedEvents.length > 0 ? collectedEvents : undefined,
+      });
       expect(collectedEvents.length).toBeGreaterThan(0);
 
       await client.close();
@@ -453,10 +466,21 @@ describe.serial('NostrTransport Encryption', () => {
 
       // First request: should default to persistent gift wrap (1059)
       await client.listTools();
-      await Bun.sleep(50);
+      await waitFor({
+        produce: () =>
+          giftWrapKindsObserved.includes(GIFT_WRAP_KIND)
+            ? giftWrapKindsObserved
+            : undefined,
+      });
       // Second request: after server response tags, should switch to ephemeral gift wrap (21059)
       await client.listTools();
-      await Bun.sleep(50);
+      await waitFor({
+        produce: () =>
+          giftWrapKindsObserved.includes(EPHEMERAL_GIFT_WRAP_KIND)
+            ? giftWrapKindsObserved
+            : undefined,
+        timeoutMs: 5_000,
+      });
 
       expect(giftWrapKindsObserved).toContain(GIFT_WRAP_KIND);
       expect(giftWrapKindsObserved).toContain(EPHEMERAL_GIFT_WRAP_KIND);
