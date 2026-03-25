@@ -57,6 +57,23 @@ function hasEventTag(event: NostrEvent | undefined, tag: string): boolean {
   );
 }
 
+function hasKnownDiscoveryTag(event: NostrEvent | undefined): boolean {
+  if (!event || !Array.isArray(event.tags)) {
+    return false;
+  }
+
+  const knownDiscoveryTags = new Set<string>([
+    NOSTR_TAGS.NAME,
+    NOSTR_TAGS.ABOUT,
+    NOSTR_TAGS.WEBSITE,
+    NOSTR_TAGS.PICTURE,
+    NOSTR_TAGS.SUPPORT_ENCRYPTION,
+    NOSTR_TAGS.SUPPORT_ENCRYPTION_EPHEMERAL,
+  ]);
+
+  return event.tags.some((tag) => knownDiscoveryTags.has(tag[0] ?? ''));
+}
+
 /**
  * Options for configuring the NostrClientTransport.
  */
@@ -475,6 +492,13 @@ export class NostrClientTransport
       }
 
       const eTag = getNostrEventTag(nostrEvent.tags, 'e');
+
+      if (!this.serverInitializeEvent && hasKnownDiscoveryTag(nostrEvent)) {
+        this.serverInitializeEvent = nostrEvent;
+        this.logger.info('Learned server discovery tags from direct response', {
+          eventId: nostrEvent.id,
+        });
+      }
 
       if (!this.serverInitializeEvent && eTag) {
         try {

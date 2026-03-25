@@ -46,8 +46,15 @@ export interface AuthorizationPolicyOptions {
   isCapabilityExcluded?: (
     exclusion: CapabilityExclusion,
   ) => boolean | Promise<boolean>;
-  /** Whether this is a public server (affects unauthorized response behavior) */
+  /**
+   * @deprecated Use `isAnnouncedServer` instead. `isPublicServer` will be removed in a future version.
+   */
   isPublicServer?: boolean;
+  /**
+   * Whether this server publishes public announcement events on Nostr for relay-based discovery.
+   * Also affects whether unauthorized responses are sent to unauthenticated clients.
+   */
+  isAnnouncedServer?: boolean;
 }
 
 /**
@@ -69,6 +76,7 @@ export class AuthorizationPolicy {
     exclusion: CapabilityExclusion,
   ) => boolean | Promise<boolean>;
   public readonly isPublicServer?: boolean;
+  public readonly isAnnouncedServer?: boolean;
 
   constructor(options: AuthorizationPolicyOptions = {}) {
     this.allowedPublicKeys = options.allowedPublicKeys;
@@ -76,6 +84,9 @@ export class AuthorizationPolicy {
     this.excludedCapabilities = options.excludedCapabilities;
     this.isCapabilityExcludedCallback = options.isCapabilityExcluded;
     this.isPublicServer = options.isPublicServer;
+    // Support both new and deprecated option names
+    this.isAnnouncedServer =
+      options.isAnnouncedServer ?? options.isPublicServer;
   }
 
   /**
@@ -169,9 +180,9 @@ export class AuthorizationPolicy {
     }
 
     // Message is not authorized
-    // Only send unauthorized response for requests on public servers
+    // Only send unauthorized response for requests on announced servers
     const shouldReplyUnauthorized: boolean =
-      (this.isPublicServer ?? false) && isJSONRPCRequest(message);
+      (this.isAnnouncedServer ?? false) && isJSONRPCRequest(message);
 
     return { allowed: false, shouldReplyUnauthorized };
   }

@@ -5,7 +5,8 @@ import { withClientPayments } from './client-payments.js';
 import type { PaymentHandlerRequest } from './types.js';
 import { NostrClientTransport } from '../transport/nostr-client-transport.js';
 import { PrivateKeySigner } from '../signer/private-key-signer.js';
-import { EncryptionMode, type RelayHandler } from '../core/interfaces.js';
+import { EncryptionMode } from '../core/interfaces.js';
+import { MockRelayHub } from '../__mocks__/mock-relay-handler.js';
 
 /** Minimal fake transport that exposes onmessageWithContext for unit tests. */
 type TransportWithContext = Transport & {
@@ -15,12 +16,15 @@ type TransportWithContext = Transport & {
   ) => void;
 };
 
-const noopRelay: RelayHandler = {
-  connect: async () => {},
-  disconnect: async () => {},
-  publish: async () => {},
-  subscribe: async () => () => {},
-  unsubscribe: () => {},
+const createMockNostrTransport = (): NostrClientTransport => {
+  const hub = new MockRelayHub();
+  return new NostrClientTransport({
+    signer: new PrivateKeySigner('1'.repeat(64)),
+    relayHandler: hub.createRelayHandler(),
+    serverPubkey: '2'.repeat(64),
+    encryptionMode: EncryptionMode.DISABLED,
+    isStateless: true,
+  });
 };
 
 describe('withClientPayments()', () => {
@@ -208,12 +212,7 @@ describe('withClientPayments()', () => {
   });
 
   test('synthesizes JSON-RPC error when canHandle declines and correlation exists', async () => {
-    const transport = new NostrClientTransport({
-      signer: new PrivateKeySigner('1'.repeat(64)),
-      relayHandler: noopRelay,
-      serverPubkey: '2'.repeat(64),
-      encryptionMode: EncryptionMode.DISABLED,
-    });
+    const transport = createMockNostrTransport();
 
     const observed: JSONRPCMessage[] = [];
 
@@ -285,12 +284,7 @@ describe('withClientPayments()', () => {
   });
 
   test('synthesizes JSON-RPC error when paymentPolicy declines and correlation exists', async () => {
-    const transport = new NostrClientTransport({
-      signer: new PrivateKeySigner('1'.repeat(64)),
-      relayHandler: noopRelay,
-      serverPubkey: '2'.repeat(64),
-      encryptionMode: EncryptionMode.DISABLED,
-    });
+    const transport = createMockNostrTransport();
 
     const observed: JSONRPCMessage[] = [];
     const paid = withClientPayments(transport, {
@@ -404,12 +398,7 @@ describe('withClientPayments()', () => {
   });
 
   test('injects synthetic progress immediately and periodically when payment_required includes ttl', async () => {
-    const transport = new NostrClientTransport({
-      serverPubkey: 'b'.repeat(64),
-      signer: new PrivateKeySigner('a'.repeat(64)),
-      relayHandler: noopRelay,
-      isStateless: true,
-    });
+    const transport = createMockNostrTransport();
 
     transport
       .getInternalStateForTesting()
@@ -460,12 +449,7 @@ describe('withClientPayments()', () => {
   });
 
   test('synthesizes JSON-RPC error response on payment_rejected and stops synthetic progress', async () => {
-    const transport = new NostrClientTransport({
-      serverPubkey: 'b'.repeat(64),
-      signer: new PrivateKeySigner('a'.repeat(64)),
-      relayHandler: noopRelay,
-      isStateless: true,
-    });
+    const transport = createMockNostrTransport();
 
     transport
       .getInternalStateForTesting()
@@ -527,12 +511,7 @@ describe('withClientPayments()', () => {
   });
 
   test('synthesizes plain "Payment rejected" when payment_rejected carries no message', async () => {
-    const transport = new NostrClientTransport({
-      serverPubkey: 'b'.repeat(64),
-      signer: new PrivateKeySigner('a'.repeat(64)),
-      relayHandler: noopRelay,
-      isStateless: true,
-    });
+    const transport = createMockNostrTransport();
 
     transport
       .getInternalStateForTesting()

@@ -37,6 +37,28 @@ import {
   spawnMockRelay,
   clearRelayCache,
 } from '../__mocks__/test-relay-helpers.js';
+import { MockRelayHub } from '../__mocks__/mock-relay-handler.js';
+
+async function waitFor<T>(params: {
+  produce: () => T | undefined;
+  predicate?: (value: T) => boolean;
+  timeoutMs?: number;
+  intervalMs?: number;
+}): Promise<T> {
+  const timeoutMs = params.timeoutMs ?? 5_000;
+  const intervalMs = params.intervalMs ?? 25;
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < timeoutMs) {
+    const value = params.produce();
+    if (value !== undefined && (params.predicate?.(value) ?? true)) {
+      return value;
+    }
+    await sleep(intervalMs);
+  }
+
+  throw new Error('Timed out waiting for expected test condition');
+}
 
 describe.serial('NostrClientTransport', () => {
   let relay: MockRelayInstance;
@@ -442,10 +464,10 @@ describe.serial('NostrClientTransport', () => {
   }, 10000);
 
   test('captures tools/list response envelope so consumers can access cap tags', async () => {
-    // Recreate a server transport with payments enabled so the tools/list response includes cap tags.
-    await server.close();
-
     const paidServer = new McpServer({ name: 'Paid-Server', version: '1.0.0' });
+    const relayHub = new MockRelayHub();
+    const paidServerPrivateKey = bytesToHex(generateSecretKey());
+    const paidServerPublicKey = getPublicKey(hexToBytes(paidServerPrivateKey));
     paidServer.registerTool(
       'add',
       {
@@ -459,8 +481,8 @@ describe.serial('NostrClientTransport', () => {
     );
 
     const paidServerTransport = new NostrServerTransport({
-      signer: new PrivateKeySigner(serverPrivateKey),
-      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      signer: new PrivateKeySigner(paidServerPrivateKey),
+      relayHandler: relayHub.createRelayHandler(),
       encryptionMode: EncryptionMode.DISABLED,
     });
 
@@ -484,8 +506,8 @@ describe.serial('NostrClientTransport', () => {
     const clientPrivateKey = bytesToHex(generateSecretKey());
     const clientTransport = new NostrClientTransport({
       signer: new PrivateKeySigner(clientPrivateKey),
-      relayHandler: new ApplesauceRelayPool([relayUrl]),
-      serverPubkey: serverPublicKey,
+      relayHandler: relayHub.createRelayHandler(),
+      serverPubkey: paidServerPublicKey,
       encryptionMode: EncryptionMode.DISABLED,
     });
 
@@ -493,20 +515,101 @@ describe.serial('NostrClientTransport', () => {
 
     await client.listTools();
 
-    // Allow async event processing to populate cached envelope.
-    await sleep(150);
-
-    const toolsListEvent = clientTransport.getServerToolsListEvent();
-    expect(toolsListEvent).toBeDefined();
+    const toolsListEvent = await waitFor({
+      produce: () => clientTransport.getServerToolsListEvent(),
+      predicate: (event) => event.tags.some((t) => t[0] === 'cap'),
+      timeoutMs: 5_000,
+    });
 
     // Ensure CEP-8 cap tags are available on the outer Nostr envelope.
-    const capTags = toolsListEvent!.tags.filter((t) => t[0] === 'cap');
+    const capTags = toolsListEvent.tags.filter((t) => t[0] === 'cap');
     expect(capTags).toEqual(
       expect.arrayContaining([['cap', 'tool:add', '123', 'sats']]),
     );
 
     await client.close();
     await paidServer.close();
+    relayHub.clear();
+  }, 20000);
+
+  test('learns discovery tags from first stateless server response', async () => {
+    await server.close();
+
+    const statelessServer = new McpServer({
+      name: 'Stateless Discovery Server',
+      version: '1.0.0',
+    });
+    statelessServer.registerTool(
+      'add',
+      {
+        title: 'Addition Tool',
+        description: 'Add two numbers',
+        inputSchema: { a: z.number(), b: z.number() },
+      },
+      async ({ a, b }) => ({
+        content: [{ type: 'text', text: String(a + b) }],
+      }),
+    );
+
+    const statelessServerTransport = new NostrServerTransport({
+      signer: new PrivateKeySigner(serverPrivateKey),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      serverInfo: {
+        name: 'Stateless Discovery Server',
+        about: 'Learns metadata from first response',
+        website: 'https://example.com/stateless',
+        picture: 'https://example.com/stateless.png',
+      },
+      encryptionMode: EncryptionMode.OPTIONAL,
+    });
+    statelessServerTransport.setAnnouncementExtraTags([
+      ['custom_discovery', 'supported'],
+    ]);
+
+    await statelessServer.connect(statelessServerTransport);
+
+    const client = new Client({ name: 'Stateless-Client', version: '1.0.0' });
+    const clientPrivateKey = bytesToHex(generateSecretKey());
+    const clientTransport = new NostrClientTransport({
+      signer: new PrivateKeySigner(clientPrivateKey),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      serverPubkey: serverPublicKey,
+      isStateless: true,
+      encryptionMode: EncryptionMode.DISABLED,
+    });
+
+    await client.connect(clientTransport);
+    await client.listTools();
+    await sleep(150);
+
+    const learnedEvent = clientTransport.getServerInitializeEvent();
+    expect(learnedEvent).toBeDefined();
+    expect(clientTransport.getServerInitializeName()).toBe(
+      'Stateless Discovery Server',
+    );
+    expect(clientTransport.getServerInitializeAbout()).toBe(
+      'Learns metadata from first response',
+    );
+    expect(clientTransport.getServerInitializeWebsite()).toBe(
+      'https://example.com/stateless',
+    );
+    expect(clientTransport.getServerInitializePicture()).toBe(
+      'https://example.com/stateless.png',
+    );
+    expect(clientTransport.serverSupportsEncryption()).toBe(true);
+    expect(learnedEvent!.tags).toEqual(
+      expect.arrayContaining([
+        [NOSTR_TAGS.NAME, 'Stateless Discovery Server'],
+        [NOSTR_TAGS.ABOUT, 'Learns metadata from first response'],
+        [NOSTR_TAGS.WEBSITE, 'https://example.com/stateless'],
+        [NOSTR_TAGS.PICTURE, 'https://example.com/stateless.png'],
+        [NOSTR_TAGS.SUPPORT_ENCRYPTION],
+        ['custom_discovery', 'supported'],
+      ]),
+    );
+
+    await client.close();
+    await statelessServer.close();
   }, 20000);
 });
 

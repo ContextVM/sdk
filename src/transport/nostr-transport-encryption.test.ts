@@ -6,7 +6,6 @@ import {
   test,
   expect,
 } from 'bun:test';
-import type { MockRelayInstance } from '../__mocks__/mock-relay-server.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { NostrServerTransport } from './nostr-server-transport.js';
 import { NostrClientTransport } from './nostr-client-transport.js';
@@ -21,30 +20,22 @@ import {
   EPHEMERAL_GIFT_WRAP_KIND,
   GIFT_WRAP_KIND,
 } from '../core/constants.js';
-import { ApplesauceRelayPool } from '../relay/applesauce-relay-pool.js';
-import {
-  spawnMockRelay,
-  clearRelayCache,
-} from '../__mocks__/test-relay-helpers.js';
+import type { RelayHandler } from '../core/interfaces.js';
+import { MockRelayHub } from '../__mocks__/mock-relay-handler.js';
 
 describe.serial('NostrTransport Encryption', () => {
-  let relay: MockRelayInstance;
-  let relayUrl: string;
-  let httpUrl: string;
+  let relayHub: MockRelayHub;
 
   beforeAll(async () => {
-    const spawned = await spawnMockRelay();
-    relay = spawned.relay;
-    relayUrl = spawned.relayUrl;
-    httpUrl = spawned.httpUrl;
+    relayHub = new MockRelayHub();
   });
 
   afterEach(async () => {
-    await clearRelayCache(httpUrl);
+    relayHub.clear();
   });
 
   afterAll(async () => {
-    relay.stop();
+    relayHub.clear();
   });
 
   // Helper to create a client and its transport
@@ -54,12 +45,12 @@ describe.serial('NostrTransport Encryption', () => {
     encryptionMode: EncryptionMode,
     giftWrapMode?: GiftWrapMode,
     isStateless?: boolean,
-    clientRelayHandler?: ApplesauceRelayPool,
+    clientRelayHandler?: RelayHandler,
   ) => {
     const client = new Client({ name: 'TestClient', version: '1.0.0' });
     const clientNostrTransport = new NostrClientTransport({
       signer: new PrivateKeySigner(privateKey),
-      relayHandler: clientRelayHandler ?? new ApplesauceRelayPool([relayUrl]),
+      relayHandler: clientRelayHandler ?? relayHub.createRelayHandler(),
       serverPubkey: serverPublicKey,
       encryptionMode,
       giftWrapMode,
@@ -73,7 +64,7 @@ describe.serial('NostrTransport Encryption', () => {
     privateKey: string,
     encryptionMode: EncryptionMode,
     giftWrapMode?: GiftWrapMode,
-    serverRelayHandler?: ApplesauceRelayPool,
+    serverRelayHandler?: RelayHandler,
   ) => {
     const server = new McpServer({ name: 'TestServer', version: '1.0.0' });
     // Ensure the default MCP server has at least one capability so listTools succeeds.
@@ -87,7 +78,7 @@ describe.serial('NostrTransport Encryption', () => {
     );
     const serverTransport = new NostrServerTransport({
       signer: new PrivateKeySigner(privateKey),
-      relayHandler: serverRelayHandler ?? new ApplesauceRelayPool([relayUrl]),
+      relayHandler: serverRelayHandler ?? relayHub.createRelayHandler(),
       encryptionMode,
       giftWrapMode,
       serverInfo: {},
@@ -238,6 +229,7 @@ describe.serial('NostrTransport Encryption', () => {
       ).resolves.toBe('timeout');
 
       await client.close();
+      await connectPromise.catch(() => undefined);
       await server.close();
     },
     5000,
@@ -303,6 +295,7 @@ describe.serial('NostrTransport Encryption', () => {
       ).resolves.toBe('timeout');
 
       await client.close();
+      await connectPromise.catch(() => undefined);
       await server.close();
     },
     5000,
@@ -327,7 +320,7 @@ describe.serial('NostrTransport Encryption', () => {
         EncryptionMode.DISABLED,
       );
 
-      const relayHandler = new ApplesauceRelayPool([relayUrl]);
+      const relayHandler = relayHub.createRelayHandler();
       relayHandler.subscribe([{ kinds: [CTXVM_MESSAGES_KIND] }], (event) => {
         collectedEvents.push(event);
       });
@@ -359,7 +352,7 @@ describe.serial('NostrTransport Encryption', () => {
         EncryptionMode.REQUIRED,
       );
 
-      const relayHandler = new ApplesauceRelayPool([relayUrl]);
+      const relayHandler = relayHub.createRelayHandler();
       relayHandler.subscribe([{ kinds: [GIFT_WRAP_KIND] }], (event) => {
         collectedEvents.push(event);
       });
@@ -394,7 +387,7 @@ describe.serial('NostrTransport Encryption', () => {
         GiftWrapMode.EPHEMERAL,
       );
 
-      const relayHandler = new ApplesauceRelayPool([relayUrl]);
+      const relayHandler = relayHub.createRelayHandler();
       relayHandler.subscribe(
         [{ kinds: [EPHEMERAL_GIFT_WRAP_KIND] }],
         (event) => {
@@ -423,9 +416,9 @@ describe.serial('NostrTransport Encryption', () => {
 
       const giftWrapKindsObserved: number[] = [];
 
-      const serverRelayHandler = new ApplesauceRelayPool([relayUrl]);
-      const clientRelayHandler = new ApplesauceRelayPool([relayUrl]);
-      const observerRelayHandler = new ApplesauceRelayPool([relayUrl]);
+      const serverRelayHandler = relayHub.createRelayHandler();
+      const clientRelayHandler = relayHub.createRelayHandler();
+      const observerRelayHandler = relayHub.createRelayHandler();
 
       const { server, serverTransport } = createServerAndTransport(
         serverPrivateKey,

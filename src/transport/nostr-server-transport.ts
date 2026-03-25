@@ -51,7 +51,17 @@ import type { RelayHandler } from '../core/interfaces.js';
  */
 export interface NostrServerTransportOptions extends BaseNostrTransportOptions {
   serverInfo?: ServerInfo;
+  /**
+   * @deprecated Use `isAnnouncedServer` instead. `isPublicServer` will be removed in a future version.
+   */
   isPublicServer?: boolean;
+  /**
+   * Whether this server publishes public announcement events on Nostr for relay-based discovery.
+   * When true, the server publishes kinds 11316-11320 events describing its capabilities.
+   * Does not by itself determine access control — use `allowedPublicKeys` for that.
+   * @default false
+   */
+  isAnnouncedServer?: boolean;
   /** Whether to publish kind 10002 relay list metadata. @default true */
   publishRelayList?: boolean;
   /** Explicit relay URLs to advertise in kind 10002. Falls back to relayHandler.getRelayUrls() when omitted. */
@@ -157,7 +167,7 @@ export class NostrServerTransport
       isPubkeyAllowed: options.isPubkeyAllowed,
       excludedCapabilities: options.excludedCapabilities,
       isCapabilityExcluded: options.isCapabilityExcluded,
-      isPublicServer: options.isPublicServer,
+      isAnnouncedServer: options.isAnnouncedServer ?? options.isPublicServer,
     });
 
     // Initialize session store with eviction callback for correlation cleanup
@@ -288,7 +298,7 @@ export class NostrServerTransport
         }
       });
 
-      if (this.authorizationPolicy.isPublicServer) {
+      if (this.authorizationPolicy.isAnnouncedServer) {
         await this.announcementManager.publishPublicAnnouncements();
       }
 
@@ -497,11 +507,11 @@ export class NostrServerTransport
     // Send the response back to the original requester
     const tags = this.createResponseTags(route.clientPubkey, nostrEventId);
 
-    // Attach transport capability tags on the first response for a client session.
-    // This enables capability discovery (e.g. support_encryption_ephemeral) even when
-    // clients operate in stateless mode and never observe a real initialize handshake.
+    // Attach discovery tags on the first response for a client session.
+    // This enables stateless clients to learn the same standard/custom discovery tags
+    // they would otherwise obtain from announcements or a real initialize handshake.
     if (!session.hasSentCommonTags) {
-      tags.push(...this.announcementManager.getCapabilityTags());
+      tags.push(...this.announcementManager.getCommonTags());
       session.hasSentCommonTags = true;
     }
 
@@ -516,10 +526,11 @@ export class NostrServerTransport
       }
     }
 
-    // Add server metadata tags for initialize responses (independent of encryption mode).
-    // Capability tags are already sent on the first response via `hasSentCommonTags`.
+    // Add server metadata tags for initialize responses when the first-response replay
+    // path did not already include them.
     if (
       isJSONRPCResultResponse(response) &&
+      !session.hasSentCommonTags &&
       InitializeResultSchema.safeParse(response.result).success
     ) {
       const serverInfoTags = this.announcementManager.getServerInfoTags();
