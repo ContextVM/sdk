@@ -51,7 +51,17 @@ import type { RelayHandler } from '../core/interfaces.js';
  */
 export interface NostrServerTransportOptions extends BaseNostrTransportOptions {
   serverInfo?: ServerInfo;
+  /**
+   * @deprecated Use `isAnnouncedServer` instead. `isPublicServer` will be removed in a future version.
+   */
   isPublicServer?: boolean;
+  /**
+   * Whether this server publishes public announcement events on Nostr for relay-based discovery.
+   * When true, the server publishes kinds 11316-11320 events describing its capabilities.
+   * Does not by itself determine access control — use `allowedPublicKeys` for that.
+   * @default false
+   */
+  isAnnouncedServer?: boolean;
   /** Whether to publish kind 10002 relay list metadata. @default true */
   publishRelayList?: boolean;
   /** Explicit relay URLs to advertise in kind 10002. Falls back to relayHandler.getRelayUrls() when omitted. */
@@ -59,8 +69,14 @@ export interface NostrServerTransportOptions extends BaseNostrTransportOptions {
   /** Additional relays used only as discoverability publication targets. */
   bootstrapRelayUrls?: readonly string[];
   allowedPublicKeys?: string[];
+  /** Optional callback for dynamic public key authorization. Returns true to allow the pubkey. */
+  isPubkeyAllowed?: (clientPubkey: string) => boolean | Promise<boolean>;
   /** List of capabilities that are excluded from public key whitelisting requirements */
   excludedCapabilities?: CapabilityExclusion[];
+  /** Optional callback for dynamic capability exclusions. Returns true to bypass pubkey authorization. */
+  isCapabilityExcluded?: (
+    exclusion: CapabilityExclusion,
+  ) => boolean | Promise<boolean>;
   /** Log level for the NostrServerTransport: 'debug' | 'info' | 'warn' | 'error' | 'silent' */
   logLevel?: LogLevel;
   /** Maximum number of client sessions to keep in memory. @default 1000 */
@@ -148,8 +164,10 @@ export class NostrServerTransport
       allowedPublicKeys: options.allowedPublicKeys
         ? new Set(options.allowedPublicKeys)
         : undefined,
+      isPubkeyAllowed: options.isPubkeyAllowed,
       excludedCapabilities: options.excludedCapabilities,
-      isPublicServer: options.isPublicServer,
+      isCapabilityExcluded: options.isCapabilityExcluded,
+      isAnnouncedServer: options.isAnnouncedServer ?? options.isPublicServer,
     });
 
     // Initialize session store with eviction callback for correlation cleanup
@@ -280,7 +298,7 @@ export class NostrServerTransport
         }
       });
 
-      if (this.authorizationPolicy.isPublicServer) {
+      if (this.authorizationPolicy.isAnnouncedServer) {
         await this.announcementManager.publishPublicAnnouncements();
       }
 
@@ -687,7 +705,7 @@ export class NostrServerTransport
 
         await this.handleEncryptedEvent(event);
       } else {
-        this.handleUnencryptedEvent(event);
+        await this.handleUnencryptedEvent(event);
       }
     } catch (error) {
       this.logger.error('Error in processIncomingEvent', {
@@ -719,7 +737,7 @@ export class NostrServerTransport
       );
       const currentEvent = JSON.parse(decryptedJson) as NostrEvent;
 
-      this.authorizeAndProcessEvent(currentEvent, true, event.kind);
+      await this.authorizeAndProcessEvent(currentEvent, true, event.kind);
     } catch (error) {
       this.logger.error('Failed to handle encrypted Nostr event', {
         error: error instanceof Error ? error.message : String(error),
@@ -739,14 +757,14 @@ export class NostrServerTransport
    * Handles unencrypted events.
    * @param event The incoming Nostr event.
    */
-  private handleUnencryptedEvent(event: NostrEvent): void {
+  private async handleUnencryptedEvent(event: NostrEvent): Promise<void> {
     if (this.encryptionMode === EncryptionMode.REQUIRED) {
       this.logger.error(
         `Received unencrypted message from ${event.pubkey} but encryption is required. Ignoring.`,
       );
       return;
     }
-    this.authorizeAndProcessEvent(event, false);
+    await this.authorizeAndProcessEvent(event, false);
   }
 
   /**
@@ -755,11 +773,11 @@ export class NostrServerTransport
    * @param event The Nostr event to process.
    * @param isEncrypted Whether the original event was encrypted.
    */
-  private authorizeAndProcessEvent(
+  private async authorizeAndProcessEvent(
     event: NostrEvent,
     isEncrypted: boolean,
     wrapKind?: number,
-  ): void {
+  ): Promise<void> {
     try {
       const mcpMessage = this.convertNostrEventToMcpMessage(event);
 
@@ -776,7 +794,7 @@ export class NostrServerTransport
       }
 
       // Check authorization using the authorization policy
-      const authDecision = this.authorizationPolicy.authorize(
+      const authDecision = await this.authorizationPolicy.authorize(
         event.pubkey,
         mcpMessage,
       );

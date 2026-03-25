@@ -7,18 +7,40 @@ import type {
 import { PMI_BITCOIN_LIGHTNING_BOLT11 } from '../pmis.js';
 import { parseNwcConnectionString } from '../nip47/connection.js';
 import { NwcClient } from '../nip47/nwc-client.js';
-import type { NwcInvoiceResult, NwcMakeInvoiceParams } from '../nip47/types.js';
+import type {
+  NwcConnection,
+  NwcInvoiceResult,
+  NwcMakeInvoiceParams,
+  NwcNotificationPayload,
+  NwcResponse,
+} from '../nip47/types.js';
 import { ApplesauceRelayPool } from '../../relay/applesauce-relay-pool.js';
 import { createLogger, type Logger } from '../../core/utils/logger.js';
 import { satsToMsats } from '../nip47/utils.js';
 import { LruCache } from '../../core/utils/lru-cache.js';
 import { sleepWithAbort } from '../../core/utils/utils.js';
 
+export interface NwcClientLike {
+  request<M extends string, P, R>(params: {
+    method: M;
+    request: { method: M; params: P };
+    resultType: M;
+  }): Promise<NwcResponse<M, R>>;
+  fetchInfoNotificationTypes(): Promise<ReadonlySet<string>>;
+  subscribeNotifications(params: {
+    onNotification: (payload: NwcNotificationPayload) => void;
+  }): Promise<() => void>;
+}
+
 export interface LnBolt11NwcPaymentProcessorOptions {
   /** NIP-47 `nostr+walletconnect://...` connection string. */
   nwcConnectionString: string;
+  /** Optional pre-parsed connection for tests or advanced integrations. */
+  connection?: NwcConnection;
   /** Optional relay handler to reuse; defaults to an ApplesauceRelayPool built from the connection relays. */
   relayHandler?: RelayHandler;
+  /** Optional injected NWC client for tests or custom transports. */
+  nwcClient?: NwcClientLike;
 
   /** Fallback TTL in seconds if wallet does not provide expires_at. @default 300 */
   ttlSeconds?: number;
@@ -61,7 +83,7 @@ export interface LnBolt11NwcPaymentProcessorOptions {
 export class LnBolt11NwcPaymentProcessor implements PaymentProcessor {
   public readonly pmi = PMI_BITCOIN_LIGHTNING_BOLT11;
 
-  private readonly nwc: NwcClient;
+  private readonly nwc: NwcClientLike;
   private readonly ttlSeconds: number;
   private readonly invoiceExpirySeconds: number;
   private readonly pollIntervalMs: number;
@@ -86,15 +108,19 @@ export class LnBolt11NwcPaymentProcessor implements PaymentProcessor {
   private readonly invoiceHashCache: LruCache<string>;
 
   public constructor(options: LnBolt11NwcPaymentProcessorOptions) {
-    const connection = parseNwcConnectionString(options.nwcConnectionString);
+    const connection =
+      options.connection ??
+      parseNwcConnectionString(options.nwcConnectionString);
     const relayHandler =
       options.relayHandler ?? new ApplesauceRelayPool([...connection.relays]);
 
-    this.nwc = new NwcClient({
-      relayHandler,
-      connection,
-      responseTimeoutMs: options.responseTimeoutMs,
-    });
+    this.nwc =
+      options.nwcClient ??
+      new NwcClient({
+        relayHandler,
+        connection,
+        responseTimeoutMs: options.responseTimeoutMs,
+      });
 
     this.ttlSeconds = options.ttlSeconds ?? 300;
     this.invoiceExpirySeconds = options.invoiceExpirySeconds ?? this.ttlSeconds;

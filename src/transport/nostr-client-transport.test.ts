@@ -37,6 +37,8 @@ import {
   spawnMockRelay,
   clearRelayCache,
 } from '../__mocks__/test-relay-helpers.js';
+import { MockRelayHub } from '../__mocks__/mock-relay-handler.js';
+import { waitFor } from '../core/utils/test.utils.js';
 
 describe.serial('NostrClientTransport', () => {
   let relay: MockRelayInstance;
@@ -442,10 +444,10 @@ describe.serial('NostrClientTransport', () => {
   }, 10000);
 
   test('captures tools/list response envelope so consumers can access cap tags', async () => {
-    // Recreate a server transport with payments enabled so the tools/list response includes cap tags.
-    await server.close();
-
     const paidServer = new McpServer({ name: 'Paid-Server', version: '1.0.0' });
+    const relayHub = new MockRelayHub();
+    const paidServerPrivateKey = bytesToHex(generateSecretKey());
+    const paidServerPublicKey = getPublicKey(hexToBytes(paidServerPrivateKey));
     paidServer.registerTool(
       'add',
       {
@@ -459,8 +461,8 @@ describe.serial('NostrClientTransport', () => {
     );
 
     const paidServerTransport = new NostrServerTransport({
-      signer: new PrivateKeySigner(serverPrivateKey),
-      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      signer: new PrivateKeySigner(paidServerPrivateKey),
+      relayHandler: relayHub.createRelayHandler(),
       encryptionMode: EncryptionMode.DISABLED,
     });
 
@@ -484,8 +486,8 @@ describe.serial('NostrClientTransport', () => {
     const clientPrivateKey = bytesToHex(generateSecretKey());
     const clientTransport = new NostrClientTransport({
       signer: new PrivateKeySigner(clientPrivateKey),
-      relayHandler: new ApplesauceRelayPool([relayUrl]),
-      serverPubkey: serverPublicKey,
+      relayHandler: relayHub.createRelayHandler(),
+      serverPubkey: paidServerPublicKey,
       encryptionMode: EncryptionMode.DISABLED,
     });
 
@@ -493,20 +495,21 @@ describe.serial('NostrClientTransport', () => {
 
     await client.listTools();
 
-    // Allow async event processing to populate cached envelope.
-    await sleep(150);
-
-    const toolsListEvent = clientTransport.getServerToolsListEvent();
-    expect(toolsListEvent).toBeDefined();
+    const toolsListEvent = await waitFor({
+      produce: () => clientTransport.getServerToolsListEvent(),
+      predicate: (event) => event.tags.some((t) => t[0] === 'cap'),
+      timeoutMs: 5_000,
+    });
 
     // Ensure CEP-8 cap tags are available on the outer Nostr envelope.
-    const capTags = toolsListEvent!.tags.filter((t) => t[0] === 'cap');
+    const capTags = toolsListEvent.tags.filter((t) => t[0] === 'cap');
     expect(capTags).toEqual(
       expect.arrayContaining([['cap', 'tool:add', '123', 'sats']]),
     );
 
     await client.close();
     await paidServer.close();
+    relayHub.clear();
   }, 20000);
 
   test('learns discovery tags from first stateless server response', async () => {

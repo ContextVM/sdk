@@ -38,10 +38,23 @@ export type AuthorizationDecision =
 export interface AuthorizationPolicyOptions {
   /** Set of allowed public keys (whitelist). If undefined, all clients are allowed. */
   allowedPublicKeys?: Set<string>;
+  /** Optional callback for dynamic public key authorization. Returns true to allow the pubkey. */
+  isPubkeyAllowed?: (clientPubkey: string) => boolean | Promise<boolean>;
   /** List of capabilities that are excluded from public key whitelisting requirements */
   excludedCapabilities?: CapabilityExclusion[];
-  /** Whether this is a public server (affects unauthorized response behavior) */
+  /** Optional callback for dynamic capability exclusions. Returns true to bypass pubkey authorization. */
+  isCapabilityExcluded?: (
+    exclusion: CapabilityExclusion,
+  ) => boolean | Promise<boolean>;
+  /**
+   * @deprecated Use `isAnnouncedServer` instead. `isPublicServer` will be removed in a future version.
+   */
   isPublicServer?: boolean;
+  /**
+   * Whether this server publishes public announcement events on Nostr for relay-based discovery.
+   * Also affects whether unauthorized responses are sent to unauthenticated clients.
+   */
+  isAnnouncedServer?: boolean;
 }
 
 /**
@@ -55,13 +68,25 @@ export interface AuthorizationPolicyOptions {
  */
 export class AuthorizationPolicy {
   private readonly allowedPublicKeys?: Set<string>;
+  private readonly isPubkeyAllowed?: (
+    clientPubkey: string,
+  ) => boolean | Promise<boolean>;
   private readonly excludedCapabilities?: CapabilityExclusion[];
+  private readonly isCapabilityExcludedCallback?: (
+    exclusion: CapabilityExclusion,
+  ) => boolean | Promise<boolean>;
   public readonly isPublicServer?: boolean;
+  public readonly isAnnouncedServer?: boolean;
 
   constructor(options: AuthorizationPolicyOptions = {}) {
     this.allowedPublicKeys = options.allowedPublicKeys;
+    this.isPubkeyAllowed = options.isPubkeyAllowed;
     this.excludedCapabilities = options.excludedCapabilities;
+    this.isCapabilityExcludedCallback = options.isCapabilityExcluded;
     this.isPublicServer = options.isPublicServer;
+    // Support both new and deprecated option names
+    this.isAnnouncedServer =
+      options.isAnnouncedServer ?? options.isPublicServer;
   }
 
   /**
@@ -70,7 +95,10 @@ export class AuthorizationPolicy {
    * @param name Optional capability name for method-specific exclusions (e.g., 'get_weather')
    * @returns true if the capability should bypass whitelisting, false otherwise
    */
-  private isCapabilityExcluded(method: string, name?: string): boolean {
+  private async isCapabilityExcluded(
+    method: string,
+    name?: string,
+  ): Promise<boolean> {
     // Always allow fundamental MCP methods for connection establishment
     if (
       method === INITIALIZE_METHOD ||
@@ -79,24 +107,32 @@ export class AuthorizationPolicy {
       return true;
     }
 
-    if (!this.excludedCapabilities?.length) {
-      return false;
+    const hasStaticExclusions = Boolean(this.excludedCapabilities?.length);
+    const staticExclusionMatched =
+      this.excludedCapabilities?.some((exclusion) => {
+        // Check if method matches
+        if (exclusion.method !== method) {
+          return false;
+        }
+
+        // If exclusion has no name requirement, method match is sufficient
+        if (!exclusion.name) {
+          return true;
+        }
+
+        // If exclusion has a name requirement, check if it matches the provided name
+        return exclusion.name === name;
+      }) ?? false;
+
+    if (staticExclusionMatched) {
+      return true;
     }
 
-    return this.excludedCapabilities.some((exclusion) => {
-      // Check if method matches
-      if (exclusion.method !== method) {
-        return false;
-      }
+    if (!this.isCapabilityExcludedCallback) {
+      return hasStaticExclusions ? false : false;
+    }
 
-      // If exclusion has no name requirement, method match is sufficient
-      if (!exclusion.name) {
-        return true;
-      }
-
-      // If exclusion has a name requirement, check if it matches the provided name
-      return exclusion.name === name;
-    });
+    return this.isCapabilityExcludedCallback({ method, name });
   }
 
   /**
@@ -106,32 +142,47 @@ export class AuthorizationPolicy {
    * @param message The incoming JSON-RPC message
    * @returns Authorization decision indicating whether the message is allowed
    */
-  authorize(
+  async authorize(
     clientPubkey: string,
     message: JSONRPCMessage,
-  ): AuthorizationDecision {
-    // If no whitelist is configured, allow all messages
-    if (!this.allowedPublicKeys?.size) {
-      return { allowed: true };
-    }
+  ): Promise<AuthorizationDecision> {
+    const hasStaticAllowlist = Boolean(this.allowedPublicKeys?.size);
+    const hasDynamicPubkeyCheck = Boolean(this.isPubkeyAllowed);
+    const hasCapabilityExclusionRules =
+      Boolean(this.excludedCapabilities?.length) ||
+      Boolean(this.isCapabilityExcludedCallback);
 
     // Check if the message should bypass whitelisting due to excluded capabilities
     const shouldBypassWhitelisting =
-      this.excludedCapabilities?.length &&
+      hasCapabilityExclusionRules &&
       (isJSONRPCRequest(message) || isJSONRPCNotification(message)) &&
-      this.isCapabilityExcluded(
+      (await this.isCapabilityExcluded(
         message.method,
         message.params?.name as string | undefined,
-      );
+      ));
 
-    if (this.allowedPublicKeys.has(clientPubkey) || shouldBypassWhitelisting) {
+    if (shouldBypassWhitelisting) {
+      return { allowed: true };
+    }
+
+    // If no pubkey authorization is configured, allow all non-excluded messages
+    if (!hasStaticAllowlist && !hasDynamicPubkeyCheck) {
+      return { allowed: true };
+    }
+
+    const isAllowedByStaticAllowlist =
+      !hasStaticAllowlist || this.allowedPublicKeys?.has(clientPubkey) === true;
+    const isAllowedByDynamicCheck =
+      !this.isPubkeyAllowed || (await this.isPubkeyAllowed(clientPubkey));
+
+    if (isAllowedByStaticAllowlist && isAllowedByDynamicCheck) {
       return { allowed: true };
     }
 
     // Message is not authorized
-    // Only send unauthorized response for requests on public servers
+    // Only send unauthorized response for requests on announced servers
     const shouldReplyUnauthorized: boolean =
-      (this.isPublicServer ?? false) && isJSONRPCRequest(message);
+      (this.isAnnouncedServer ?? false) && isJSONRPCRequest(message);
 
     return { allowed: false, shouldReplyUnauthorized };
   }

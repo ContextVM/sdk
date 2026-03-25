@@ -2,34 +2,30 @@ import { afterAll, beforeAll, describe, test, expect } from 'bun:test';
 import { sleep } from 'bun';
 import { Client } from '@contextvm/mcp-sdk/client/index.js';
 import { StdioClientTransport } from '@contextvm/mcp-sdk/client/stdio.js';
-import { TEST_PRIVATE_KEY } from '../__mocks__/fixtures.js';
 import { NostrMCPGateway } from './index.js';
 import { NostrClientTransport } from '../transport/nostr-client-transport.js';
 import { PrivateKeySigner } from '../signer/private-key-signer.js';
-import { getPublicKey } from 'nostr-tools';
-import { hexToBytes } from 'nostr-tools/utils';
+import { generateSecretKey, getPublicKey } from 'nostr-tools';
+import { bytesToHex, hexToBytes } from 'nostr-tools/utils';
 import { createLogger } from '../core/utils/logger.js';
-import { ApplesauceRelayPool } from '../relay/applesauce-relay-pool.js';
-import { spawnMockRelay } from '../__mocks__/test-relay-helpers.js';
+import { MockRelayHub } from '../__mocks__/mock-relay-handler.js';
 
 describe('NostrMCPGateway End-to-End Test', () => {
   let stopRelay: (() => void) | undefined;
   let gateway: NostrMCPGateway;
-  let relayUrl: string;
+  let relayHub: MockRelayHub;
   const logger = createLogger('gateway-test');
 
   // Generate a test private key for the gateway
-  const gatewayPrivateKey = TEST_PRIVATE_KEY;
+  const gatewayPrivateKey = bytesToHex(generateSecretKey());
   const gatewayPublicKey = getPublicKey(hexToBytes(gatewayPrivateKey));
 
   // Generate a different private key for the client
   const clientPrivateKey = 'a'.repeat(64);
 
   beforeAll(async () => {
-    // Start the mock relay
-    const relay = await spawnMockRelay();
-    relayUrl = relay.relayUrl;
-    stopRelay = relay.stop;
+    relayHub = new MockRelayHub();
+    stopRelay = () => relayHub.clear();
 
     // Create the gateway with the mock server transport
     const mcpServerTransport = new StdioClientTransport({
@@ -47,14 +43,15 @@ describe('NostrMCPGateway End-to-End Test', () => {
     }
 
     const gatewaySigner = new PrivateKeySigner(gatewayPrivateKey);
-    const gatewayRelayHandler = new ApplesauceRelayPool([relayUrl]);
+    const gatewayRelayHandler = relayHub.createRelayHandler();
 
     gateway = new NostrMCPGateway({
       mcpClientTransport: mcpServerTransport,
       nostrTransportOptions: {
         signer: gatewaySigner,
         relayHandler: gatewayRelayHandler,
-        isPublicServer: true,
+        isPublicServer: false,
+        publishRelayList: false,
         serverInfo: {
           name: 'Test Server',
           website: 'http://localhost',
@@ -91,7 +88,7 @@ describe('NostrMCPGateway End-to-End Test', () => {
 
   const createClientTransport = (): NostrClientTransport => {
     const clientSigner = new PrivateKeySigner(clientPrivateKey);
-    const clientRelayHandler = new ApplesauceRelayPool([relayUrl]);
+    const clientRelayHandler = relayHub.createRelayHandler();
 
     return new NostrClientTransport({
       signer: clientSigner,

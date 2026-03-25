@@ -1,13 +1,5 @@
-import {
-  afterAll,
-  afterEach,
-  beforeAll,
-  describe,
-  test,
-  expect,
-} from 'bun:test';
+import { afterAll, describe, test, expect } from 'bun:test';
 import { sleep } from 'bun';
-import type { MockRelayInstance } from '../__mocks__/mock-relay-server.js';
 import { Client } from '@contextvm/mcp-sdk/client/index.js';
 import { NostrServerTransport } from './nostr-server-transport.js';
 import { NostrClientTransport } from './nostr-client-transport.js';
@@ -15,44 +7,28 @@ import { PrivateKeySigner } from '../signer/private-key-signer.js';
 import { generateSecretKey, getPublicKey } from 'nostr-tools';
 import { bytesToHex, hexToBytes } from 'nostr-tools/utils';
 import { McpServer } from '@contextvm/mcp-sdk/server/mcp.js';
-import { ApplesauceRelayPool } from '../relay/applesauce-relay-pool.js';
 import { EncryptionMode } from '../core/interfaces.js';
-import {
-  spawnMockRelay,
-  clearRelayCache,
-} from '../__mocks__/test-relay-helpers.js';
+import { MockRelayHub } from '../__mocks__/mock-relay-handler.js';
 
-describe('NostrServerTransport Auth', () => {
-  let relay: MockRelayInstance;
-  let relayUrl: string;
-  let httpUrl: string;
-
-  beforeAll(async () => {
-    const spawned = await spawnMockRelay();
-    relay = spawned.relay;
-    relayUrl = spawned.relayUrl;
-    httpUrl = spawned.httpUrl;
-  });
-
-  afterEach(async () => {
-    await clearRelayCache(httpUrl);
-  });
-
+describe.serial('NostrServerTransport Auth', () => {
   afterAll(async () => {
-    relay.stop();
     await sleep(100);
   });
 
   // Helper function to create a client and its transport
   const createClientAndTransport = (
+    relayHub: MockRelayHub,
     privateKey: string,
     name: string,
     serverPublicKey: string,
-  ) => {
+  ): {
+    client: Client;
+    clientNostrTransport: NostrClientTransport;
+  } => {
     const client = new Client({ name, version: '1.0.0' });
     const clientNostrTransport = new NostrClientTransport({
       signer: new PrivateKeySigner(privateKey),
-      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      relayHandler: relayHub.createRelayHandler(),
       serverPubkey: serverPublicKey,
       encryptionMode: EncryptionMode.DISABLED,
     });
@@ -60,6 +36,7 @@ describe('NostrServerTransport Auth', () => {
   };
 
   test('should reject method calls from disallowed public keys', async () => {
+    const relayHub = new MockRelayHub();
     const serverPrivateKey = bytesToHex(generateSecretKey());
     const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
 
@@ -88,7 +65,7 @@ describe('NostrServerTransport Auth', () => {
 
     const serverTransport = new NostrServerTransport({
       signer: new PrivateKeySigner(serverPrivateKey),
-      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      relayHandler: relayHub.createRelayHandler(),
       allowedPublicKeys: [allowedClientPublicKey],
     });
 
@@ -98,6 +75,7 @@ describe('NostrServerTransport Auth', () => {
       client: disallowedClient,
       clientNostrTransport: disallowedClientNostrTransport,
     } = createClientAndTransport(
+      relayHub,
       disallowedClientPrivateKey,
       'Disallowed Client',
       serverPublicKey,
@@ -117,9 +95,12 @@ describe('NostrServerTransport Auth', () => {
     expect(result).toBe('timeout');
 
     await disallowedClient.close();
+    await initializePromise.catch(() => undefined);
     await server.close();
+    relayHub.clear();
   }, 10000);
   test('should receive error from public server if unauthorized', async () => {
+    const relayHub = new MockRelayHub();
     const serverPrivateKey = bytesToHex(generateSecretKey());
     const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
 
@@ -137,7 +118,7 @@ describe('NostrServerTransport Auth', () => {
 
     const serverTransport = new NostrServerTransport({
       signer: new PrivateKeySigner(serverPrivateKey),
-      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      relayHandler: relayHub.createRelayHandler(),
       allowedPublicKeys: [allowedClientPublicKey],
       isPublicServer: true,
     });
@@ -148,6 +129,7 @@ describe('NostrServerTransport Auth', () => {
       client: disallowedClient,
       clientNostrTransport: disallowedClientNostrTransport,
     } = createClientAndTransport(
+      relayHub,
       disallowedClientPrivateKey,
       'Disallowed Client',
       serverPublicKey,
@@ -159,9 +141,11 @@ describe('NostrServerTransport Auth', () => {
 
     await disallowedClient.close();
     await server.close();
+    relayHub.clear();
   }, 10000);
 
   test('should create session for authorized client on first message', async () => {
+    const relayHub = new MockRelayHub();
     const serverPrivateKey = bytesToHex(generateSecretKey());
     const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
 
@@ -179,7 +163,7 @@ describe('NostrServerTransport Auth', () => {
 
     const serverTransport = new NostrServerTransport({
       signer: new PrivateKeySigner(serverPrivateKey),
-      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      relayHandler: relayHub.createRelayHandler(),
       allowedPublicKeys: [allowedClientPublicKey],
       isPublicServer: true, // Public server to send unauthorized error
     });
@@ -187,6 +171,7 @@ describe('NostrServerTransport Auth', () => {
     await server.connect(serverTransport);
 
     const { client, clientNostrTransport } = createClientAndTransport(
+      relayHub,
       allowedClientPrivateKey,
       'Allowed Client',
       serverPublicKey,
@@ -196,6 +181,7 @@ describe('NostrServerTransport Auth', () => {
       client: unauthorizedClient,
       clientNostrTransport: unauthorizedClientNostrTransport,
     } = createClientAndTransport(
+      relayHub,
       unauthorizedClientPrivateKey,
       'Unauthorized Client',
       serverPublicKey,
@@ -222,6 +208,155 @@ describe('NostrServerTransport Auth', () => {
     expect(session!.isEncrypted).toBe(false); // Encryption is disabled in createClientAndTransport
     expect(internalState.sessionStore.sessionCount).toBe(1);
     await client.close();
+    await unauthorizedClient.close();
     await server.close();
+    relayHub.clear();
+  }, 10000);
+
+  test('should require both static and dynamic pubkey authorization when both are configured', async () => {
+    const relayHub = new MockRelayHub();
+    const serverPrivateKey = bytesToHex(generateSecretKey());
+    const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
+
+    const allowedClientPrivateKey = bytesToHex(generateSecretKey());
+    const allowedClientPublicKey = getPublicKey(
+      hexToBytes(allowedClientPrivateKey),
+    );
+
+    const server = new McpServer({
+      name: 'Test Combined Auth Server',
+      version: '1.0.0',
+    });
+
+    const serverTransport = new NostrServerTransport({
+      signer: new PrivateKeySigner(serverPrivateKey),
+      relayHandler: relayHub.createRelayHandler(),
+      allowedPublicKeys: [allowedClientPublicKey],
+      isPubkeyAllowed: async () => false,
+      isPublicServer: true,
+    });
+
+    await server.connect(serverTransport);
+
+    const { client, clientNostrTransport } = createClientAndTransport(
+      relayHub,
+      allowedClientPrivateKey,
+      'Allowed But Dynamically Rejected Client',
+      serverPublicKey,
+    );
+
+    await expect(client.connect(clientNostrTransport)).rejects.toThrow(
+      'Unauthorized',
+    );
+
+    await client.close();
+    await server.close();
+    relayHub.clear();
+  }, 10000);
+
+  test('should allow a client when dynamic pubkey authorization approves it without a static allowlist', async () => {
+    const relayHub = new MockRelayHub();
+    const serverPrivateKey = bytesToHex(generateSecretKey());
+    const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
+
+    const allowedClientPrivateKey = bytesToHex(generateSecretKey());
+    const allowedClientPublicKey = getPublicKey(
+      hexToBytes(allowedClientPrivateKey),
+    );
+
+    const server = new McpServer({
+      name: 'Test Dynamic Auth Server',
+      version: '1.0.0',
+    });
+
+    server.registerTool(
+      'dummy',
+      {
+        title: 'Dummy Tool',
+        description: 'A dummy tool',
+        inputSchema: {},
+      },
+      async () => ({ content: [{ type: 'text', text: 'dummy' }] }),
+    );
+
+    const serverTransport = new NostrServerTransport({
+      signer: new PrivateKeySigner(serverPrivateKey),
+      relayHandler: relayHub.createRelayHandler(),
+      isPubkeyAllowed: async (clientPubkey) =>
+        clientPubkey === allowedClientPublicKey,
+      isPublicServer: true,
+    });
+
+    await server.connect(serverTransport);
+
+    const { client, clientNostrTransport } = createClientAndTransport(
+      relayHub,
+      allowedClientPrivateKey,
+      'Dynamically Allowed Client',
+      serverPublicKey,
+    );
+
+    await client.connect(clientNostrTransport);
+    const tools = await client.listTools();
+
+    expect(tools.tools.some((tool) => tool.name === 'dummy')).toBe(true);
+
+    await client.close();
+    await server.close();
+    relayHub.clear();
+  }, 10000);
+
+  test('should allow capability exclusion when dynamic exclusion callback matches', async () => {
+    const relayHub = new MockRelayHub();
+    const serverPrivateKey = bytesToHex(generateSecretKey());
+    const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
+
+    const disallowedClientPrivateKey = bytesToHex(generateSecretKey());
+
+    const server = new McpServer({
+      name: 'Test Dynamic Capability Exclusion Server',
+      version: '1.0.0',
+    });
+
+    server.registerTool(
+      'dummy',
+      {
+        title: 'Dummy Tool',
+        description: 'A dummy tool',
+        inputSchema: {},
+      },
+      async () => ({ content: [{ type: 'text', text: 'dummy' }] }),
+    );
+
+    const serverTransport = new NostrServerTransport({
+      signer: new PrivateKeySigner(serverPrivateKey),
+      relayHandler: relayHub.createRelayHandler(),
+      allowedPublicKeys: [
+        getPublicKey(hexToBytes(bytesToHex(generateSecretKey()))),
+      ],
+      isCapabilityExcluded: async (exclusion) =>
+        exclusion.method === 'tools/list',
+    });
+
+    await server.connect(serverTransport);
+
+    const {
+      client: disallowedClient,
+      clientNostrTransport: disallowedClientNostrTransport,
+    } = createClientAndTransport(
+      relayHub,
+      disallowedClientPrivateKey,
+      'Disallowed Client With Dynamic Capability Exclusion',
+      serverPublicKey,
+    );
+
+    await disallowedClient.connect(disallowedClientNostrTransport);
+    const tools = await disallowedClient.listTools();
+
+    expect(tools.tools.some((tool) => tool.name === 'dummy')).toBe(true);
+
+    await disallowedClient.close();
+    await server.close();
+    relayHub.clear();
   }, 10000);
 });
