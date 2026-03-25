@@ -214,6 +214,7 @@ describe.serial('NostrServerTransport Auth', () => {
   }, 10000);
 
   test('should require both static and dynamic pubkey authorization when both are configured', async () => {
+    const relayHub = new MockRelayHub();
     const serverPrivateKey = bytesToHex(generateSecretKey());
     const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
 
@@ -229,7 +230,7 @@ describe.serial('NostrServerTransport Auth', () => {
 
     const serverTransport = new NostrServerTransport({
       signer: new PrivateKeySigner(serverPrivateKey),
-      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      relayHandler: relayHub.createRelayHandler(),
       allowedPublicKeys: [allowedClientPublicKey],
       isPubkeyAllowed: async () => false,
       isPublicServer: true,
@@ -238,6 +239,7 @@ describe.serial('NostrServerTransport Auth', () => {
     await server.connect(serverTransport);
 
     const { client, clientNostrTransport } = createClientAndTransport(
+      relayHub,
       allowedClientPrivateKey,
       'Allowed But Dynamically Rejected Client',
       serverPublicKey,
@@ -249,9 +251,11 @@ describe.serial('NostrServerTransport Auth', () => {
 
     await client.close();
     await server.close();
+    relayHub.clear();
   }, 10000);
 
   test('should allow a client when dynamic pubkey authorization approves it without a static allowlist', async () => {
+    const relayHub = new MockRelayHub();
     const serverPrivateKey = bytesToHex(generateSecretKey());
     const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
 
@@ -277,7 +281,7 @@ describe.serial('NostrServerTransport Auth', () => {
 
     const serverTransport = new NostrServerTransport({
       signer: new PrivateKeySigner(serverPrivateKey),
-      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      relayHandler: relayHub.createRelayHandler(),
       isPubkeyAllowed: async (clientPubkey) =>
         clientPubkey === allowedClientPublicKey,
       isPublicServer: true,
@@ -286,6 +290,7 @@ describe.serial('NostrServerTransport Auth', () => {
     await server.connect(serverTransport);
 
     const { client, clientNostrTransport } = createClientAndTransport(
+      relayHub,
       allowedClientPrivateKey,
       'Dynamically Allowed Client',
       serverPublicKey,
@@ -298,9 +303,11 @@ describe.serial('NostrServerTransport Auth', () => {
 
     await client.close();
     await server.close();
+    relayHub.clear();
   }, 10000);
 
   test('should allow capability exclusion when dynamic exclusion callback matches', async () => {
+    const relayHub = new MockRelayHub();
     const serverPrivateKey = bytesToHex(generateSecretKey());
     const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
 
@@ -323,7 +330,7 @@ describe.serial('NostrServerTransport Auth', () => {
 
     const serverTransport = new NostrServerTransport({
       signer: new PrivateKeySigner(serverPrivateKey),
-      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      relayHandler: relayHub.createRelayHandler(),
       allowedPublicKeys: [
         getPublicKey(hexToBytes(bytesToHex(generateSecretKey()))),
       ],
@@ -337,6 +344,7 @@ describe.serial('NostrServerTransport Auth', () => {
       client: disallowedClient,
       clientNostrTransport: disallowedClientNostrTransport,
     } = createClientAndTransport(
+      relayHub,
       disallowedClientPrivateKey,
       'Disallowed Client With Dynamic Capability Exclusion',
       serverPublicKey,
@@ -349,5 +357,6 @@ describe.serial('NostrServerTransport Auth', () => {
 
     await disallowedClient.close();
     await server.close();
+    relayHub.clear();
   }, 10000);
 });
