@@ -1,5 +1,13 @@
 # @contextvm/sdk
 
+## 0.7.7
+
+### Patch Changes
+
+- feat(transport): add fallback operational relays support for NostrClientTransport
+
+Introduces a new `fallbackOperationalRelayUrls` option that provides operational relays to use when CEP-17 discovery fails to resolve any relays. These fallback relays are probed in parallel with discovery, and the first available source is used. If discovery returns no results, the fallback relays are used as a secondary option.
+
 ## 0.7.6
 
 ### Patch Changes

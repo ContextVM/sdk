@@ -46,6 +46,7 @@ import {
 } from './nostr-client/server-relay-discovery.js';
 import { StatelessModeHandler } from './nostr-client/stateless-mode-handler.js';
 import { withTimeout } from '../core/utils/utils.js';
+import { ApplesauceRelayPool } from '../relay/applesauce-relay-pool.js';
 
 function hasSingleTag(tags: string[][], tag: string): boolean {
   return tags.some((t) => t.length === 1 && t[0] === tag);
@@ -93,6 +94,11 @@ export interface NostrTransportOptions extends Omit<
    * Overrides the default bootstrap discovery relays when provided.
    */
   discoveryRelayUrls?: string[];
+  /**
+   * Non-authoritative operational relays that may be used when discovery is unresolved.
+   * These are probed in parallel with CEP-17 discovery when no explicit relays or hints exist.
+   */
+  fallbackOperationalRelayUrls?: string[];
   /** Whether to operate in stateless mode (emulates server responses) */
   isStateless?: boolean;
   /** Log level for the transport */
@@ -131,6 +137,8 @@ export class NostrClientTransport
   private readonly hintedRelayUrls: readonly string[];
   /** Relay URLs used for CEP-17 discovery when no operational relays are configured. */
   private readonly discoveryRelayUrls: readonly string[];
+  /** Optional non-authoritative operational relays used as a fast fallback. */
+  private readonly fallbackOperationalRelayUrls: readonly string[];
   /** Optional list of client-supported PMIs (ordered by preference). */
   private clientPmis: readonly string[] | undefined;
   /** The server's initialize event, if received */
@@ -172,6 +180,8 @@ export class NostrClientTransport
     this.hintedRelayUrls = parsedServerIdentity.relayUrls;
     this.discoveryRelayUrls =
       options.discoveryRelayUrls ?? DEFAULT_BOOTSTRAP_RELAY_URLS;
+    this.fallbackOperationalRelayUrls =
+      options.fallbackOperationalRelayUrls ?? [];
     this.isStateless = options.isStateless ?? false;
     this.correlationStore = new ClientCorrelationStore({
       maxPendingRequests: DEFAULT_LRU_SIZE,
@@ -730,20 +740,54 @@ export class NostrClientTransport
     }
 
     if (this.discoveryRelayUrls.length === 0) {
+      if (this.fallbackOperationalRelayUrls.length > 0) {
+        this.logger.info('Using configured fallback operational relays', {
+          relayCount: this.fallbackOperationalRelayUrls.length,
+        });
+        this.setRelayHandler([...this.fallbackOperationalRelayUrls]);
+      }
       return;
     }
 
-    const relayListEntries = await fetchServerRelayList({
+    const discoveryPromise = fetchServerRelayList({
       serverPubkey: this.serverPubkey,
       relayUrls: [...this.discoveryRelayUrls],
-    });
-    const resolvedRelayUrls = selectOperationalRelayUrls(relayListEntries);
+    }).then((relayListEntries) => ({
+      source: 'discovery' as const,
+      relayUrls: selectOperationalRelayUrls(relayListEntries),
+    }));
 
-    if (resolvedRelayUrls.length > 0) {
-      this.logger.info('Resolved operational relays from server relay list', {
-        relayCount: resolvedRelayUrls.length,
+    const fallbackPromise = this.resolveFallbackOperationalRelayUrls();
+
+    const firstResult = await Promise.race([discoveryPromise, fallbackPromise]);
+
+    if (firstResult.relayUrls.length > 0) {
+      this.logger.info('Resolved operational relays', {
+        relayCount: firstResult.relayUrls.length,
+        source: firstResult.source,
       });
-      this.setRelayHandler(resolvedRelayUrls);
+      this.setRelayHandler(firstResult.relayUrls);
+      return;
+    }
+
+    const [discoveryResult, fallbackResult] = await Promise.all([
+      discoveryPromise,
+      fallbackPromise,
+    ]);
+
+    if (discoveryResult.relayUrls.length > 0) {
+      this.logger.info('Resolved operational relays from server relay list', {
+        relayCount: discoveryResult.relayUrls.length,
+      });
+      this.setRelayHandler(discoveryResult.relayUrls);
+      return;
+    }
+
+    if (fallbackResult.relayUrls.length > 0) {
+      this.logger.info('Using configured fallback operational relays', {
+        relayCount: fallbackResult.relayUrls.length,
+      });
+      this.setRelayHandler(fallbackResult.relayUrls);
       return;
     }
 
@@ -754,6 +798,41 @@ export class NostrClientTransport
       },
     );
     this.setRelayHandler([...this.discoveryRelayUrls]);
+  }
+
+  private async resolveFallbackOperationalRelayUrls(): Promise<{
+    source: 'fallback';
+    relayUrls: string[];
+  }> {
+    if (this.fallbackOperationalRelayUrls.length === 0) {
+      return {
+        source: 'fallback',
+        relayUrls: [],
+      };
+    }
+
+    const relayPool = new ApplesauceRelayPool([
+      ...this.fallbackOperationalRelayUrls,
+    ]);
+
+    try {
+      await withTimeout(
+        relayPool.connect(),
+        DEFAULT_TIMEOUT_MS,
+        'Fallback operational relay probing timed out',
+      );
+      return {
+        source: 'fallback',
+        relayUrls: [...this.fallbackOperationalRelayUrls],
+      };
+    } catch {
+      return {
+        source: 'fallback',
+        relayUrls: [],
+      };
+    } finally {
+      await relayPool.disconnect().catch(() => undefined);
+    }
   }
 
   /**
@@ -834,6 +913,7 @@ export class NostrClientTransport
       statelessHandler: this.statelessHandler,
       serverPubkey: this.serverPubkey,
       discoveryRelayUrls: [...this.discoveryRelayUrls],
+      fallbackOperationalRelayUrls: [...this.fallbackOperationalRelayUrls],
       relayUrls: this.relayHandler.getRelayUrls?.() ?? [],
       serverInitializeEvent: this.serverInitializeEvent,
       serverToolsListEvent: this.serverToolsListEvent,
