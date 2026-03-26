@@ -828,8 +828,6 @@ describe('NostrClientTransport instance shape', () => {
   });
 
   test('uses fallback relays when they become available before discovery resolves', async () => {
-    const originalFetchServerRelayList =
-      await import('./nostr-client/server-relay-discovery.js');
     const originalConnect = ApplesauceRelayPool.prototype.connect;
 
     ApplesauceRelayPool.prototype.connect = async function connectForFallback(
@@ -859,7 +857,40 @@ describe('NostrClientTransport instance shape', () => {
         'wss://fallback.example.com',
       ]);
     } finally {
-      void originalFetchServerRelayList;
+      ApplesauceRelayPool.prototype.connect = originalConnect;
+    }
+  });
+
+  test('allows fallback relays to win before discovery completes because they connect first', async () => {
+    const originalConnect = ApplesauceRelayPool.prototype.connect;
+
+    ApplesauceRelayPool.prototype.connect = async function connectForRace(
+      this: ApplesauceRelayPool,
+    ): Promise<void> {
+      const relayUrls = this.getRelayUrls?.() ?? [];
+
+      if (relayUrls.includes('wss://slow-discovery.example.com')) {
+        await sleep(50);
+      }
+
+      return originalConnect.call(this);
+    };
+
+    const transport = new NostrClientTransport({
+      serverPubkey: 'b'.repeat(64),
+      signer: new PrivateKeySigner('a'.repeat(64)),
+      relayHandler: [],
+      discoveryRelayUrls: ['wss://slow-discovery.example.com'],
+      fallbackOperationalRelayUrls: ['wss://fallback.example.com'],
+    });
+
+    try {
+      await transport['resolveOperationalRelayHandler']();
+
+      expect(transport.getInternalStateForTesting().relayUrls).toEqual([
+        'wss://fallback.example.com',
+      ]);
+    } finally {
       ApplesauceRelayPool.prototype.connect = originalConnect;
     }
   });

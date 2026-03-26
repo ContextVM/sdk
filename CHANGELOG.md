@@ -1,5 +1,11 @@
 # @contextvm/sdk
 
+## 0.7.8
+
+### Patch Changes
+
+- refactor: fallback is now a true parallel connection-path candidate rather than only a relay-connectivity probe.
+
 ## 0.7.7
 
 ### Patch Changes

@@ -752,42 +752,43 @@ export class NostrClientTransport
     const discoveryPromise = fetchServerRelayList({
       serverPubkey: this.serverPubkey,
       relayUrls: [...this.discoveryRelayUrls],
-    }).then((relayListEntries) => ({
-      source: 'discovery' as const,
-      relayUrls: selectOperationalRelayUrls(relayListEntries),
-    }));
+    }).then((relayListEntries) =>
+      selectOperationalRelayUrls(relayListEntries).map((relayUrl) => relayUrl),
+    );
 
-    const fallbackPromise = this.resolveFallbackOperationalRelayUrls();
+    const fallbackConnectionPromise = this.connectFallbackOperationalRelays();
 
-    const firstResult = await Promise.race([discoveryPromise, fallbackPromise]);
-
-    if (firstResult.relayUrls.length > 0) {
-      this.logger.info('Resolved operational relays', {
-        relayCount: firstResult.relayUrls.length,
-        source: firstResult.source,
-      });
-      this.setRelayHandler(firstResult.relayUrls);
-      return;
-    }
-
-    const [discoveryResult, fallbackResult] = await Promise.all([
+    const firstConnectedRelayUrls = await Promise.race([
       discoveryPromise,
-      fallbackPromise,
+      fallbackConnectionPromise,
     ]);
 
-    if (discoveryResult.relayUrls.length > 0) {
-      this.logger.info('Resolved operational relays from server relay list', {
-        relayCount: discoveryResult.relayUrls.length,
+    if (firstConnectedRelayUrls.length > 0) {
+      this.logger.info('Resolved operational relays', {
+        relayCount: firstConnectedRelayUrls.length,
       });
-      this.setRelayHandler(discoveryResult.relayUrls);
+      this.setRelayHandler(firstConnectedRelayUrls);
       return;
     }
 
-    if (fallbackResult.relayUrls.length > 0) {
-      this.logger.info('Using configured fallback operational relays', {
-        relayCount: fallbackResult.relayUrls.length,
+    const [discoveryRelayUrls, fallbackRelayUrls] = await Promise.all([
+      discoveryPromise,
+      fallbackConnectionPromise,
+    ]);
+
+    if (discoveryRelayUrls.length > 0) {
+      this.logger.info('Resolved operational relays from server relay list', {
+        relayCount: discoveryRelayUrls.length,
       });
-      this.setRelayHandler(fallbackResult.relayUrls);
+      this.setRelayHandler(discoveryRelayUrls);
+      return;
+    }
+
+    if (fallbackRelayUrls.length > 0) {
+      this.logger.info('Using configured fallback operational relays', {
+        relayCount: fallbackRelayUrls.length,
+      });
+      this.setRelayHandler(fallbackRelayUrls);
       return;
     }
 
@@ -800,15 +801,9 @@ export class NostrClientTransport
     this.setRelayHandler([...this.discoveryRelayUrls]);
   }
 
-  private async resolveFallbackOperationalRelayUrls(): Promise<{
-    source: 'fallback';
-    relayUrls: string[];
-  }> {
+  private async connectFallbackOperationalRelays(): Promise<string[]> {
     if (this.fallbackOperationalRelayUrls.length === 0) {
-      return {
-        source: 'fallback',
-        relayUrls: [],
-      };
+      return [];
     }
 
     const relayPool = new ApplesauceRelayPool([
@@ -821,15 +816,9 @@ export class NostrClientTransport
         DEFAULT_TIMEOUT_MS,
         'Fallback operational relay probing timed out',
       );
-      return {
-        source: 'fallback',
-        relayUrls: [...this.fallbackOperationalRelayUrls],
-      };
+      return [...this.fallbackOperationalRelayUrls];
     } catch {
-      return {
-        source: 'fallback',
-        relayUrls: [],
-      };
+      return [];
     } finally {
       await relayPool.disconnect().catch(() => undefined);
     }
