@@ -106,7 +106,9 @@ describe.serial('NostrTransport Encryption', () => {
         EncryptionMode.OPTIONAL,
       );
 
-      expect(client.connect(clientNostrTransport)).resolves.toBeUndefined();
+      await expect(
+        client.connect(clientNostrTransport),
+      ).resolves.toBeUndefined();
 
       await client.close();
       await server.close();

@@ -749,7 +749,7 @@ describe.serial('payments fake flow (transport-level)', () => {
       forwarded += 1;
     };
 
-    expect(mw(message, ctx, forward)).rejects.toThrow(/create failed/);
+    await expect(mw(message, ctx, forward)).rejects.toThrow(/create failed/);
     expect(forwarded).toBe(0);
   });
 
