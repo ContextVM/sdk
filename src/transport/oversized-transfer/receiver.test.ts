@@ -121,4 +121,56 @@ describe('OversizedTransferReceiver', () => {
 
     await expect(receiver.waitForAccept('token-r4', 100)).resolves.toBeUndefined();
   });
+
+  test('reassembles transfer with reserved accept slot and no inbound accept frame', () => {
+    const receiver = new OversizedTransferReceiver();
+    const payload = {
+      jsonrpc: '2.0' as const,
+      id: 'reserved-gap',
+      result: { text: 'handshake-required path' },
+    };
+    const serialized = JSON.stringify(payload);
+
+    const { startFrame, chunkFrames, endFrame } = buildOversizedTransferFrames(
+      serialized,
+      {
+        progressToken: 'token-r5',
+        chunkSizeBytes: 8,
+        needsAcceptHandshake: true,
+      },
+    );
+
+    expect(startFrame.progress).toBe(1);
+    expect(chunkFrames[0]?.progress).toBe(3);
+
+    receiver.processFrame(toProgressNotification(startFrame));
+    for (const chunkFrame of chunkFrames) {
+      receiver.processFrame(toProgressNotification(chunkFrame));
+    }
+
+    const synthetic = receiver.processFrame(toProgressNotification(endFrame));
+    expect(synthetic).toEqual(payload);
+  });
+
+  test('does not retain stale early accept after waiter resolution', async () => {
+    const receiver = new OversizedTransferReceiver();
+
+    const waiter = receiver.waitForAccept('token-r6', 100);
+    receiver.processFrame(
+      toProgressNotification({
+        progressToken: 'token-r6',
+        progress: 2,
+        cvm: {
+          type: 'oversized-transfer',
+          frameType: 'accept',
+        },
+      }),
+    );
+
+    await expect(waiter).resolves.toBeUndefined();
+
+    await expect(receiver.waitForAccept('token-r6', 20)).rejects.toThrow(
+      'Timed out waiting for oversized transfer accept',
+    );
+  });
 });

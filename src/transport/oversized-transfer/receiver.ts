@@ -427,13 +427,18 @@ export class OversizedTransferReceiver {
   }
 
   private handleAccept(token: string, progress: number): void {
-    this.resolveAcceptWaiter(token);
+    const resolvedWaiter = this.resolveAcceptWaiter(token);
+    if (resolvedWaiter) {
+      this.earlyAccepts.delete(token);
+    }
 
     const transfer = this.transfers.get(token);
     if (!transfer) {
-      const expiresAt = Date.now() + this.transferTimeoutMs;
-      this.earlyAccepts.set(token, expiresAt);
-      this.pruneEarlyAccepts(Date.now());
+      if (!resolvedWaiter) {
+        const expiresAt = Date.now() + this.transferTimeoutMs;
+        this.earlyAccepts.set(token, expiresAt);
+        this.pruneEarlyAccepts(Date.now());
+      }
       return;
     }
 
@@ -574,6 +579,12 @@ export class OversizedTransferReceiver {
         ([left], [right]) => left - right,
       );
 
+      const smallestChunkProgress = sortedChunks[0]?.[0];
+      const hasReservedAcceptSlot =
+        transfer.acceptProgress === undefined &&
+        smallestChunkProgress !== undefined &&
+        smallestChunkProgress === transfer.startProgress + 2;
+
       for (const [chunkProgress] of sortedChunks) {
         if (chunkProgress >= progress) {
           throw new OversizedTransferProtocolError(
@@ -593,7 +604,8 @@ export class OversizedTransferReceiver {
 
       const frameCountBetween = progress - transfer.startProgress - 1;
       const expectedBetweenCount =
-        transfer.totalChunks + (transfer.acceptProgress !== undefined ? 1 : 0);
+        transfer.totalChunks +
+        (transfer.acceptProgress !== undefined || hasReservedAcceptSlot ? 1 : 0);
 
       if (frameCountBetween !== expectedBetweenCount) {
         throw new OversizedTransferProtocolError(
