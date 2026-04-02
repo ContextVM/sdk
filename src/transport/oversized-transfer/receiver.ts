@@ -290,7 +290,9 @@ export class OversizedTransferReceiver {
 
     // 2. Assemble in ascending progress order.
     const sortedKeys = Array.from(transfer.chunks.keys()).sort((a, b) => a - b);
-    const assembled = sortedKeys.map((k) => transfer.chunks.get(k)!).join('');
+    const assembled = sortedKeys
+      .map((k) => transfer.chunks.get(k) ?? '')
+      .join('');
 
     // 3. Byte-length validation.
     const encodedBytes = new TextEncoder().encode(assembled);

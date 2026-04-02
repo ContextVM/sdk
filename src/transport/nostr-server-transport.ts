@@ -784,8 +784,10 @@ export class NostrServerTransport
       progressToken,
       chunkSizeBytes: this.oversizedChunkSize,
       needsAcceptHandshake: false,
-      publishFrame: async (frame, ctx) =>
-        await sendFrame(frame, ctx.isStartFrame ? startFrameTags : frameTags),
+      publishFrame: async (frame, ctx) => {
+        await sendFrame(frame, ctx.isStartFrame ? startFrameTags : frameTags);
+        return undefined;
+      },
     });
   }
 

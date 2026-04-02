@@ -8,7 +8,7 @@ export interface OversizedFramePublishContext {
 export type OversizedFramePublisher = (
   frame: OversizedTransferProgress,
   ctx: OversizedFramePublishContext,
-) => Promise<string | void>;
+) => Promise<string | undefined>;
 
 export type OversizedAcceptWaiter = (progressToken: string) => Promise<void>;
 

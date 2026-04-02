@@ -42,6 +42,7 @@ describe('sendOversizedTransfer', () => {
           isStartFrame: ctx.isStartFrame,
         });
         order.push(`publish:${frame.cvm.frameType}`);
+        return undefined;
       },
       waitForAccept: async (progressToken) => {
         order.push(`accept:${progressToken}`);
