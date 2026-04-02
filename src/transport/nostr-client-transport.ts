@@ -104,7 +104,7 @@ export interface NostrTransportOptions extends Omit<
   isStateless?: boolean;
   /** Log level for the transport */
   logLevel?: LogLevel;
-  /** Options controlling CEP-XX oversized payload transfer. */
+  /** Options controlling CEP-22 oversized payload transfer. */
   oversizedTransfer?: {
     /** Whether oversized transfer is enabled. @default true */
     enabled?: boolean;
@@ -173,7 +173,7 @@ export class NostrClientTransport
   /** Whether the server has advertised ephemeral gift wrap support via Nostr tags. */
   private serverSupportsEphemeralGiftWraps: boolean = false;
 
-  /** Whether the server has advertised CEP-XX oversized transfer support. */
+  /** Whether the server has advertised CEP-22 oversized transfer support. */
   private serverSupportsOversizedTransfer: boolean = false;
 
   // Oversized-transfer sender settings
@@ -337,7 +337,7 @@ export class NostrClientTransport
   private async sendRequest(message: JSONRPCMessage): Promise<string> {
     const isRequest = isJSONRPCRequest(message);
 
-    // --- CEP-XX Oversized Transfer (proactive path) ---
+    // --- CEP-22 Oversized Transfer (proactive path) ---
     if (this.oversizedEnabled && isRequest) {
       const progressToken = message.params?._meta?.progressToken;
       if (progressToken !== undefined) {
@@ -388,7 +388,7 @@ export class NostrClientTransport
     );
   }
 
-  //Splits an oversized request into CEP-XX transfer frames and sends them sequentially. Waits for an `accept` frame from the server when the server's support is not yet known.
+  //Splits an oversized request into CEP-22 transfer frames and sends them sequentially. Waits for an `accept` frame from the server when the server's support is not yet known.
 
   private async sendOversizedRequest(
     originalMessage: Extract<
@@ -626,7 +626,7 @@ export class NostrClientTransport
         this.serverSupportsEphemeralGiftWraps = true;
       }
 
-      // Learn CEP-XX oversized transfer support from server tags.
+      // Learn CEP-22 oversized transfer support from server tags.
       if (
         !this.serverSupportsOversizedTransfer &&
         Array.isArray(nostrEvent.tags) &&
@@ -1012,7 +1012,7 @@ export class NostrClientTransport
         return;
       }
 
-      // CEP-XX: intercept oversized-transfer frames and do NOT forward raw frames.
+      // CEP-22: intercept oversized-transfer frames and do NOT forward raw frames.
       if (
         isJSONRPCNotification(mcpMessage) &&
         mcpMessage.method === 'notifications/progress' &&

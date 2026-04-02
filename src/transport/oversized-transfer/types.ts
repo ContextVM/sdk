@@ -39,7 +39,7 @@ export type OversizedTransferFrame =
 
 /**
  * Shape of a `notifications/progress` params object that carries
- * a CEP-XX oversized-transfer frame inside the `cvm` extension field.
+ * a CEP-22 oversized-transfer frame inside the `cvm` extension field.
  */
 export type OversizedTransferProgress = {
   progressToken: string | number;

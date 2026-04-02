@@ -119,7 +119,7 @@ export interface NostrServerTransportOptions extends BaseNostrTransportOptions {
     ctx: { clientPubkey: string },
     forward: (message: JSONRPCMessage) => Promise<void>,
   ) => Promise<void>;
-  /** Options controlling CEP-XX oversized payload transfer. */
+  /** Options controlling CEP-22 oversized payload transfer. */
   oversizedTransfer?: {
     /** Whether oversized transfer is enabled. @default true */
     enabled?: boolean;
@@ -285,7 +285,7 @@ export class NostrServerTransport
       this.logger,
     );
 
-    // Advertise CEP-XX support so clients can skip the accept handshake.
+    // Advertise CEP-22 support so clients can skip the accept handshake.
     if (this.oversizedEnabled) {
       this.announcementManager.setExtraCommonTags([
         [NOSTR_TAGS.SUPPORT_OVERSIZED_TRANSFER],
@@ -557,7 +557,7 @@ export class NostrServerTransport
     // Restore the original request ID in the response
     response.id = route.originalRequestId;
 
-    // CEP-XX Oversized Transfer (proactive path for server responses)
+    // CEP-22 Oversized Transfer (proactive path for server responses)
     if (this.oversizedEnabled && route.progressToken) {
       // Serialize before restoring id so the client receives the correct id.
       const serialized = JSON.stringify(response);
@@ -736,7 +736,7 @@ export class NostrServerTransport
     );
   }
 
-  //Fragments an oversized response into CEP-XX transfer frames and sends them
+  //Fragments an oversized response into CEP-22 transfer frames and sends them
   //as `notifications/progress` messages to the client.
   private async sendOversizedResponse(
     serialized: string,
@@ -791,7 +791,7 @@ export class NostrServerTransport
     });
   }
 
-  // Sends a CEP-XX `accept` frame back to a client that has initiated
+  // Sends a CEP-22 `accept` frame back to a client that has initiated
   // an oversized transfer (stateless bootstrap).
   private async sendAcceptFrame(
     clientPubkey: string,

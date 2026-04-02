@@ -18,7 +18,7 @@ export interface OversizedSendOptions extends SenderOptions {
 }
 
 /**
- * Builds and publishes a full CEP-XX oversized transfer sequence.
+ * Builds and publishes a full CEP-22 oversized transfer sequence.
  */
 export async function sendOversizedTransfer(
   serialized: string,

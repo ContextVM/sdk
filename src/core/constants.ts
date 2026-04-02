@@ -107,7 +107,7 @@ export const NOSTR_TAGS = {
   SUPPORT_ENCRYPTION_EPHEMERAL: 'support_encryption_ephemeral',
 
   /**
-   * Support CEP-XX oversized payload transfer via notifications/progress framing.
+   * Support CEP-22 oversized payload transfer via notifications/progress framing.
    */
   SUPPORT_OVERSIZED_TRANSFER: 'support_oversized_transfer',
 } as const;

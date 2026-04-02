@@ -1,4 +1,4 @@
-/** Base class for all CEP-XX transfer errors. */
+/** Base class for all CEP-22 transfer errors. */
 export class OversizedTransferError extends Error {
   constructor(message: string) {
     super(message);
@@ -42,7 +42,7 @@ export class OversizedTransferReassemblyError extends OversizedTransferError {
   }
 }
 
-/** Thrown when transfer frames violate CEP-XX sequencing rules. */
+/** Thrown when transfer frames violate CEP-22 sequencing rules. */
 export class OversizedTransferSequenceError extends OversizedTransferError {
   constructor(message: string) {
     super(message);

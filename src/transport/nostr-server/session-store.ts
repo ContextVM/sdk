@@ -18,7 +18,7 @@ export interface ClientSession {
   isEncrypted: boolean;
   /** Whether server common transport capability tags were already sent to this client */
   hasSentCommonTags: boolean;
-  /** Whether the client has advertised CEP-XX oversized transfer support. */
+  /** Whether the client has advertised CEP-22 oversized transfer support. */
   supportsOversizedTransfer: boolean;
 }
 

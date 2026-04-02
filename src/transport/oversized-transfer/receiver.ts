@@ -74,7 +74,7 @@ interface AcceptWaiter {
   timer: ReturnType<typeof setTimeout>;
 }
 
-//Stateful reassembly engine for CEP-XX oversized transfers.
+//Stateful reassembly engine for CEP-22 oversized transfers.
 export class OversizedTransferReceiver {
   private readonly maxTransferBytes: number;
   private readonly maxTransferChunks: number;
