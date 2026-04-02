@@ -11,6 +11,7 @@ describe('SessionStore', () => {
       expect(created).toBe(true);
       expect(session.isEncrypted).toBe(true);
       expect(session.isInitialized).toBe(false);
+      expect(session.supportsOversizedTransfer).toBe(false);
       expect(store.getSession('client-1')).toBe(session);
     });
 

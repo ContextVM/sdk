@@ -18,6 +18,8 @@ export interface ClientSession {
   isEncrypted: boolean;
   /** Whether server common transport capability tags were already sent to this client */
   hasSentCommonTags: boolean;
+  /** Whether the client has advertised support for oversized transfer framing. */
+  supportsOversizedTransfer: boolean;
 }
 
 /**
@@ -75,6 +77,7 @@ export class SessionStore {
       isInitialized: false,
       isEncrypted,
       hasSentCommonTags: false,
+      supportsOversizedTransfer: false,
     };
 
     this.sessions.set(clientPubkey, newSession);

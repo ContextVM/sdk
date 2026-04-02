@@ -45,6 +45,19 @@ import {
   ServerInfo,
 } from './nostr-server/announcement-manager.js';
 import type { RelayHandler } from '../core/interfaces.js';
+import {
+  DEFAULT_CHUNK_SIZE_BYTES,
+  DEFAULT_OVERSIZED_THRESHOLD_BYTES,
+  OversizedTransferReceiver,
+  buildOversizedTransferFrames,
+  type OversizedTransferProgressParams,
+  type TransferPolicy,
+  utf8ByteLength,
+} from './oversized-transfer/index.js';
+
+function hasSingleTag(tags: string[][], tag: string): boolean {
+  return tags.some((t) => t.length === 1 && t[0] === tag);
+}
 
 /**
  * Options for configuring the NostrServerTransport.
@@ -105,6 +118,18 @@ export interface NostrServerTransportOptions extends BaseNostrTransportOptions {
     ctx: { clientPubkey: string },
     forward: (message: JSONRPCMessage) => Promise<void>,
   ) => Promise<void>;
+
+  /** Options controlling framed oversized transfer behavior. */
+  oversizedTransfer?: {
+    /** Whether oversized transfer handling is enabled. @default true */
+    enabled?: boolean;
+    /** Byte threshold for proactive response fragmentation. @default 48000 */
+    thresholdBytes?: number;
+    /** Per-chunk UTF-8 byte limit. @default 24000 */
+    chunkSizeBytes?: number;
+    /** Receiver-side policy limits for inbound oversized frames. */
+    policy?: TransferPolicy;
+  };
 }
 
 export type InboundMiddlewareFn = (
@@ -143,6 +168,10 @@ export class NostrServerTransport
       }) => void | Promise<void>)
     | undefined;
   private readonly inboundMiddlewares: InboundMiddlewareFn[] = [];
+  private readonly oversizedReceiver: OversizedTransferReceiver;
+  private readonly oversizedEnabled: boolean;
+  private readonly oversizedThreshold: number;
+  private readonly oversizedChunkSize: number;
 
   /**
    * Deduplicate inbound events to avoid redundant work.
@@ -187,10 +216,13 @@ export class NostrServerTransport
           this.logger.debug(
             `Recreating session ${clientPubkey} due to active routes`,
           );
-          this.sessionStore.getOrCreateSession(
+          const [recreatedSession] = this.sessionStore.getOrCreateSession(
             clientPubkey,
             session.isEncrypted,
           );
+          recreatedSession.hasSentCommonTags = session.hasSentCommonTags;
+          recreatedSession.supportsOversizedTransfer =
+            session.supportsOversizedTransfer;
           return; // Don't call onClientSessionEvicted for vetoed eviction
         }
 
@@ -239,6 +271,23 @@ export class NostrServerTransport
         this.relayHandler.subscribe(filters, onEvent).then(() => undefined),
       logger: this.logger,
     });
+
+    const oversizedOptions = options.oversizedTransfer;
+    this.oversizedEnabled = oversizedOptions?.enabled ?? true;
+    this.oversizedThreshold =
+      oversizedOptions?.thresholdBytes ?? DEFAULT_OVERSIZED_THRESHOLD_BYTES;
+    this.oversizedChunkSize =
+      oversizedOptions?.chunkSizeBytes ?? DEFAULT_CHUNK_SIZE_BYTES;
+    this.oversizedReceiver = new OversizedTransferReceiver(
+      oversizedOptions?.policy,
+      this.logger,
+    );
+
+    if (this.oversizedEnabled) {
+      this.announcementManager.setExtraCommonTags([
+        [NOSTR_TAGS.SUPPORT_OVERSIZED_TRANSFER],
+      ]);
+    }
   }
 
   /**
@@ -247,7 +296,16 @@ export class NostrServerTransport
    * Intended for optional protocol extensions (e.g. CEP-8 PMI discovery).
    */
   public setAnnouncementExtraTags(tags: string[][]): void {
-    this.announcementManager.setExtraCommonTags(tags);
+    const nextTags = [...tags];
+
+    if (
+      this.oversizedEnabled &&
+      !hasSingleTag(nextTags, NOSTR_TAGS.SUPPORT_OVERSIZED_TRANSFER)
+    ) {
+      nextTags.push([NOSTR_TAGS.SUPPORT_OVERSIZED_TRANSFER]);
+    }
+
+    this.announcementManager.setExtraCommonTags(nextTags);
   }
 
   /**
@@ -323,6 +381,7 @@ export class NostrServerTransport
       this.sessionStore.clear();
       this.correlationStore.clear();
       this.seenEventIds.clear();
+      this.oversizedReceiver.clear();
       this.onclose?.();
     } catch (error) {
       this.onerror?.(error instanceof Error ? error : new Error(String(error)));
@@ -555,6 +614,25 @@ export class NostrServerTransport
       }
     }
 
+    if (
+      this.oversizedEnabled &&
+      route.progressToken &&
+      session.supportsOversizedTransfer
+    ) {
+      const serializedResponse = JSON.stringify(response);
+      if (utf8ByteLength(serializedResponse) > this.oversizedThreshold) {
+        await this.sendOversizedResponse({
+          serializedResponse,
+          clientPubkey: route.clientPubkey,
+          progressToken: route.progressToken,
+          tags,
+          isEncrypted: session.isEncrypted,
+          giftWrapKind,
+        });
+        return;
+      }
+    }
+
     await this.sendMcpMessage(
       response,
       route.clientPubkey,
@@ -563,6 +641,79 @@ export class NostrServerTransport
       session.isEncrypted,
       undefined,
       giftWrapKind,
+    );
+  }
+
+  private async sendOversizedResponse(options: {
+    serializedResponse: string;
+    clientPubkey: string;
+    progressToken: string;
+    tags: string[][];
+    isEncrypted: boolean;
+    giftWrapKind: number | undefined;
+  }): Promise<void> {
+    const { startFrame, chunkFrames, endFrame } = buildOversizedTransferFrames(
+      options.serializedResponse,
+      {
+        progressToken: options.progressToken,
+        chunkSizeBytes: this.oversizedChunkSize,
+        needsAcceptHandshake: false,
+      },
+    );
+
+    const sendFrame = async (
+      params: OversizedTransferProgressParams,
+    ): Promise<void> => {
+      const notification: JSONRPCMessage = {
+        jsonrpc: '2.0',
+        method: 'notifications/progress',
+        params,
+      };
+
+      await this.sendMcpMessage(
+        notification,
+        options.clientPubkey,
+        CTXVM_MESSAGES_KIND,
+        options.tags,
+        options.isEncrypted,
+        undefined,
+        options.giftWrapKind,
+      );
+    };
+
+    await sendFrame(startFrame);
+    for (const chunkFrame of chunkFrames) {
+      await sendFrame(chunkFrame);
+    }
+    await sendFrame(endFrame);
+  }
+
+  private async sendAcceptFrame(options: {
+    clientPubkey: string;
+    progressToken: string;
+    progress: number;
+    correlatedEventId: string;
+  }): Promise<void> {
+    const acceptParams: OversizedTransferProgressParams = {
+      progressToken: options.progressToken,
+      progress: options.progress,
+      message: 'oversized transfer accepted',
+      cvm: {
+        type: 'oversized-transfer',
+        frameType: 'accept',
+      },
+    };
+
+    const notification: JSONRPCMessage = {
+      jsonrpc: '2.0',
+      method: 'notifications/progress',
+      params: acceptParams,
+    };
+
+    await this.sendNotification(
+      options.clientPubkey,
+      notification,
+      options.correlatedEventId,
     );
   }
 
@@ -848,23 +999,17 @@ export class NostrServerTransport
       }
 
       // Get or create session for this client (ensures session exists for authorized messages)
-      this.getOrCreateClientSession(event.pubkey, isEncrypted);
+      const session = this.getOrCreateClientSession(event.pubkey, isEncrypted);
 
-      // Handle message routing and conditionally inject client pubkey
-      if (isJSONRPCRequest(mcpMessage)) {
-        this.handleIncomingRequest(
-          event.id,
-          mcpMessage,
-          event.pubkey,
-          wrapKind,
-        );
-
-        // Inject client public key for enhanced server integration (in-place mutation)
-        if (this.injectClientPubkey) {
-          injectClientPubkey(mcpMessage, event.pubkey);
-        }
-      } else if (isJSONRPCNotification(mcpMessage)) {
-        this.handleIncomingNotification(event.pubkey, mcpMessage);
+      if (
+        this.oversizedEnabled &&
+        Array.isArray(event.tags) &&
+        hasSingleTag(
+          event.tags as string[][],
+          NOSTR_TAGS.SUPPORT_OVERSIZED_TRANSFER,
+        )
+      ) {
+        session.supportsOversizedTransfer = true;
       }
 
       const forward = async (msg: JSONRPCMessage): Promise<void> => {
@@ -897,7 +1042,79 @@ export class NostrServerTransport
         });
       };
 
-      void dispatch(0, mcpMessage).catch((err: unknown) => {
+      let dispatchMessage: JSONRPCMessage | null = mcpMessage;
+
+      // Handle message routing and conditionally inject client pubkey.
+      if (isJSONRPCRequest(mcpMessage)) {
+        this.handleIncomingRequest(
+          event.id,
+          mcpMessage,
+          event.pubkey,
+          wrapKind,
+        );
+
+        if (this.injectClientPubkey) {
+          injectClientPubkey(mcpMessage, event.pubkey);
+        }
+      } else if (isJSONRPCNotification(mcpMessage)) {
+        if (
+          this.oversizedEnabled &&
+          OversizedTransferReceiver.isOversizedFrame(mcpMessage)
+        ) {
+          const synthetic = this.oversizedReceiver.processFrame(mcpMessage);
+          const frameType =
+            (mcpMessage.params?.cvm as { frameType?: string } | undefined)
+              ?.frameType ?? '';
+
+          if (frameType === 'start') {
+            const progressToken = mcpMessage.params?.progressToken;
+            const progressValue = mcpMessage.params?.progress;
+            if (
+              progressToken !== undefined &&
+              typeof progressValue === 'number' &&
+              Number.isFinite(progressValue)
+            ) {
+              session.supportsOversizedTransfer = true;
+              await this.sendAcceptFrame({
+                clientPubkey: event.pubkey,
+                progressToken: String(progressToken),
+                progress: progressValue + 1,
+                correlatedEventId: event.id,
+              });
+            }
+          }
+
+          if (!synthetic) {
+            return;
+          }
+
+          session.supportsOversizedTransfer = true;
+          dispatchMessage = synthetic;
+
+          if (isJSONRPCRequest(synthetic)) {
+            this.handleIncomingRequest(
+              event.id,
+              synthetic,
+              event.pubkey,
+              wrapKind,
+            );
+
+            if (this.injectClientPubkey) {
+              injectClientPubkey(synthetic, event.pubkey);
+            }
+          } else if (isJSONRPCNotification(synthetic)) {
+            this.handleIncomingNotification(event.pubkey, synthetic);
+          }
+        } else {
+          this.handleIncomingNotification(event.pubkey, mcpMessage);
+        }
+      }
+
+      if (!dispatchMessage) {
+        return;
+      }
+
+      void dispatch(0, dispatchMessage).catch((err: unknown) => {
         this.logger.error('Error in inboundMiddleware chain', {
           error: err instanceof Error ? err.message : String(err),
           eventId: event.id,

@@ -47,6 +47,15 @@ import {
 import { StatelessModeHandler } from './nostr-client/stateless-mode-handler.js';
 import { withTimeout } from '../core/utils/utils.js';
 import { ApplesauceRelayPool } from '../relay/applesauce-relay-pool.js';
+import {
+  DEFAULT_CHUNK_SIZE_BYTES,
+  DEFAULT_OVERSIZED_THRESHOLD_BYTES,
+  OversizedTransferReceiver,
+  buildOversizedTransferFrames,
+  type TransferPolicy,
+  type OversizedTransferProgressParams,
+  utf8ByteLength,
+} from './oversized-transfer/index.js';
 
 function hasSingleTag(tags: string[][], tag: string): boolean {
   return tags.some((t) => t.length === 1 && t[0] === tag);
@@ -70,6 +79,7 @@ function hasKnownDiscoveryTag(event: NostrEvent | undefined): boolean {
     NOSTR_TAGS.PICTURE,
     NOSTR_TAGS.SUPPORT_ENCRYPTION,
     NOSTR_TAGS.SUPPORT_ENCRYPTION_EPHEMERAL,
+    NOSTR_TAGS.SUPPORT_OVERSIZED_TRANSFER,
   ]);
 
   return event.tags.some((tag) => knownDiscoveryTags.has(tag[0] ?? ''));
@@ -103,6 +113,19 @@ export interface NostrTransportOptions extends Omit<
   isStateless?: boolean;
   /** Log level for the transport */
   logLevel?: LogLevel;
+  /** Options controlling framed oversized transfer behavior. */
+  oversizedTransfer?: {
+    /** Whether oversized transfer handling is enabled. @default true */
+    enabled?: boolean;
+    /** Byte threshold for proactive request fragmentation. @default 48000 */
+    thresholdBytes?: number;
+    /** Per-chunk UTF-8 byte limit. @default 24000 */
+    chunkSizeBytes?: number;
+    /** Timeout while waiting for `accept` when handshake is required. */
+    acceptTimeoutMs?: number;
+    /** Receiver-side policy limits for inbound oversized frames. */
+    policy?: TransferPolicy;
+  };
 }
 
 /**
@@ -155,6 +178,14 @@ export class NostrClientTransport
 
   /** Whether the server has advertised ephemeral gift wrap support via Nostr tags. */
   private serverSupportsEphemeralGiftWraps: boolean = false;
+  /** Whether the server has advertised framed oversized-transfer support. */
+  private serverSupportsOversizedTransfer: boolean = false;
+
+  private readonly oversizedEnabled: boolean;
+  private readonly oversizedThreshold: number;
+  private readonly oversizedChunkSize: number;
+  private readonly oversizedAcceptTimeoutMs: number;
+  private readonly oversizedReceiver: OversizedTransferReceiver;
 
   /**
    * Deduplicate inbound events to avoid redundant work.
@@ -190,6 +221,19 @@ export class NostrClientTransport
       },
     });
     this.statelessHandler = new StatelessModeHandler();
+
+    const oversizedOptions = options.oversizedTransfer;
+    this.oversizedEnabled = oversizedOptions?.enabled ?? true;
+    this.oversizedThreshold =
+      oversizedOptions?.thresholdBytes ?? DEFAULT_OVERSIZED_THRESHOLD_BYTES;
+    this.oversizedChunkSize =
+      oversizedOptions?.chunkSizeBytes ?? DEFAULT_CHUNK_SIZE_BYTES;
+    this.oversizedAcceptTimeoutMs =
+      oversizedOptions?.acceptTimeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.oversizedReceiver = new OversizedTransferReceiver(
+      oversizedOptions?.policy,
+      this.logger,
+    );
   }
 
   /**
@@ -246,6 +290,7 @@ export class NostrClientTransport
       await this.disconnect();
       this.correlationStore.clear();
       this.seenEventIds.clear();
+      this.oversizedReceiver.clear();
       this.onclose?.();
     } catch (error) {
       this.onerror?.(error instanceof Error ? error : new Error(String(error)));
@@ -297,12 +342,34 @@ export class NostrClientTransport
   private async sendRequest(message: JSONRPCMessage): Promise<string> {
     const isRequest = isJSONRPCRequest(message);
 
+    if (this.oversizedEnabled && isRequest) {
+      const progressToken = message.params?._meta?.progressToken;
+      if (progressToken !== undefined) {
+        const serialized = JSON.stringify(message);
+        if (utf8ByteLength(serialized) > this.oversizedThreshold) {
+          return await this.sendOversizedRequest(
+            message,
+            serialized,
+            String(progressToken),
+          );
+        }
+      }
+    }
+
     const pmiTags: string[][] =
       isRequest && this.clientPmis
         ? this.clientPmis.map((pmi) => ['pmi', pmi] as string[])
         : [];
 
-    const tags = [...this.createRecipientTags(this.serverPubkey), ...pmiTags];
+    const oversizedTags = this.oversizedEnabled
+      ? [[NOSTR_TAGS.SUPPORT_OVERSIZED_TRANSFER]]
+      : [];
+
+    const tags = [
+      ...this.createRecipientTags(this.serverPubkey),
+      ...pmiTags,
+      ...oversizedTags,
+    ];
 
     const giftWrapKind = this.chooseOutboundGiftWrapKind();
 
@@ -329,6 +396,102 @@ export class NostrClientTransport
       },
       giftWrapKind,
     );
+  }
+
+  private async sendOversizedRequest(
+    originalMessage: JSONRPCMessage,
+    serializedMessage: string,
+    progressToken: string,
+  ): Promise<string> {
+    const pmiTags: string[][] = this.clientPmis
+      ? this.clientPmis.map((pmi) => ['pmi', pmi] as string[])
+      : [];
+
+    const baseTags = [
+      ...this.createRecipientTags(this.serverPubkey),
+      ...pmiTags,
+      [NOSTR_TAGS.SUPPORT_OVERSIZED_TRANSFER],
+    ];
+
+    const giftWrapKind = this.chooseOutboundGiftWrapKind();
+    const needsAcceptHandshake = !this.serverSupportsOversizedTransfer;
+
+    const { startFrame, chunkFrames, endFrame } = buildOversizedTransferFrames(
+      serializedMessage,
+      {
+        progressToken,
+        chunkSizeBytes: this.oversizedChunkSize,
+        needsAcceptHandshake,
+      },
+    );
+
+    const sendFrame = async (
+      params: OversizedTransferProgressParams,
+      onEventCreated?: (eventId: string) => void,
+    ): Promise<string> => {
+      const notification: JSONRPCMessage = {
+        jsonrpc: '2.0',
+        method: 'notifications/progress',
+        params,
+      };
+
+      return await this.sendMcpMessage(
+        notification,
+        this.serverPubkey,
+        CTXVM_MESSAGES_KIND,
+        baseTags,
+        undefined,
+        onEventCreated,
+        giftWrapKind,
+      );
+    };
+
+    await sendFrame(startFrame);
+
+    if (needsAcceptHandshake) {
+      try {
+        await this.oversizedReceiver.waitForAccept(
+          progressToken,
+          this.oversizedAcceptTimeoutMs,
+        );
+      } catch (error) {
+        const reason =
+          error instanceof Error
+            ? error.message
+            : 'Timed out waiting for oversized accept';
+        const abortProgress = startFrame.progress + 1;
+
+        await sendFrame({
+          progressToken,
+          progress: abortProgress,
+          message: 'oversized transfer aborted',
+          cvm: {
+            type: 'oversized-transfer',
+            frameType: 'abort',
+            reason,
+          },
+        }).catch(() => undefined);
+
+        throw error;
+      }
+    }
+
+    for (const chunkFrame of chunkFrames) {
+      await sendFrame(chunkFrame);
+    }
+
+    return await sendFrame(endFrame, (eventId) => {
+      if (!isJSONRPCRequest(originalMessage)) {
+        return;
+      }
+
+      this.correlationStore.registerRequest(eventId, {
+        originalRequestId: originalMessage.id,
+        isInitialize: originalMessage.method === INITIALIZE_METHOD,
+        progressToken,
+        originalRequestContext: this.getOriginalRequestContext(originalMessage),
+      });
+    });
   }
 
   private chooseOutboundGiftWrapKind(): number {
@@ -501,6 +664,17 @@ export class NostrClientTransport
         this.serverSupportsEphemeralGiftWraps = true;
       }
 
+      if (
+        !this.serverSupportsOversizedTransfer &&
+        Array.isArray(nostrEvent.tags) &&
+        hasSingleTag(
+          nostrEvent.tags as string[][],
+          NOSTR_TAGS.SUPPORT_OVERSIZED_TRANSFER,
+        )
+      ) {
+        this.serverSupportsOversizedTransfer = true;
+      }
+
       const eTag = getNostrEventTag(nostrEvent.tags, 'e');
 
       if (!this.serverInitializeEvent && hasKnownDiscoveryTag(nostrEvent)) {
@@ -586,6 +760,15 @@ export class NostrClientTransport
       }
 
       if (isJSONRPCNotification(mcpMessage)) {
+        if (OversizedTransferReceiver.isOversizedFrame(mcpMessage)) {
+          this.handleOversizedNotification(
+            nostrEvent.id,
+            eTag ?? undefined,
+            mcpMessage,
+          );
+          return;
+        }
+
         this.handleNotification(nostrEvent.id, eTag ?? undefined, mcpMessage);
         return;
       }
@@ -892,6 +1075,47 @@ export class NostrClientTransport
     }
   }
 
+  private handleOversizedNotification(
+    eventId: string,
+    correlatedEventId: string | undefined,
+    notification: JSONRPCMessage,
+  ): void {
+    if (!isJSONRPCNotification(notification)) {
+      return;
+    }
+
+    try {
+      this.serverSupportsOversizedTransfer = true;
+      const synthetic = this.oversizedReceiver.processFrame(notification);
+      if (!synthetic) {
+        return;
+      }
+
+      if (isJSONRPCResultResponse(synthetic) || isJSONRPCErrorResponse(synthetic)) {
+        if (correlatedEventId) {
+          this.handleResponse(correlatedEventId, synthetic);
+          return;
+        }
+        this.onmessage?.(synthetic);
+        return;
+      }
+
+      if (isJSONRPCNotification(synthetic)) {
+        this.handleNotification(eventId, correlatedEventId, synthetic);
+        return;
+      }
+
+      this.onmessage?.(synthetic);
+    } catch (error) {
+      this.logger.error('Error handling oversized transfer frame', {
+        error: error instanceof Error ? error.message : String(error),
+        eventId,
+        correlatedEventId,
+      });
+      this.onerror?.(error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+
   /**
    * Test-only accessor for internal state.
    * @internal
@@ -909,6 +1133,7 @@ export class NostrClientTransport
       serverResourcesListEvent: this.serverResourcesListEvent,
       serverResourceTemplatesListEvent: this.serverResourceTemplatesListEvent,
       serverPromptsListEvent: this.serverPromptsListEvent,
+      serverSupportsOversizedTransfer: this.serverSupportsOversizedTransfer,
     };
   }
 }
