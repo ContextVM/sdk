@@ -1,3 +1,5 @@
+import { sha256 } from '@noble/hashes/sha2.js';
+import { bytesToHex } from '@noble/hashes/utils.js';
 import { DEFAULT_CHUNK_SIZE, DIGEST_PREFIX } from './constants.js';
 import { OversizedTransferProgress } from './types.js';
 
@@ -13,16 +15,6 @@ export interface SenderResult {
   startFrame: OversizedTransferProgress;
   chunkFrames: OversizedTransferProgress[];
   endFrame: OversizedTransferProgress;
-}
-
-// Converts an ArrayBuffer to a lowercase hex string.
-export function bufferToHex(buffer: ArrayBuffer): string {
-  const bytes = new Uint8Array(buffer);
-  let hex = '';
-  for (const byte of bytes) {
-    hex += byte.toString(16).padStart(2, '0');
-  }
-  return hex;
 }
 
 // Splits a string into multiple chunks based on byte size
@@ -59,8 +51,7 @@ export async function buildOversizedTransferFrames(
   const bytes = new TextEncoder().encode(serialized);
   const totalBytes = bytes.byteLength;
 
-  const hashBuffer = await crypto.subtle.digest('SHA-256', bytes);
-  const digest = DIGEST_PREFIX + bufferToHex(hashBuffer);
+  const digest = DIGEST_PREFIX + bytesToHex(sha256(bytes));
 
   const chunkSize = options.chunkSizeBytes ?? DEFAULT_CHUNK_SIZE;
   const textChunks = splitStringByByteSize(serialized, chunkSize);

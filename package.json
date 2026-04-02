@@ -102,6 +102,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.26.0",
+    "@noble/hashes": "^2.0.1",
     "applesauce-relay": "^5.1.0",
     "nostr-tools": "~2.18.2",
     "pino": "^10.3.1",

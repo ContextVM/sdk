@@ -5,7 +5,11 @@ import type { JSONRPCResponse } from '@modelcontextprotocol/sdk/types.js';
 import { NostrServerTransport } from './nostr-server-transport.js';
 import { PrivateKeySigner } from '../signer/private-key-signer.js';
 import { EncryptionMode } from '../core/interfaces.js';
-import { EPHEMERAL_GIFT_WRAP_KIND, GIFT_WRAP_KIND } from '../core/constants.js';
+import {
+  EPHEMERAL_GIFT_WRAP_KIND,
+  GIFT_WRAP_KIND,
+  NOSTR_TAGS,
+} from '../core/constants.js';
 
 function makeCountingRelayHandler(counter: {
   publishCalls: number;
@@ -15,6 +19,19 @@ function makeCountingRelayHandler(counter: {
     async disconnect() {},
     async publish(_event: NostrEvent) {
       counter.publishCalls += 1;
+    },
+    async subscribe() {
+      return () => {};
+    },
+  } as unknown as RelayHandler;
+}
+
+function makeCapturingRelayHandler(events: NostrEvent[]): RelayHandler {
+  return {
+    async connect() {},
+    async disconnect() {},
+    async publish(event: NostrEvent) {
+      events.push(event);
     },
     async subscribe() {
       return () => {};
@@ -168,5 +185,78 @@ describe.serial('NostrServerTransport duplicate response prevention', () => {
     expect(
       transport.getInternalStateForTesting().correlationStore.eventRouteCount,
     ).toBe(1);
+  });
+
+  it('sends common discovery tags only on the first oversized response frame', async () => {
+    const publishedEvents: NostrEvent[] = [];
+
+    const transport = new NostrServerTransport({
+      signer: new PrivateKeySigner('1'.repeat(64)),
+      relayHandler: makeCapturingRelayHandler(publishedEvents),
+      encryptionMode: EncryptionMode.DISABLED,
+      serverInfo: {
+        name: 'Oversized Server',
+        about: 'First frame carries discovery tags',
+      },
+      oversizedTransfer: {
+        enabled: true,
+        thresholdBytes: 32,
+        chunkSizeBytes: 8,
+      },
+    });
+
+    const state = transport.getInternalStateForTesting();
+    const [session] = state.sessionStore.getOrCreateSession(
+      'c'.repeat(64),
+      false,
+    );
+    state.correlationStore.registerEventRoute(
+      'event1',
+      'c'.repeat(64),
+      123,
+      'token-1',
+    );
+
+    const response: JSONRPCResponse = {
+      jsonrpc: '2.0',
+      id: 'event1',
+      result: {
+        payload:
+          'This response is intentionally long enough to force oversized transfer.',
+      },
+    };
+
+    await transport.send(response);
+
+    expect(publishedEvents.length).toBeGreaterThanOrEqual(3);
+
+    const firstTags = publishedEvents[0]?.tags ?? [];
+    const secondTags = publishedEvents[1]?.tags ?? [];
+
+    expect(
+      firstTags.some((tag) => tag[0] === NOSTR_TAGS.SUPPORT_OVERSIZED_TRANSFER),
+    ).toBe(true);
+    expect(
+      firstTags.some(
+        (tag) => tag[0] === NOSTR_TAGS.NAME && tag[1] === 'Oversized Server',
+      ),
+    ).toBe(true);
+    expect(
+      firstTags.some(
+        (tag) =>
+          tag[0] === NOSTR_TAGS.ABOUT &&
+          tag[1] === 'First frame carries discovery tags',
+      ),
+    ).toBe(true);
+
+    expect(
+      secondTags.some(
+        (tag) => tag[0] === NOSTR_TAGS.SUPPORT_OVERSIZED_TRANSFER,
+      ),
+    ).toBe(false);
+    expect(secondTags.some((tag) => tag[0] === NOSTR_TAGS.NAME)).toBe(false);
+    expect(secondTags.some((tag) => tag[0] === NOSTR_TAGS.ABOUT)).toBe(false);
+
+    expect(session.hasSentCommonTags).toBe(true);
   });
 });

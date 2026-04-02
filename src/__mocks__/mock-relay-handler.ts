@@ -15,13 +15,18 @@ type SubscriptionEntry = {
  */
 export class MockRelayHub {
   private readonly relayUrls: string[];
+  private readonly debug: boolean;
   private events: NostrEvent[] = [];
   private subscriptions = new Map<number, SubscriptionEntry>();
   private nextSubscriptionId = 1;
   private nextOwnerId = 1;
 
-  public constructor(relayUrls: string[] = ['memory://relay']) {
+  public constructor(
+    relayUrls: string[] = ['memory://relay'],
+    options: { debug?: boolean } = {},
+  ) {
     this.relayUrls = [...relayUrls];
+    this.debug = options.debug ?? false;
   }
 
   public createRelayHandler(): MockRelayHandler {
@@ -33,8 +38,21 @@ export class MockRelayHub {
     this.subscriptions.clear();
   }
 
+  public getEvents(): NostrEvent[] {
+    return [...this.events];
+  }
+
   public publish(event: NostrEvent): void {
     this.events.push(event);
+    if (this.debug) {
+      console.log('[MockRelayHub] publish', {
+        id: event.id,
+        pubkey: event.pubkey,
+        kind: event.kind,
+        tags: event.tags,
+        content: event.content,
+      });
+    }
     for (const subscription of this.subscriptions.values()) {
       if (matchFilters(subscription.filters, event)) {
         subscription.onEvent(event);

@@ -45,11 +45,11 @@ import {
   selectOperationalRelayUrls,
 } from './nostr-client/server-relay-discovery.js';
 import { StatelessModeHandler } from './nostr-client/stateless-mode-handler.js';
-import { withTimeout } from '../core/utils/utils.js';
+import { hasEventTag, hasSingleTag, withTimeout } from '../core/utils/utils.js';
 import { ApplesauceRelayPool } from '../relay/applesauce-relay-pool.js';
 import {
   OversizedTransferReceiver,
-  buildOversizedTransferFrames,
+  sendOversizedTransfer,
   type TransferPolicy,
   type OversizedTransferProgress,
 } from './oversized-transfer/index.js';
@@ -57,16 +57,6 @@ import {
   DEFAULT_CHUNK_SIZE,
   DEFAULT_OVERSIZED_THRESHOLD,
 } from './oversized-transfer/constants.js';
-
-function hasSingleTag(tags: string[][], tag: string): boolean {
-  return tags.some((t) => t.length === 1 && t[0] === tag);
-}
-
-function hasEventTag(event: NostrEvent | undefined, tag: string): boolean {
-  return (
-    Array.isArray(event?.tags) && hasSingleTag(event.tags as string[][], tag)
-  );
-}
 
 function hasKnownDiscoveryTag(event: NostrEvent | undefined): boolean {
   if (!event || !Array.isArray(event.tags)) {
@@ -80,6 +70,7 @@ function hasKnownDiscoveryTag(event: NostrEvent | undefined): boolean {
     NOSTR_TAGS.PICTURE,
     NOSTR_TAGS.SUPPORT_ENCRYPTION,
     NOSTR_TAGS.SUPPORT_ENCRYPTION_EPHEMERAL,
+    NOSTR_TAGS.SUPPORT_OVERSIZED_TRANSFER,
   ]);
 
   return event.tags.some((tag) => knownDiscoveryTags.has(tag[0] ?? ''));
@@ -394,32 +385,31 @@ export class NostrClientTransport
   }
 
   //Splits an oversized request into CEP-XX transfer frames and sends them sequentially. Waits for an `accept` frame from the server when the server's support is not yet known.
-   
+
   private async sendOversizedRequest(
-    originalMessage: JSONRPCMessage,
+    originalMessage: Extract<
+      JSONRPCMessage,
+      { id: string | number; method: string }
+    >,
     serialized: string,
     progressToken: string,
   ): Promise<void> {
     const pmiTags: string[][] = this.clientPmis
       ? this.clientPmis.map((pmi) => ['pmi', pmi] as string[])
       : [];
-    const baseTags = [
+    const frameRecipientTags = this.createRecipientTags(this.serverPubkey);
+    const startFrameTags = [
       ...this.createRecipientTags(this.serverPubkey),
       ...pmiTags,
+      [NOSTR_TAGS.SUPPORT_OVERSIZED_TRANSFER],
     ];
     const giftWrapKind = this.chooseOutboundGiftWrapKind();
 
     const needsAcceptHandshake = !this.serverSupportsOversizedTransfer;
 
-    const { startFrame, chunkFrames, endFrame } =
-      await buildOversizedTransferFrames(serialized, {
-        progressToken,
-        chunkSizeBytes: this.oversizedChunkSize,
-        needsAcceptHandshake,
-      });
-
     const sendFrame = async (
       params: OversizedTransferProgress,
+      tags: string[][],
     ): Promise<string> => {
       const notification: JSONRPCMessage = {
         jsonrpc: '2.0',
@@ -430,36 +420,32 @@ export class NostrClientTransport
         notification,
         this.serverPubkey,
         CTXVM_MESSAGES_KIND,
-        baseTags,
+        tags,
         undefined,
         undefined,
         giftWrapKind,
       );
     };
 
-    await sendFrame(startFrame);
-
-    if (needsAcceptHandshake) {
-      // The `accept` frame from the server is processed by this transport's
-      // oversizedReceiver which resolves the returned Promise.
-      await this.oversizedReceiver.waitForAccept(progressToken);
-    }
-
-    for (const chunk of chunkFrames) {
-      await sendFrame(chunk);
-    }
-    const endFrameEventId = await sendFrame(endFrame);
+    const endFrameEventId = await sendOversizedTransfer(serialized, {
+      progressToken,
+      chunkSizeBytes: this.oversizedChunkSize,
+      needsAcceptHandshake,
+      publishFrame: async (frame, ctx) =>
+        await sendFrame(
+          frame,
+          ctx.isStartFrame ? startFrameTags : frameRecipientTags,
+        ),
+      waitForAccept: async (token) =>
+        await this.oversizedReceiver.waitForAccept(token),
+    });
 
     // Register the original request for correlating the final response.
-    if (isJSONRPCRequest(originalMessage)) {
-      const meta = originalMessage.params?._meta;
-      const token = meta?.progressToken !== undefined
-        ? String(meta.progressToken)
-        : undefined;
+    if (endFrameEventId) {
       this.correlationStore.registerRequest(endFrameEventId, {
         originalRequestId: originalMessage.id,
         isInitialize: originalMessage.method === INITIALIZE_METHOD,
-        progressToken: token,
+        progressToken,
         originalRequestContext: this.getOriginalRequestContext(originalMessage),
       });
     }
@@ -1029,8 +1015,24 @@ export class NostrClientTransport
           .processFrame(mcpMessage)
           .then((synthetic) => {
             if (synthetic !== null) {
-              // Transfer complete — deliver the reconstructed message.
-              this.onmessage?.(synthetic);
+              if (
+                isJSONRPCResultResponse(synthetic) ||
+                isJSONRPCErrorResponse(synthetic)
+              ) {
+                if (correlatedEventId) {
+                  this.handleResponse(correlatedEventId, synthetic);
+                } else {
+                  this.logger.warn(
+                    'Oversized response completed without correlation `e` tag',
+                    {
+                      eventId,
+                    },
+                  );
+                }
+                return;
+              }
+
+              this.handleNotification(eventId, correlatedEventId, synthetic);
             }
           })
           .catch((err: unknown) => {
