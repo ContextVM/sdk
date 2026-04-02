@@ -211,6 +211,7 @@ export function startMockRelay(
   }
 
   const server = serve({
+    hostname: '127.0.0.1',
     port: options.port ?? 0,
     fetch(req, server) {
       const url = new URL(req.url);
@@ -294,8 +295,8 @@ export function startMockRelay(
   return {
     server,
     port,
-    relayUrl: `ws://localhost:${port}`,
-    httpUrl: `http://localhost:${port}`,
+    relayUrl: `ws://127.0.0.1:${port}`,
+    httpUrl: `http://127.0.0.1:${port}`,
     stop: () => {
       // Close any existing WebSocket connections before stopping the server.
       for (const instance of state.connections.values()) {
