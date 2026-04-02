@@ -115,6 +115,8 @@ export interface NostrTransportOptions extends Omit<
     thresholdBytes?: number;
     /** Per-chunk data size in bytes. @default DEFAULT_CHUNK_SIZE (48 000) */
     chunkSizeBytes?: number;
+    /** Timeout while waiting for `accept` when handshake is required. */
+    acceptTimeoutMs?: number;
     /** Receiver-side admission policy. */
     policy?: TransferPolicy;
   };
@@ -178,6 +180,7 @@ export class NostrClientTransport
   private readonly oversizedEnabled: boolean;
   private readonly oversizedThreshold: number;
   private readonly oversizedChunkSize: number;
+  private readonly oversizedAcceptTimeoutMs: number;
 
   /** Receives inbound oversized-transfer frames from the server (server→client responses). */
   private readonly oversizedReceiver: OversizedTransferReceiver;
@@ -221,6 +224,7 @@ export class NostrClientTransport
     this.oversizedEnabled = ot?.enabled ?? true;
     this.oversizedThreshold = ot?.thresholdBytes ?? DEFAULT_OVERSIZED_THRESHOLD;
     this.oversizedChunkSize = ot?.chunkSizeBytes ?? DEFAULT_CHUNK_SIZE;
+    this.oversizedAcceptTimeoutMs = ot?.acceptTimeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.oversizedReceiver = new OversizedTransferReceiver(
       ot?.policy ?? {},
       this.logger,
@@ -437,7 +441,10 @@ export class NostrClientTransport
           ctx.isStartFrame ? startFrameTags : frameRecipientTags,
         ),
       waitForAccept: async (token) =>
-        await this.oversizedReceiver.waitForAccept(token),
+        await this.oversizedReceiver.waitForAccept(
+          token,
+          this.oversizedAcceptTimeoutMs,
+        ),
     });
 
     // Register the original request for correlating the final response.

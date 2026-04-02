@@ -17,27 +17,46 @@ export interface SenderResult {
   endFrame: OversizedTransferProgress;
 }
 
-// Splits a string into multiple chunks based on byte size
+export function utf8ByteLength(value: string): number {
+  return new TextEncoder().encode(value).byteLength;
+}
+
+export function sha256Digest(value: string): string {
+  return DIGEST_PREFIX + bytesToHex(sha256(new TextEncoder().encode(value)));
+}
+
+// Splits a string into multiple chunks based on byte size.
 function splitStringByByteSize(str: string, maxBytes: number): string[] {
-  const encoder = new TextEncoder();
+  if (!Number.isInteger(maxBytes) || maxBytes <= 0) {
+    throw new Error(`Invalid chunkSizeBytes: ${String(maxBytes)}`);
+  }
+
   const chunks: string[] = [];
-  let start = 0;
 
-  while (start < str.length) {
-    let end = start;
-    let byteCount = 0;
+  let currentChunk = '';
+  let currentChunkBytes = 0;
 
-    while (end < str.length) {
-      const charBytes = encoder.encode(str[end]).byteLength;
-      if (byteCount + charBytes > maxBytes) break;
-      byteCount += charBytes;
-      end++;
+  for (const char of str) {
+    const charBytes = utf8ByteLength(char);
+    if (charBytes > maxBytes) {
+      throw new Error(
+        `Unable to split message: single character exceeds chunk size (${charBytes} > ${maxBytes})`,
+      );
     }
 
-    if (end === start) end++;
+    if (currentChunkBytes > 0 && currentChunkBytes + charBytes > maxBytes) {
+      chunks.push(currentChunk);
+      currentChunk = char;
+      currentChunkBytes = charBytes;
+      continue;
+    }
 
-    chunks.push(str.slice(start, end));
-    start = end;
+    currentChunk += char;
+    currentChunkBytes += charBytes;
+  }
+
+  if (currentChunk.length > 0) {
+    chunks.push(currentChunk);
   }
 
   return chunks;
@@ -48,10 +67,8 @@ export async function buildOversizedTransferFrames(
   serialized: string,
   options: SenderOptions,
 ): Promise<SenderResult> {
-  const bytes = new TextEncoder().encode(serialized);
-  const totalBytes = bytes.byteLength;
-
-  const digest = DIGEST_PREFIX + bytesToHex(sha256(bytes));
+  const totalBytes = utf8ByteLength(serialized);
+  const digest = sha256Digest(serialized);
 
   const chunkSize = options.chunkSizeBytes ?? DEFAULT_CHUNK_SIZE;
   const textChunks = splitStringByByteSize(serialized, chunkSize);
