@@ -47,6 +47,16 @@ import {
 import { StatelessModeHandler } from './nostr-client/stateless-mode-handler.js';
 import { withTimeout } from '../core/utils/utils.js';
 import { ApplesauceRelayPool } from '../relay/applesauce-relay-pool.js';
+import {
+  OversizedTransferReceiver,
+  buildOversizedTransferFrames,
+  type TransferPolicy,
+  type OversizedTransferProgress,
+} from './oversized-transfer/index.js';
+import {
+  DEFAULT_CHUNK_SIZE,
+  DEFAULT_OVERSIZED_THRESHOLD,
+} from './oversized-transfer/constants.js';
 
 function hasSingleTag(tags: string[][], tag: string): boolean {
   return tags.some((t) => t.length === 1 && t[0] === tag);
@@ -103,6 +113,20 @@ export interface NostrTransportOptions extends Omit<
   isStateless?: boolean;
   /** Log level for the transport */
   logLevel?: LogLevel;
+  /** Options controlling CEP-XX oversized payload transfer. */
+  oversizedTransfer?: {
+    /** Whether oversized transfer is enabled. @default true */
+    enabled?: boolean;
+    /**
+     * Byte threshold at which the sender proactively fragments a message.
+     * @default DEFAULT_OVERSIZED_THRESHOLD (48 000)
+     */
+    thresholdBytes?: number;
+    /** Per-chunk data size in bytes. @default DEFAULT_CHUNK_SIZE (48 000) */
+    chunkSizeBytes?: number;
+    /** Receiver-side admission policy. */
+    policy?: TransferPolicy;
+  };
 }
 
 /**
@@ -156,6 +180,17 @@ export class NostrClientTransport
   /** Whether the server has advertised ephemeral gift wrap support via Nostr tags. */
   private serverSupportsEphemeralGiftWraps: boolean = false;
 
+  /** Whether the server has advertised CEP-XX oversized transfer support. */
+  private serverSupportsOversizedTransfer: boolean = false;
+
+  // Oversized-transfer sender settings
+  private readonly oversizedEnabled: boolean;
+  private readonly oversizedThreshold: number;
+  private readonly oversizedChunkSize: number;
+
+  /** Receives inbound oversized-transfer frames from the server (server→client responses). */
+  private readonly oversizedReceiver: OversizedTransferReceiver;
+
   /**
    * Deduplicate inbound events to avoid redundant work.
    *
@@ -190,6 +225,15 @@ export class NostrClientTransport
       },
     });
     this.statelessHandler = new StatelessModeHandler();
+
+    const ot = options.oversizedTransfer;
+    this.oversizedEnabled = ot?.enabled ?? true;
+    this.oversizedThreshold = ot?.thresholdBytes ?? DEFAULT_OVERSIZED_THRESHOLD;
+    this.oversizedChunkSize = ot?.chunkSizeBytes ?? DEFAULT_CHUNK_SIZE;
+    this.oversizedReceiver = new OversizedTransferReceiver(
+      ot?.policy ?? {},
+      this.logger,
+    );
   }
 
   /**
@@ -246,6 +290,7 @@ export class NostrClientTransport
       await this.disconnect();
       this.correlationStore.clear();
       this.seenEventIds.clear();
+      this.oversizedReceiver.clear();
       this.onclose?.();
     } catch (error) {
       this.onerror?.(error instanceof Error ? error : new Error(String(error)));
@@ -297,6 +342,23 @@ export class NostrClientTransport
   private async sendRequest(message: JSONRPCMessage): Promise<string> {
     const isRequest = isJSONRPCRequest(message);
 
+    // --- CEP-XX Oversized Transfer (proactive path) ---
+    if (this.oversizedEnabled && isRequest) {
+      const progressToken = message.params?._meta?.progressToken;
+      if (progressToken !== undefined) {
+        const serialized = JSON.stringify(message);
+        const byteLength = new TextEncoder().encode(serialized).byteLength;
+        if (byteLength > this.oversizedThreshold) {
+          await this.sendOversizedRequest(
+            message,
+            serialized,
+            String(progressToken),
+          );
+          return 'oversized-transfer';
+        }
+      }
+    }
+
     const pmiTags: string[][] =
       isRequest && this.clientPmis
         ? this.clientPmis.map((pmi) => ['pmi', pmi] as string[])
@@ -329,6 +391,78 @@ export class NostrClientTransport
       },
       giftWrapKind,
     );
+  }
+
+  //Splits an oversized request into CEP-XX transfer frames and sends them sequentially. Waits for an `accept` frame from the server when the server's support is not yet known.
+   
+  private async sendOversizedRequest(
+    originalMessage: JSONRPCMessage,
+    serialized: string,
+    progressToken: string,
+  ): Promise<void> {
+    const pmiTags: string[][] = this.clientPmis
+      ? this.clientPmis.map((pmi) => ['pmi', pmi] as string[])
+      : [];
+    const baseTags = [
+      ...this.createRecipientTags(this.serverPubkey),
+      ...pmiTags,
+    ];
+    const giftWrapKind = this.chooseOutboundGiftWrapKind();
+
+    const needsAcceptHandshake = !this.serverSupportsOversizedTransfer;
+
+    const { startFrame, chunkFrames, endFrame } =
+      await buildOversizedTransferFrames(serialized, {
+        progressToken,
+        chunkSizeBytes: this.oversizedChunkSize,
+        needsAcceptHandshake,
+      });
+
+    const sendFrame = async (
+      params: OversizedTransferProgress,
+    ): Promise<string> => {
+      const notification: JSONRPCMessage = {
+        jsonrpc: '2.0',
+        method: 'notifications/progress',
+        params,
+      };
+      return await this.sendMcpMessage(
+        notification,
+        this.serverPubkey,
+        CTXVM_MESSAGES_KIND,
+        baseTags,
+        undefined,
+        undefined,
+        giftWrapKind,
+      );
+    };
+
+    await sendFrame(startFrame);
+
+    if (needsAcceptHandshake) {
+      // The `accept` frame from the server is processed by this transport's
+      // oversizedReceiver which resolves the returned Promise.
+      await this.oversizedReceiver.waitForAccept(progressToken);
+    }
+
+    for (const chunk of chunkFrames) {
+      await sendFrame(chunk);
+    }
+    const endFrameEventId = await sendFrame(endFrame);
+
+    // Register the original request for correlating the final response.
+    if (isJSONRPCRequest(originalMessage)) {
+      const meta = originalMessage.params?._meta;
+      const token = meta?.progressToken !== undefined
+        ? String(meta.progressToken)
+        : undefined;
+      this.correlationStore.registerRequest(endFrameEventId, {
+        originalRequestId: originalMessage.id,
+        isInitialize: originalMessage.method === INITIALIZE_METHOD,
+        progressToken: token,
+        originalRequestContext: this.getOriginalRequestContext(originalMessage),
+      });
+    }
   }
 
   private chooseOutboundGiftWrapKind(): number {
@@ -488,8 +622,6 @@ export class NostrClientTransport
       }
 
       // Learn server transport capabilities from any inbound server envelope tags.
-      // This enables ephemeral gift wrap discovery even when clients operate in stateless
-      // mode (no real initialize handshake observed).
       if (
         !this.serverSupportsEphemeralGiftWraps &&
         Array.isArray(nostrEvent.tags) &&
@@ -499,6 +631,18 @@ export class NostrClientTransport
         )
       ) {
         this.serverSupportsEphemeralGiftWraps = true;
+      }
+
+      // Learn CEP-XX oversized transfer support from server tags.
+      if (
+        !this.serverSupportsOversizedTransfer &&
+        Array.isArray(nostrEvent.tags) &&
+        hasSingleTag(
+          nostrEvent.tags as string[][],
+          NOSTR_TAGS.SUPPORT_OVERSIZED_TRANSFER,
+        )
+      ) {
+        this.serverSupportsOversizedTransfer = true;
       }
 
       const eTag = getNostrEventTag(nostrEvent.tags, 'e');
@@ -874,6 +1018,30 @@ export class NostrClientTransport
         });
         return;
       }
+
+      // CEP-XX: intercept oversized-transfer frames and do NOT forward raw frames.
+      if (
+        isJSONRPCNotification(mcpMessage) &&
+        mcpMessage.method === 'notifications/progress' &&
+        OversizedTransferReceiver.isOversizedFrame(mcpMessage)
+      ) {
+        this.oversizedReceiver
+          .processFrame(mcpMessage)
+          .then((synthetic) => {
+            if (synthetic !== null) {
+              // Transfer complete — deliver the reconstructed message.
+              this.onmessage?.(synthetic);
+            }
+          })
+          .catch((err: unknown) => {
+            this.logger.error('Oversized transfer error (client)', {
+              error: err instanceof Error ? err.message : String(err),
+            });
+            this.onerror?.(err instanceof Error ? err : new Error(String(err)));
+          });
+        return;
+      }
+
       this.onmessage?.(mcpMessage);
       this.onmessageWithContext?.(mcpMessage, {
         eventId,

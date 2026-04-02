@@ -105,6 +105,11 @@ export const NOSTR_TAGS = {
    * Support ephemeral gift wrap kind (21059) for encrypted messages.
    */
   SUPPORT_ENCRYPTION_EPHEMERAL: 'support_encryption_ephemeral',
+
+  /**
+   * Support CEP-XX oversized payload transfer via notifications/progress framing.
+   */
+  SUPPORT_OVERSIZED_TRANSFER: 'support_oversized_transfer',
 } as const;
 
 export const DEFAULT_LRU_SIZE = 5000;
