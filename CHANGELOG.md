@@ -1,5 +1,15 @@
 # @contextvm/sdk
 
+## 0.8.0-next.0
+
+### Minor Changes
+
+- Add oversized payload transfer support for the Nostr transport layer.
+
+  This prerelease includes the new oversized transfer protocol, sender and
+  receiver flows, sequencing and out-of-order chunk handling, and UTF-8-safe
+  chunk splitting improvements for large payload delivery.
+
 ## 0.7.8
 
 ### Patch Changes

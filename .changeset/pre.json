@@ -1,0 +1,10 @@
+{
+  "mode": "pre",
+  "tag": "next",
+  "initialVersions": {
+    "@contextvm/sdk": "0.7.8"
+  },
+  "changesets": [
+    "bright-poets-juggle"
+  ]
+}
