@@ -2,6 +2,9 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import {
   DEFAULT_MAX_ACCEPTABLE_BYTES,
+  DEFAULT_MAX_CONCURRENT_TRANSFERS,
+  DEFAULT_MAX_OUT_OF_ORDER_CHUNKS,
+  DEFAULT_MAX_OUT_OF_ORDER_WINDOW,
   DEFAULT_MAX_TRANSFER_CHUNKS,
   DEFAULT_TRANSFER_TIMEOUT_MS,
   DIGEST_PREFIX,
@@ -24,6 +27,7 @@ import {
   OversizedTransferError,
   OversizedTransferPolicyError,
   OversizedTransferReassemblyError,
+  OversizedTransferSequenceError,
 } from './errors.js';
 
 // Narrows an unknown value to `OversizedTransferFrame` via structural check.
@@ -41,6 +45,9 @@ function isOversizedTransferFrame(
 export interface TransferPolicy {
   maxTransferBytes?: number;
   maxTransferChunks?: number;
+  maxConcurrentTransfers?: number;
+  maxOutOfOrderWindow?: number;
+  maxOutOfOrderChunks?: number;
   /** Hard timeout for an in-flight transfer in ms. */
   transferTimeoutMs?: number;
 }
@@ -50,11 +57,14 @@ interface ActiveTransfer {
   digest: string;
   totalBytes: number;
   totalChunks: number;
-  receivedChunks: number;
+  startProgress: number;
+  acceptProgress: number | null;
+  firstChunkProgress: number | null;
+  nextExpectedChunkProgress: number | null;
+  highestObservedProgress: number;
 
   // Keyed by the outer `notifications/progress.params.progress` value.
   chunks: Map<number, string>;
-  startedAt: number;
   abortTimer: ReturnType<typeof setTimeout>;
 }
 
@@ -68,6 +78,9 @@ interface AcceptWaiter {
 export class OversizedTransferReceiver {
   private readonly maxTransferBytes: number;
   private readonly maxTransferChunks: number;
+  private readonly maxConcurrentTransfers: number;
+  private readonly maxOutOfOrderWindow: number;
+  private readonly maxOutOfOrderChunks: number;
   private readonly transferTimeoutMs: number;
   private readonly transfers = new Map<string, ActiveTransfer>();
   private readonly acceptWaiters = new Map<string, AcceptWaiter>();
@@ -79,6 +92,12 @@ export class OversizedTransferReceiver {
       policy.maxTransferBytes ?? DEFAULT_MAX_ACCEPTABLE_BYTES;
     this.maxTransferChunks =
       policy.maxTransferChunks ?? DEFAULT_MAX_TRANSFER_CHUNKS;
+    this.maxConcurrentTransfers =
+      policy.maxConcurrentTransfers ?? DEFAULT_MAX_CONCURRENT_TRANSFERS;
+    this.maxOutOfOrderWindow =
+      policy.maxOutOfOrderWindow ?? DEFAULT_MAX_OUT_OF_ORDER_WINDOW;
+    this.maxOutOfOrderChunks =
+      policy.maxOutOfOrderChunks ?? DEFAULT_MAX_OUT_OF_ORDER_CHUNKS;
     this.transferTimeoutMs =
       policy.transferTimeoutMs ?? DEFAULT_TRANSFER_TIMEOUT_MS;
     this.logger = logger;
@@ -112,15 +131,18 @@ export class OversizedTransferReceiver {
     // The outer `progress` value is the canonical ordering key for chunks.
     const progress = Number(notification.params?.progress ?? 0);
 
+    this.assertValidToken(token);
+    this.assertValidProgress(progress, token);
+
     switch (cvm.frameType) {
       case 'start':
         return this.handleStart(token, progress, cvm);
       case 'accept':
-        return this.handleAccept(token);
+        return this.handleAccept(token, progress);
       case 'chunk':
         return this.handleChunk(token, progress, cvm);
       case 'end':
-        return this.handleEnd(token);
+        return this.handleEnd(token, progress);
       case 'abort':
         return this.handleAbort(token, cvm);
     }
@@ -176,12 +198,13 @@ export class OversizedTransferReceiver {
   //Handles the start frame
   private handleStart(
     token: string,
-    _progress: number,
+    progress: number,
     frame: StartFrame,
   ): null {
     if (this.transfers.has(token)) {
-      this.logger.warn('Duplicate start frame; ignoring', { token });
-      return null;
+      throw new OversizedTransferSequenceError(
+        `Duplicate start frame for active transfer (token: ${token})`,
+      );
     }
 
     if (frame.totalBytes > this.maxTransferBytes) {
@@ -193,6 +216,12 @@ export class OversizedTransferReceiver {
     if (frame.totalChunks > this.maxTransferChunks) {
       throw new OversizedTransferPolicyError(
         `totalChunks ${frame.totalChunks} exceeds policy limit ${this.maxTransferChunks} (token: ${token})`,
+      );
+    }
+
+    if (this.transfers.size >= this.maxConcurrentTransfers) {
+      throw new OversizedTransferPolicyError(
+        `Active transfers exceed policy limit ${this.maxConcurrentTransfers} (token: ${token})`,
       );
     }
 
@@ -216,9 +245,12 @@ export class OversizedTransferReceiver {
       digest: frame.digest,
       totalBytes: frame.totalBytes,
       totalChunks: frame.totalChunks,
+      startProgress: progress,
+      acceptProgress: null,
+      firstChunkProgress: null,
+      nextExpectedChunkProgress: null,
+      highestObservedProgress: progress,
       chunks: new Map(),
-      receivedChunks: 0,
-      startedAt: Date.now(),
       abortTimer,
     });
 
@@ -231,15 +263,31 @@ export class OversizedTransferReceiver {
     return null;
   }
 
-  private handleAccept(token: string): null {
-    const resolvedWaiter = this.resolveAcceptWaiter(token);
+  private handleAccept(token: string, progress: number): null {
     const transfer = this.transfers.get(token);
     if (!transfer) {
-      if (!resolvedWaiter) {
+      // Late or duplicated accept frames are ignored after transfer cleanup.
+      if (!this.resolveAcceptWaiter(token)) {
         this.logger.warn('Accept frame with no active transfer', { token });
       }
       return null;
     }
+
+    if (progress <= transfer.startProgress) {
+      this.failTransfer(
+        token,
+        new OversizedTransferSequenceError(
+          `Accept frame progress must be greater than start progress (token: ${token})`,
+        ),
+      );
+    }
+
+    transfer.highestObservedProgress = Math.max(
+      transfer.highestObservedProgress,
+      progress,
+    );
+    transfer.acceptProgress = progress;
+    this.resolveAcceptWaiter(token);
     return null;
   }
 
@@ -250,6 +298,7 @@ export class OversizedTransferReceiver {
   ): null {
     const transfer = this.transfers.get(token);
     if (!transfer) {
+      // Late or duplicated chunk frames are ignored after transfer cleanup.
       this.logger.warn('Chunk frame with no active transfer', {
         token,
         progress,
@@ -257,44 +306,138 @@ export class OversizedTransferReceiver {
       return null;
     }
 
-    // Relay may deliver the same event twice; deduplicate by progress key.
-    if (transfer.chunks.has(progress)) return null;
+    const minimumChunkProgress = transfer.startProgress + 1;
+    const maximumChunkProgress =
+      transfer.startProgress + transfer.totalChunks + 1;
+    if (progress < minimumChunkProgress) {
+      this.failTransfer(
+        token,
+        new OversizedTransferSequenceError(
+          `Chunk progress must be greater than start progress (token: ${token})`,
+        ),
+      );
+    }
+
+    const nextExpectedChunkProgress =
+      this.getNextExpectedChunkProgress(transfer);
+    const forwardGap = progress - nextExpectedChunkProgress;
+    if (forwardGap > this.maxOutOfOrderWindow) {
+      this.failTransfer(
+        token,
+        new OversizedTransferPolicyError(
+          `Out-of-order gap ${forwardGap} exceeds policy limit ${this.maxOutOfOrderWindow} (token: ${token})`,
+        ),
+      );
+    }
+
+    if (progress > maximumChunkProgress) {
+      this.failTransfer(
+        token,
+        new OversizedTransferSequenceError(
+          `Chunk progress exceeds declared transfer bounds (token: ${token})`,
+        ),
+      );
+    }
+
+    if (
+      progress > transfer.startProgress + 2 &&
+      !transfer.chunks.has(transfer.startProgress + 1) &&
+      !transfer.chunks.has(transfer.startProgress + 2)
+    ) {
+      this.failTransfer(
+        token,
+        new OversizedTransferSequenceError(
+          `First chunk skips beyond the reserved accept slot (token: ${token})`,
+        ),
+      );
+    }
+
+    const existingChunk = transfer.chunks.get(progress);
+    if (existingChunk !== undefined) {
+      if (existingChunk !== frame.data) {
+        this.failTransfer(
+          token,
+          new OversizedTransferSequenceError(
+            `Conflicting duplicate chunk detected (token: ${token}, progress: ${progress})`,
+          ),
+        );
+      }
+      return null;
+    }
 
     transfer.chunks.set(progress, frame.data);
-    transfer.receivedChunks++;
+    transfer.highestObservedProgress = Math.max(
+      transfer.highestObservedProgress,
+      progress,
+    );
+
+    this.refreshChunkProgressState(transfer);
+
+    if (forwardGap > 0) {
+      if (
+        this.getBufferedOutOfOrderChunkCount(transfer) >
+        this.maxOutOfOrderChunks
+      ) {
+        this.failTransfer(
+          token,
+          new OversizedTransferPolicyError(
+            `Buffered out-of-order chunks exceed policy limit ${this.maxOutOfOrderChunks} (token: ${token})`,
+          ),
+        );
+      }
+    }
 
     this.logger.debug('Chunk received', {
       token,
       progress,
-      received: transfer.receivedChunks,
+      received: transfer.chunks.size,
       total: transfer.totalChunks,
     });
 
     return null;
   }
 
-  private async handleEnd(token: string): Promise<JSONRPCMessage | null> {
+  private async handleEnd(
+    token: string,
+    progress: number,
+  ): Promise<JSONRPCMessage | null> {
     const transfer = this.transfers.get(token);
     if (!transfer) {
+      // Late or duplicated end frames are ignored after transfer cleanup.
       this.logger.warn('End frame with no active transfer', { token });
       return null;
     }
 
-    // 1. Completeness check.
-    if (transfer.receivedChunks !== transfer.totalChunks) {
-      this.cleanup(token);
-      throw new OversizedTransferReassemblyError(
-        `Expected ${transfer.totalChunks} chunks but received ${transfer.receivedChunks} (token: ${token})`,
+    if (progress <= transfer.highestObservedProgress) {
+      this.failTransfer(
+        token,
+        new OversizedTransferSequenceError(
+          `End frame progress must be greater than all prior transfer frames (token: ${token})`,
+        ),
       );
     }
 
-    // 2. Assemble in ascending progress order.
-    const sortedKeys = Array.from(transfer.chunks.keys()).sort((a, b) => a - b);
-    const assembled = sortedKeys
-      .map((k) => transfer.chunks.get(k) ?? '')
-      .join('');
+    if (transfer.totalChunks > 0 && transfer.chunks.size === 0) {
+      this.failTransfer(
+        token,
+        new OversizedTransferReassemblyError(
+          `Transfer ended before any chunks were received (token: ${token})`,
+        ),
+      );
+    }
 
-    // 3. Byte-length validation.
+    if (transfer.chunks.size !== transfer.totalChunks) {
+      this.failTransfer(
+        token,
+        new OversizedTransferReassemblyError(
+          `Expected ${transfer.totalChunks} chunks but received ${transfer.chunks.size} (token: ${token})`,
+        ),
+      );
+    }
+
+    const assembled = this.assembleTransferPayload(transfer, token);
+
+    // 1. Byte-length validation.
     const encodedBytes = new TextEncoder().encode(assembled);
     if (encodedBytes.byteLength !== transfer.totalBytes) {
       this.cleanup(token);
@@ -303,7 +446,7 @@ export class OversizedTransferReceiver {
       );
     }
 
-    // 4. SHA-256 digest validation.
+    // 2. SHA-256 digest validation.
     const actualDigest = DIGEST_PREFIX + bytesToHex(sha256(encodedBytes));
     if (actualDigest !== transfer.digest) {
       this.cleanup(token);
@@ -312,7 +455,7 @@ export class OversizedTransferReceiver {
       );
     }
 
-    // 5. Parse and validate as a JSON-RPC message.
+    // 3. Parse and validate as a JSON-RPC message.
     let validated: JSONRPCMessage;
     try {
       const parsed: unknown = JSON.parse(assembled);
@@ -330,12 +473,140 @@ export class OversizedTransferReceiver {
   }
 
   private handleAbort(token: string, frame: AbortFrame): null {
-    this.rejectAcceptWaiter(
-      token,
-      new OversizedTransferAbortError(token, frame.reason),
-    );
+    const error = new OversizedTransferAbortError(token, frame.reason);
+    this.rejectAcceptWaiter(token, error);
     this.cleanup(token);
-    throw new OversizedTransferAbortError(token, frame.reason);
+    throw error;
+  }
+
+  private assertValidToken(token: string): void {
+    if (token.length === 0) {
+      throw new OversizedTransferSequenceError(
+        'Oversized transfer frame is missing progressToken',
+      );
+    }
+  }
+
+  private assertValidProgress(progress: number, token: string): void {
+    if (!Number.isInteger(progress) || progress <= 0) {
+      throw new OversizedTransferSequenceError(
+        `Invalid progress value ${String(progress)} (token: ${token})`,
+      );
+    }
+  }
+
+  private refreshChunkProgressState(transfer: ActiveTransfer): void {
+    if (transfer.chunks.size === 0) {
+      transfer.firstChunkProgress = null;
+      transfer.nextExpectedChunkProgress = null;
+      return;
+    }
+
+    const firstChunkProgress =
+      transfer.acceptProgress !== null
+        ? transfer.startProgress + 2
+        : transfer.startProgress + 1;
+
+    let nextExpectedChunkProgress = firstChunkProgress;
+    while (transfer.chunks.has(nextExpectedChunkProgress)) {
+      nextExpectedChunkProgress++;
+    }
+
+    transfer.firstChunkProgress = firstChunkProgress;
+    transfer.nextExpectedChunkProgress = nextExpectedChunkProgress;
+  }
+
+  private getBufferedOutOfOrderChunkCount(transfer: ActiveTransfer): number {
+    if (
+      transfer.firstChunkProgress === null ||
+      transfer.nextExpectedChunkProgress === null
+    ) {
+      return 0;
+    }
+
+    const contiguousChunkCount =
+      transfer.nextExpectedChunkProgress - transfer.firstChunkProgress;
+    return transfer.chunks.size - contiguousChunkCount;
+  }
+
+  private getNextExpectedChunkProgress(transfer: ActiveTransfer): number {
+    if (transfer.nextExpectedChunkProgress !== null) {
+      return transfer.nextExpectedChunkProgress;
+    }
+
+    return transfer.acceptProgress !== null
+      ? transfer.startProgress + 2
+      : transfer.startProgress + 1;
+  }
+
+  private assembleTransferPayload(
+    transfer: ActiveTransfer,
+    token: string,
+  ): string {
+    const firstChunkProgress = this.getAssemblyFirstChunkProgress(
+      transfer,
+      token,
+    );
+
+    const chunks: string[] = [];
+    for (
+      let progress = firstChunkProgress;
+      progress < firstChunkProgress + transfer.totalChunks;
+      progress++
+    ) {
+      const chunk = transfer.chunks.get(progress);
+      if (chunk === undefined) {
+        throw new OversizedTransferReassemblyError(
+          `Missing chunk during assembly (token: ${token}, progress: ${progress})`,
+        );
+      }
+      chunks.push(chunk);
+    }
+
+    return chunks.join('');
+  }
+
+  private getAssemblyFirstChunkProgress(
+    transfer: ActiveTransfer,
+    token: string,
+  ): number {
+    const directStartProgress = transfer.startProgress + 1;
+    const acceptGatedStartProgress = transfer.startProgress + 2;
+
+    if (this.hasCompleteChunkRange(transfer, directStartProgress)) {
+      return directStartProgress;
+    }
+
+    if (this.hasCompleteChunkRange(transfer, acceptGatedStartProgress)) {
+      return acceptGatedStartProgress;
+    }
+
+    throw new OversizedTransferReassemblyError(
+      `Transfer ended with unresolved chunk gaps (token: ${token})`,
+    );
+  }
+
+  private hasCompleteChunkRange(
+    transfer: ActiveTransfer,
+    firstChunkProgress: number,
+  ): boolean {
+    for (
+      let progress = firstChunkProgress;
+      progress < firstChunkProgress + transfer.totalChunks;
+      progress++
+    ) {
+      if (!transfer.chunks.has(progress)) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  private failTransfer(token: string, error: Error): never {
+    this.rejectAcceptWaiter(token, error);
+    this.cleanup(token);
+    throw error;
   }
 
   private resolveAcceptWaiter(token: string): boolean {

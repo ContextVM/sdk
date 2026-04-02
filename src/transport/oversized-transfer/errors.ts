@@ -41,3 +41,11 @@ export class OversizedTransferReassemblyError extends OversizedTransferError {
     this.name = 'OversizedTransferReassemblyError';
   }
 }
+
+/** Thrown when transfer frames violate CEP-XX sequencing rules. */
+export class OversizedTransferSequenceError extends OversizedTransferError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'OversizedTransferSequenceError';
+  }
+}

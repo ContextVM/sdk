@@ -15,6 +15,7 @@ export {
   OversizedTransferPolicyError,
   OversizedTransferDigestError,
   OversizedTransferReassemblyError,
+  OversizedTransferSequenceError,
 } from './errors.js';
 export { OversizedTransferReceiver } from './receiver.js';
 export type { TransferPolicy } from './receiver.js';
