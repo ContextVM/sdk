@@ -490,4 +490,67 @@ describe.serial('NostrTransport Encryption', () => {
     },
     30000,
   );
+
+  test.serial(
+    'server optional should switch first response to kind 21059 when client first request advertises support_encryption_ephemeral',
+    async () => {
+      const serverPrivateKey = bytesToHex(generateSecretKey());
+      const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
+      const clientPrivateKey = bytesToHex(generateSecretKey());
+
+      const serverToClientKinds: number[] = [];
+
+      const serverRelayHandler = relayHub.createRelayHandler();
+      const clientRelayHandler = relayHub.createRelayHandler();
+      const observerRelayHandler = relayHub.createRelayHandler();
+
+      const { server, serverTransport } = createServerAndTransport(
+        serverPrivateKey,
+        EncryptionMode.OPTIONAL,
+        GiftWrapMode.OPTIONAL,
+        serverRelayHandler,
+      );
+      await server.connect(serverTransport);
+
+      const { client, clientNostrTransport } = createClientAndTransport(
+        clientPrivateKey,
+        serverPublicKey,
+        EncryptionMode.REQUIRED,
+        GiftWrapMode.OPTIONAL,
+        true,
+        clientRelayHandler,
+      );
+
+      observerRelayHandler.subscribe(
+        [{ kinds: [GIFT_WRAP_KIND, EPHEMERAL_GIFT_WRAP_KIND] }],
+        (event) => {
+          const pTags = event.tags.filter((t) => t[0] === 'p');
+          if (
+            pTags.some(
+              (t) => t[1] === getPublicKey(hexToBytes(clientPrivateKey)),
+            )
+          ) {
+            serverToClientKinds.push(event.kind);
+          }
+        },
+      );
+
+      await client.connect(clientNostrTransport);
+      await client.listTools();
+
+      await waitFor({
+        produce: () =>
+          serverToClientKinds.includes(EPHEMERAL_GIFT_WRAP_KIND)
+            ? serverToClientKinds
+            : undefined,
+        timeoutMs: 5_000,
+      });
+
+      expect(serverToClientKinds).toContain(EPHEMERAL_GIFT_WRAP_KIND);
+
+      await client.close();
+      await server.close();
+    },
+    30000,
+  );
 });

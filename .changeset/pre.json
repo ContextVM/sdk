@@ -5,6 +5,8 @@
     "@contextvm/sdk": "0.7.8"
   },
   "changesets": [
-    "bright-poets-juggle"
+    "bright-poets-juggle",
+    "shy-paths-switch",
+    "tidy-otters-add"
   ]
 }

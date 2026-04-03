@@ -54,7 +54,6 @@ import {
   type OversizedTransferProgress,
 } from './oversized-transfer/index.js';
 import {
-  hasDiscoveryTags,
   mergeDiscoveryTags,
   parseDiscoveredPeerCapabilities,
 } from './discovery-tags.js';
@@ -237,7 +236,10 @@ export class NostrClientTransport
       tags.push([NOSTR_TAGS.SUPPORT_ENCRYPTION]);
     }
 
-    if (this.giftWrapMode === GiftWrapMode.EPHEMERAL) {
+    if (
+      this.encryptionMode !== EncryptionMode.DISABLED &&
+      this.giftWrapMode !== GiftWrapMode.PERSISTENT
+    ) {
       tags.push([NOSTR_TAGS.SUPPORT_ENCRYPTION_EPHEMERAL]);
     }
 
@@ -260,6 +262,27 @@ export class NostrClientTransport
 
   private getPendingClientDiscoveryTags(): string[][] {
     return this.hasSentDiscoveryTags ? [] : this.getClientCapabilityTags();
+  }
+
+  private buildOutboundClientTags(params: {
+    baseTags: readonly string[][];
+    includeDiscovery: boolean;
+  }): string[][] {
+    const { baseTags, includeDiscovery } = params;
+
+    return this.composeOutboundTags({
+      baseTags,
+      discoveryTags: includeDiscovery
+        ? this.getPendingClientDiscoveryTags()
+        : [],
+      negotiationTags: includeDiscovery ? this.getClientNegotiationTags() : [],
+    });
+  }
+
+  private markClientDiscoveryTagsSent(): void {
+    if (this.getPendingClientDiscoveryTags().length > 0) {
+      this.hasSentDiscoveryTags = true;
+    }
   }
 
   /**
@@ -376,13 +399,10 @@ export class NostrClientTransport
       }
     }
 
-    const discoveryTags = isRequest ? this.getPendingClientDiscoveryTags() : [];
-    const negotiationTags = isRequest ? this.getClientNegotiationTags() : [];
-    const tags = [
-      ...this.createRecipientTags(this.serverPubkey),
-      ...discoveryTags,
-      ...negotiationTags,
-    ];
+    const tags = this.buildOutboundClientTags({
+      baseTags: this.createRecipientTags(this.serverPubkey),
+      includeDiscovery: isRequest,
+    });
 
     const giftWrapKind = this.chooseOutboundGiftWrapKind();
 
@@ -410,8 +430,8 @@ export class NostrClientTransport
       giftWrapKind,
     );
 
-    if (isRequest && discoveryTags.length > 0) {
-      this.hasSentDiscoveryTags = true;
+    if (isRequest) {
+      this.markClientDiscoveryTagsSent();
     }
 
     return eventId;
@@ -428,12 +448,10 @@ export class NostrClientTransport
     progressToken: string,
   ): Promise<void> {
     const frameRecipientTags = this.createRecipientTags(this.serverPubkey);
-    const discoveryTags = this.getPendingClientDiscoveryTags();
-    const startFrameTags = [
-      ...frameRecipientTags,
-      ...discoveryTags,
-      ...this.getClientNegotiationTags(),
-    ];
+    const startFrameTags = this.buildOutboundClientTags({
+      baseTags: frameRecipientTags,
+      includeDiscovery: true,
+    });
     const giftWrapKind = this.chooseOutboundGiftWrapKind();
 
     const needsAcceptHandshake = !this.serverSupportsOversizedTransfer;
@@ -484,9 +502,7 @@ export class NostrClientTransport
       });
     }
 
-    if (discoveryTags.length > 0) {
-      this.hasSentDiscoveryTags = true;
-    }
+    this.markClientDiscoveryTagsSent();
   }
 
   private chooseOutboundGiftWrapKind(): number {
@@ -864,11 +880,15 @@ export class NostrClientTransport
   }
 
   private learnServerDiscovery(event: NostrEvent): void {
-    if (!Array.isArray(event.tags) || !hasDiscoveryTags(event.tags)) {
+    if (!Array.isArray(event.tags)) {
       return;
     }
 
     const discovered = parseDiscoveredPeerCapabilities(event.tags);
+    if (discovered.discoveryTags.length === 0) {
+      return;
+    }
+
     this.serverSupportsEphemeralGiftWraps ||=
       discovered.supportsEphemeralEncryption;
     this.serverSupportsOversizedTransfer ||=

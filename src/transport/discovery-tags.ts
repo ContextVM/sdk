@@ -25,7 +25,10 @@ export function getDiscoveryTags(tags: readonly string[][]): string[][] {
 }
 
 export function hasDiscoveryTags(tags: readonly string[][]): boolean {
-  return getDiscoveryTags(tags).length > 0;
+  return tags.some((tag) => {
+    const tagName = tag[0];
+    return typeof tagName === 'string' && !NON_DISCOVERY_TAG_NAMES.has(tagName);
+  });
 }
 
 export function parseDiscoveredPeerCapabilities(

@@ -1,5 +1,29 @@
 # @contextvm/sdk
 
+## 0.8.0-next.2
+
+### Patch Changes
+
+- refactor(transport): extract outbound tag composition into base class
+
+  Extract the logic for composing outbound Nostr tags into a reusable
+  `composeOutboundTags` method in BaseNostrTransport. This standardizes
+  tag ordering across client and server transports (base tags first,
+  then discovery tags, then negotiation tags).
+
+  Refactor NostrClientTransport and NostrServerTransport to use the
+  shared composition method, and add `chooseServerOutboundGiftWrapKind`
+
+## 0.8.0-next.1
+
+### Patch Changes
+
+- refactor(transport): extract discovery tags into dedicated module and add client capability advertisement
+
+  Extract discovery tag parsing and merging logic into a new discovery-tags.ts module. Add client-side capability advertisement so clients can proactively advertise support for encryption, ephemeral gift wraps, and oversized transfers without waiting for server discovery. Also fix a race condition in the oversized transfer receiver where accept could arrive before waiter registration.
+
+  BREAKING CHANGE: The hasKnownDiscoveryTag function has been removed from nostr-client-transport.ts in favor of the new hasDiscoveryTags and parseDiscoveredPeerCapabilities functions.
+
 ## 0.8.0-next.0
 
 ### Minor Changes

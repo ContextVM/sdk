@@ -444,6 +444,26 @@ export abstract class BaseNostrTransport {
   }
 
   /**
+   * Composes outbound Nostr tags in a consistent order.
+   *
+   * Base protocol routing tags come first, followed by one-shot discovery tags,
+   * and finally always-send negotiation tags.
+   */
+  protected composeOutboundTags(params: {
+    baseTags: readonly string[][];
+    discoveryTags?: readonly string[][];
+    negotiationTags?: readonly string[][];
+  }): string[][] {
+    const { baseTags, discoveryTags = [], negotiationTags = [] } = params;
+
+    return [
+      ...baseTags.map((tag) => [...tag]),
+      ...discoveryTags.map((tag) => [...tag]),
+      ...negotiationTags.map((tag) => [...tag]),
+    ];
+  }
+
+  /**
    * Logs an error and re-throws it for consistent error handling.
    */
   protected logAndRethrowError(

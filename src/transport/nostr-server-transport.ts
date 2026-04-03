@@ -430,6 +430,62 @@ export class NostrServerTransport
     return session;
   }
 
+  private takePendingServerDiscoveryTags(session: ClientSession): string[][] {
+    if (session.hasSentCommonTags) {
+      return [];
+    }
+
+    session.hasSentCommonTags = true;
+    return this.announcementManager.getCommonTags();
+  }
+
+  private buildServerOutboundTags(params: {
+    baseTags: readonly string[][];
+    session: ClientSession;
+    includeDiscovery?: boolean;
+    negotiationTags?: readonly string[][];
+  }): string[][] {
+    const {
+      baseTags,
+      session,
+      includeDiscovery = true,
+      negotiationTags = [],
+    } = params;
+
+    return this.composeOutboundTags({
+      baseTags,
+      discoveryTags: includeDiscovery
+        ? this.takePendingServerDiscoveryTags(session)
+        : [],
+      negotiationTags,
+    });
+  }
+
+  private chooseServerOutboundGiftWrapKind(params: {
+    session: ClientSession;
+    fallbackWrapKind?: number;
+  }): number | undefined {
+    const { session, fallbackWrapKind } = params;
+
+    if (!session.isEncrypted) {
+      return undefined;
+    }
+
+    if (this.giftWrapMode === GiftWrapMode.EPHEMERAL) {
+      return EPHEMERAL_GIFT_WRAP_KIND;
+    }
+
+    if (this.giftWrapMode === GiftWrapMode.PERSISTENT) {
+      return GIFT_WRAP_KIND;
+    }
+
+    if (session.supportsEphemeralEncryption) {
+      return EPHEMERAL_GIFT_WRAP_KIND;
+    }
+
+    return fallbackWrapKind;
+  }
+
   private getRelayUrls(relayHandler: RelayHandler): string[] | undefined {
     return relayHandler.getRelayUrls?.();
   }
@@ -564,43 +620,28 @@ export class NostrServerTransport
       const serialized = JSON.stringify(response);
       const byteLength = new TextEncoder().encode(serialized).byteLength;
       if (byteLength > this.oversizedThreshold) {
-        const includeCommonTags = !session.hasSentCommonTags;
-        if (includeCommonTags) {
-          session.hasSentCommonTags = true;
-        }
         await this.sendOversizedResponse(
           serialized,
           route.clientPubkey,
           route.progressToken,
           nostrEventId,
-          session.isEncrypted,
-          includeCommonTags,
+          session,
+          route.wrapKind,
         );
         return;
       }
     }
 
     // Send the response back to the original requester
-    const tags = this.createResponseTags(route.clientPubkey, nostrEventId);
+    const tags = this.buildServerOutboundTags({
+      baseTags: this.createResponseTags(route.clientPubkey, nostrEventId),
+      session,
+    });
 
-    // Attach discovery tags on the first response for a client session.
-    // This enables stateless clients to learn the same standard/custom discovery tags
-    // they would otherwise obtain from announcements or a real initialize handshake.
-    if (!session.hasSentCommonTags) {
-      tags.push(...this.announcementManager.getCommonTags());
-      session.hasSentCommonTags = true;
-    }
-
-    let giftWrapKind: number | undefined;
-    if (session.isEncrypted) {
-      if (this.giftWrapMode === GiftWrapMode.OPTIONAL) {
-        giftWrapKind = route.wrapKind;
-      } else if (this.giftWrapMode === GiftWrapMode.EPHEMERAL) {
-        giftWrapKind = EPHEMERAL_GIFT_WRAP_KIND;
-      } else if (this.giftWrapMode === GiftWrapMode.PERSISTENT) {
-        giftWrapKind = GIFT_WRAP_KIND;
-      }
-    }
+    const giftWrapKind = this.chooseServerOutboundGiftWrapKind({
+      session,
+      fallbackWrapKind: route.wrapKind,
+    });
 
     // Attach pricing tags to capability list responses so clients can access CEP-8 pricing
     if (isJSONRPCResultResponse(response)) {
@@ -611,10 +652,7 @@ export class NostrServerTransport
         ListResourceTemplatesResultSchema.safeParse(result).success ||
         ListPromptsResultSchema.safeParse(result).success
       ) {
-        const pricingTags = this.announcementManager.getPricingTags();
-        pricingTags.forEach((tag) => {
-          tags.push(tag);
-        });
+        tags.push(...this.announcementManager.getPricingTags());
       }
     }
 
@@ -714,11 +752,19 @@ export class NostrServerTransport
       throw new Error(`No active session found for client: ${clientPubkey}`);
     }
 
-    // Create tags for targeting the specific client
-    const tags = this.createRecipientTags(clientPubkey);
+    const baseTags = this.createRecipientTags(clientPubkey);
     if (correlatedEventId) {
-      tags.push([NOSTR_TAGS.EVENT_ID, correlatedEventId]);
+      baseTags.push([NOSTR_TAGS.EVENT_ID, correlatedEventId]);
     }
+
+    const tags = this.buildServerOutboundTags({
+      baseTags,
+      session,
+    });
+
+    const giftWrapKind = this.chooseServerOutboundGiftWrapKind({
+      session,
+    });
 
     await this.sendMcpMessage(
       notification,
@@ -727,13 +773,7 @@ export class NostrServerTransport
       tags,
       session.isEncrypted,
       undefined,
-      session.isEncrypted
-        ? this.giftWrapMode === GiftWrapMode.EPHEMERAL
-          ? EPHEMERAL_GIFT_WRAP_KIND
-          : this.giftWrapMode === GiftWrapMode.PERSISTENT
-            ? GIFT_WRAP_KIND
-            : undefined
-        : undefined,
+      giftWrapKind,
     );
   }
 
@@ -744,22 +784,19 @@ export class NostrServerTransport
     clientPubkey: string,
     progressToken: string,
     correlatedEventId: string,
-    isEncrypted: boolean,
-    includeCommonTags: boolean,
+    session: ClientSession,
+    fallbackWrapKind?: number,
   ): Promise<void> {
     const frameTags = this.createResponseTags(clientPubkey, correlatedEventId);
-    const startFrameTags = includeCommonTags
-      ? [...frameTags, ...this.announcementManager.getCommonTags()]
-      : frameTags;
+    const startFrameTags = this.buildServerOutboundTags({
+      baseTags: frameTags,
+      session,
+    });
 
-    let giftWrapKind: number | undefined;
-    if (isEncrypted) {
-      if (this.giftWrapMode === GiftWrapMode.EPHEMERAL) {
-        giftWrapKind = EPHEMERAL_GIFT_WRAP_KIND;
-      } else if (this.giftWrapMode === GiftWrapMode.PERSISTENT) {
-        giftWrapKind = GIFT_WRAP_KIND;
-      }
-    }
+    const giftWrapKind = this.chooseServerOutboundGiftWrapKind({
+      session,
+      fallbackWrapKind,
+    });
 
     const sendFrame = async (
       params: OversizedTransferProgress,
@@ -775,7 +812,7 @@ export class NostrServerTransport
         clientPubkey,
         CTXVM_MESSAGES_KIND,
         tags,
-        isEncrypted,
+        session.isEncrypted,
         undefined,
         giftWrapKind,
       );

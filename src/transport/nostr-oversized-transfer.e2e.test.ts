@@ -165,6 +165,15 @@ describe('Nostr oversized transfer end-to-end', () => {
     expect(
       serverToClientFrames.some((event) => getFrameType(event) === 'accept'),
     ).toBe(true);
+    const acceptFrame = serverToClientFrames.find(
+      (event) => getFrameType(event) === 'accept',
+    );
+    expect(acceptFrame?.tags).toEqual(
+      expect.arrayContaining([
+        [NOSTR_TAGS.PUBKEY, clientPublicKey],
+        [NOSTR_TAGS.SUPPORT_OVERSIZED_TRANSFER],
+      ]),
+    );
     expect(
       clientToServerFrames.some((event) => getFrameType(event) === 'chunk'),
     ).toBe(true);
