@@ -584,9 +584,12 @@ describe.serial('NostrClientTransport', () => {
         [NOSTR_TAGS.WEBSITE, 'https://example.com/stateless'],
         [NOSTR_TAGS.PICTURE, 'https://example.com/stateless.png'],
         [NOSTR_TAGS.SUPPORT_ENCRYPTION],
+        [NOSTR_TAGS.SUPPORT_ENCRYPTION_EPHEMERAL],
+        [NOSTR_TAGS.SUPPORT_OVERSIZED_TRANSFER],
         ['custom_discovery', 'supported'],
       ]),
     );
+    expect(clientTransport.serverSupportsEphemeralEncryption()).toBe(true);
 
     await client.close();
     await statelessServer.close();

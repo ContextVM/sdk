@@ -31,11 +31,7 @@ import {
 import { EncryptionMode, GiftWrapMode } from '../core/interfaces.js';
 import { NostrEvent } from 'nostr-tools';
 import { LogLevel } from '../core/utils/logger.js';
-import {
-  hasSingleTag,
-  injectClientPubkey,
-  withTimeout,
-} from '../core/utils/utils.js';
+import { injectClientPubkey, withTimeout } from '../core/utils/utils.js';
 import { CorrelationStore } from './nostr-server/correlation-store.js';
 import { ClientSession, SessionStore } from './nostr-server/session-store.js';
 import { LruCache } from '../core/utils/lru-cache.js';
@@ -55,6 +51,7 @@ import {
   type TransferPolicy,
   type OversizedTransferProgress,
 } from './oversized-transfer/index.js';
+import { parseDiscoveredPeerCapabilities } from './discovery-tags.js';
 import {
   DEFAULT_CHUNK_SIZE,
   DEFAULT_OVERSIZED_THRESHOLD,
@@ -287,7 +284,7 @@ export class NostrServerTransport
 
     // Advertise CEP-22 support so clients can skip the accept handshake.
     if (this.oversizedEnabled) {
-      this.announcementManager.setExtraCommonTags([
+      this.announcementManager.setInternalCommonTags([
         [NOSTR_TAGS.SUPPORT_OVERSIZED_TRANSFER],
       ]);
     }
@@ -558,7 +555,11 @@ export class NostrServerTransport
     response.id = route.originalRequestId;
 
     // CEP-22 Oversized Transfer (proactive path for server responses)
-    if (this.oversizedEnabled && route.progressToken) {
+    if (
+      this.oversizedEnabled &&
+      route.progressToken &&
+      session.supportsOversizedTransfer
+    ) {
       // Serialize before restoring id so the client receives the correct id.
       const serialized = JSON.stringify(response);
       const byteLength = new TextEncoder().encode(serialized).byteLength;
@@ -989,17 +990,17 @@ export class NostrServerTransport
       }
 
       const session = this.getOrCreateClientSession(event.pubkey, isEncrypted);
-      const shouldSendAccept = !session.supportsOversizedTransfer;
+      const hadLearnedOversizedSupport = session.supportsOversizedTransfer;
+      const discoveredCapabilities = parseDiscoveredPeerCapabilities(
+        event.tags,
+      );
+      session.supportsEncryption ||= discoveredCapabilities.supportsEncryption;
+      session.supportsEphemeralEncryption ||=
+        discoveredCapabilities.supportsEphemeralEncryption;
+      session.supportsOversizedTransfer ||=
+        discoveredCapabilities.supportsOversizedTransfer;
 
-      if (
-        shouldSendAccept &&
-        hasSingleTag(
-          event.tags as string[][],
-          NOSTR_TAGS.SUPPORT_OVERSIZED_TRANSFER,
-        )
-      ) {
-        session.supportsOversizedTransfer = true;
-      }
+      const shouldSendAccept = !hadLearnedOversizedSupport;
 
       const forward = async (msg: JSONRPCMessage): Promise<void> => {
         this.onmessage?.(msg);

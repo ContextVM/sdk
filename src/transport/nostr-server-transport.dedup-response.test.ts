@@ -210,6 +210,7 @@ describe.serial('NostrServerTransport duplicate response prevention', () => {
       'c'.repeat(64),
       false,
     );
+    session.supportsOversizedTransfer = true;
     state.correlationStore.registerEventRoute(
       'event1',
       'c'.repeat(64),

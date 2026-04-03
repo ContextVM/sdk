@@ -154,6 +154,11 @@ export class OversizedTransferReceiver {
     token: string,
     timeoutMs: number = this.transferTimeoutMs,
   ): Promise<void> {
+    const transfer = this.transfers.get(token);
+    if (transfer?.acceptProgress !== null) {
+      return Promise.resolve();
+    }
+
     return new Promise<void>((resolve, reject) => {
       this.rejectAcceptWaiter(
         token,

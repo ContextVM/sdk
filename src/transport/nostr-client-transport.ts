@@ -33,7 +33,7 @@ import {
 import { getNostrEventTag } from '../core/utils/serializers.js';
 import { NostrEvent } from 'nostr-tools';
 import { LogLevel } from '../core/utils/logger.js';
-import { GiftWrapMode } from '../core/interfaces.js';
+import { EncryptionMode, GiftWrapMode } from '../core/interfaces.js';
 import {
   ClientCorrelationStore,
   PendingRequest,
@@ -54,27 +54,14 @@ import {
   type OversizedTransferProgress,
 } from './oversized-transfer/index.js';
 import {
+  hasDiscoveryTags,
+  mergeDiscoveryTags,
+  parseDiscoveredPeerCapabilities,
+} from './discovery-tags.js';
+import {
   DEFAULT_CHUNK_SIZE,
   DEFAULT_OVERSIZED_THRESHOLD,
 } from './oversized-transfer/constants.js';
-
-function hasKnownDiscoveryTag(event: NostrEvent | undefined): boolean {
-  if (!event || !Array.isArray(event.tags)) {
-    return false;
-  }
-
-  const knownDiscoveryTags = new Set<string>([
-    NOSTR_TAGS.NAME,
-    NOSTR_TAGS.ABOUT,
-    NOSTR_TAGS.WEBSITE,
-    NOSTR_TAGS.PICTURE,
-    NOSTR_TAGS.SUPPORT_ENCRYPTION,
-    NOSTR_TAGS.SUPPORT_ENCRYPTION_EPHEMERAL,
-    NOSTR_TAGS.SUPPORT_OVERSIZED_TRANSFER,
-  ]);
-
-  return event.tags.some((tag) => knownDiscoveryTags.has(tag[0] ?? ''));
-}
 
 /**
  * Options for configuring the NostrClientTransport.
@@ -176,6 +163,9 @@ export class NostrClientTransport
   /** Whether the server has advertised CEP-22 oversized transfer support. */
   private serverSupportsOversizedTransfer: boolean = false;
 
+  /** Whether this client has already sent its discovery tags to the server. */
+  private hasSentDiscoveryTags: boolean = false;
+
   // Oversized-transfer sender settings
   private readonly oversizedEnabled: boolean;
   private readonly oversizedThreshold: number;
@@ -238,6 +228,38 @@ export class NostrClientTransport
    */
   public setClientPmis(pmis: readonly string[]): void {
     this.clientPmis = pmis;
+  }
+
+  private getClientCapabilityTags(): string[][] {
+    const tags: string[][] = [];
+
+    if (this.encryptionMode !== EncryptionMode.DISABLED) {
+      tags.push([NOSTR_TAGS.SUPPORT_ENCRYPTION]);
+    }
+
+    if (this.giftWrapMode === GiftWrapMode.EPHEMERAL) {
+      tags.push([NOSTR_TAGS.SUPPORT_ENCRYPTION_EPHEMERAL]);
+    }
+
+    if (this.oversizedEnabled) {
+      tags.push([NOSTR_TAGS.SUPPORT_OVERSIZED_TRANSFER]);
+    }
+
+    return tags;
+  }
+
+  private getClientNegotiationTags(): string[][] {
+    const tags: string[][] = [];
+
+    if (this.clientPmis) {
+      tags.push(...this.clientPmis.map((pmi) => ['pmi', pmi]));
+    }
+
+    return tags;
+  }
+
+  private getPendingClientDiscoveryTags(): string[][] {
+    return this.hasSentDiscoveryTags ? [] : this.getClientCapabilityTags();
   }
 
   /**
@@ -354,16 +376,17 @@ export class NostrClientTransport
       }
     }
 
-    const pmiTags: string[][] =
-      isRequest && this.clientPmis
-        ? this.clientPmis.map((pmi) => ['pmi', pmi] as string[])
-        : [];
-
-    const tags = [...this.createRecipientTags(this.serverPubkey), ...pmiTags];
+    const discoveryTags = isRequest ? this.getPendingClientDiscoveryTags() : [];
+    const negotiationTags = isRequest ? this.getClientNegotiationTags() : [];
+    const tags = [
+      ...this.createRecipientTags(this.serverPubkey),
+      ...discoveryTags,
+      ...negotiationTags,
+    ];
 
     const giftWrapKind = this.chooseOutboundGiftWrapKind();
 
-    return await this.sendMcpMessage(
+    const eventId = await this.sendMcpMessage(
       message,
       this.serverPubkey,
       CTXVM_MESSAGES_KIND,
@@ -386,6 +409,12 @@ export class NostrClientTransport
       },
       giftWrapKind,
     );
+
+    if (isRequest && discoveryTags.length > 0) {
+      this.hasSentDiscoveryTags = true;
+    }
+
+    return eventId;
   }
 
   //Splits an oversized request into CEP-22 transfer frames and sends them sequentially. Waits for an `accept` frame from the server when the server's support is not yet known.
@@ -398,14 +427,12 @@ export class NostrClientTransport
     serialized: string,
     progressToken: string,
   ): Promise<void> {
-    const pmiTags: string[][] = this.clientPmis
-      ? this.clientPmis.map((pmi) => ['pmi', pmi] as string[])
-      : [];
     const frameRecipientTags = this.createRecipientTags(this.serverPubkey);
+    const discoveryTags = this.getPendingClientDiscoveryTags();
     const startFrameTags = [
-      ...this.createRecipientTags(this.serverPubkey),
-      ...pmiTags,
-      [NOSTR_TAGS.SUPPORT_OVERSIZED_TRANSFER],
+      ...frameRecipientTags,
+      ...discoveryTags,
+      ...this.getClientNegotiationTags(),
     ];
     const giftWrapKind = this.chooseOutboundGiftWrapKind();
 
@@ -455,6 +482,10 @@ export class NostrClientTransport
         progressToken,
         originalRequestContext: this.getOriginalRequestContext(originalMessage),
       });
+    }
+
+    if (discoveryTags.length > 0) {
+      this.hasSentDiscoveryTags = true;
     }
   }
 
@@ -614,38 +645,9 @@ export class NostrClientTransport
         return;
       }
 
-      // Learn server transport capabilities from any inbound server envelope tags.
-      if (
-        !this.serverSupportsEphemeralGiftWraps &&
-        Array.isArray(nostrEvent.tags) &&
-        hasSingleTag(
-          nostrEvent.tags as string[][],
-          NOSTR_TAGS.SUPPORT_ENCRYPTION_EPHEMERAL,
-        )
-      ) {
-        this.serverSupportsEphemeralGiftWraps = true;
-      }
-
-      // Learn CEP-22 oversized transfer support from server tags.
-      if (
-        !this.serverSupportsOversizedTransfer &&
-        Array.isArray(nostrEvent.tags) &&
-        hasSingleTag(
-          nostrEvent.tags as string[][],
-          NOSTR_TAGS.SUPPORT_OVERSIZED_TRANSFER,
-        )
-      ) {
-        this.serverSupportsOversizedTransfer = true;
-      }
+      this.learnServerDiscovery(nostrEvent);
 
       const eTag = getNostrEventTag(nostrEvent.tags, 'e');
-
-      if (!this.serverInitializeEvent && hasKnownDiscoveryTag(nostrEvent)) {
-        this.serverInitializeEvent = nostrEvent;
-        this.logger.info('Learned server discovery tags from direct response', {
-          eventId: nostrEvent.id,
-        });
-      }
 
       if (!this.serverInitializeEvent && eTag) {
         try {
@@ -859,6 +861,60 @@ export class NostrClientTransport
   /** Gets the server's most recently observed prompts/list event envelope, if any. */
   public getServerPromptsListEvent(): NostrEvent | undefined {
     return this.serverPromptsListEvent;
+  }
+
+  private learnServerDiscovery(event: NostrEvent): void {
+    if (!Array.isArray(event.tags) || !hasDiscoveryTags(event.tags)) {
+      return;
+    }
+
+    const discovered = parseDiscoveredPeerCapabilities(event.tags);
+    this.serverSupportsEphemeralGiftWraps ||=
+      discovered.supportsEphemeralEncryption;
+    this.serverSupportsOversizedTransfer ||=
+      discovered.supportsOversizedTransfer;
+
+    if (!this.serverInitializeEvent) {
+      this.serverInitializeEvent = event;
+      this.logger.info('Learned server discovery tags from inbound event', {
+        eventId: event.id,
+      });
+      return;
+    }
+
+    const mergedTags = mergeDiscoveryTags(
+      this.serverInitializeEvent.tags,
+      discovered.discoveryTags,
+    );
+    const currentHasInitializeResult = InitializeResultSchema.safeParse(
+      this.getInitializeResultCandidate(event),
+    ).success;
+    const existingHasInitializeResult = InitializeResultSchema.safeParse(
+      this.getInitializeResultCandidate(this.serverInitializeEvent),
+    ).success;
+
+    this.serverInitializeEvent = {
+      ...(currentHasInitializeResult ? event : this.serverInitializeEvent),
+      tags: mergedTags,
+    };
+
+    if (!existingHasInitializeResult && currentHasInitializeResult) {
+      this.logger.info(
+        'Upgraded learned server discovery event to initialize response',
+        {
+          eventId: event.id,
+        },
+      );
+    }
+  }
+
+  private getInitializeResultCandidate(event: NostrEvent): unknown {
+    try {
+      const content = JSON.parse(event.content) as { result?: unknown };
+      return content.result;
+    } catch {
+      return undefined;
+    }
   }
 
   private async resolveOperationalRelayHandler(): Promise<void> {

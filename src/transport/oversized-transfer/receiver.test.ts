@@ -287,6 +287,40 @@ describe('OversizedTransferReceiver', () => {
     );
   });
 
+  test('resolves waitForAccept when accept arrived before waiter registration', async () => {
+    const receiver = new OversizedTransferReceiver({}, testLogger);
+
+    await receiver.processFrame(
+      toNotification({
+        progressToken: 'token-accept-race',
+        progress: 1,
+        cvm: {
+          type: 'oversized-transfer',
+          frameType: 'start',
+          completionMode: 'render',
+          digest: 'sha256:abcd',
+          totalBytes: 4,
+          totalChunks: 1,
+        },
+      }),
+    );
+
+    await receiver.processFrame(
+      toNotification({
+        progressToken: 'token-accept-race',
+        progress: 2,
+        cvm: {
+          type: 'oversized-transfer',
+          frameType: 'accept',
+        },
+      }),
+    );
+
+    await expect(receiver.waitForAccept('token-accept-race')).resolves.toBe(
+      undefined,
+    );
+  });
+
   test('fails when end arrives while chunk gaps remain unresolved', async () => {
     const receiver = new OversizedTransferReceiver({}, testLogger);
 
