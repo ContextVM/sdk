@@ -1,53 +1,26 @@
-import { createHash } from 'crypto';
+import canonicalizePackage from 'canonicalize';
+import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import { sha256 } from '@noble/hashes/sha2.js';
+import { bytesToHex } from '@noble/hashes/utils.js';
 
 export interface CommonToolSchemaDefinition {
-  name: string;
-  inputSchema: unknown;
-  outputSchema?: unknown;
+  name: Tool['name'];
+  inputSchema: Tool['inputSchema'];
+  outputSchema?: NonNullable<Tool['outputSchema']>;
 }
 
-type JsonValue =
-  | null
-  | boolean
-  | number
-  | string
-  | JsonValue[]
-  | { [key: string]: JsonValue };
+interface CommonToolSchemaHashPayload {
+  name: Tool['name'];
+  inputSchema: Tool['inputSchema'];
+  outputSchema?: NonNullable<Tool['outputSchema']>;
+}
+
+type CanonicalizeFn = (input: unknown) => string | undefined;
+
+const canonicalize = canonicalizePackage as unknown as CanonicalizeFn;
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function serializeCanonicalJson(value: JsonValue): string {
-  if (value === null) {
-    return 'null';
-  }
-
-  if (typeof value === 'boolean') {
-    return value ? 'true' : 'false';
-  }
-
-  if (typeof value === 'number') {
-    if (!Number.isFinite(value)) {
-      throw new Error('Common schema canonicalization only supports finite numbers');
-    }
-
-    return JSON.stringify(value);
-  }
-
-  if (typeof value === 'string') {
-    return JSON.stringify(value);
-  }
-
-  if (Array.isArray(value)) {
-    return `[${value.map((item) => serializeCanonicalJson(item)).join(',')}]`;
-  }
-
-  const keys = Object.keys(value).sort();
-  const entries = keys.map(
-    (key) => `${JSON.stringify(key)}:${serializeCanonicalJson(value[key])}`,
-  );
-  return `{${entries.join(',')}}`;
 }
 
 /**
@@ -59,9 +32,9 @@ function serializeCanonicalJson(value: JsonValue): string {
  * @param schema The JSON Schema value to normalize.
  * @returns A normalized copy of the schema.
  */
-export function normalizeSchema(schema: unknown): unknown {
+export function normalizeSchema<T>(schema: T): T {
   if (Array.isArray(schema)) {
-    return schema.map((item) => normalizeSchema(item));
+    return schema.map((item) => normalizeSchema(item)) as T;
   }
 
   if (!isPlainObject(schema)) {
@@ -78,7 +51,7 @@ export function normalizeSchema(schema: unknown): unknown {
     normalized[key] = normalizeSchema(schema[key]);
   });
 
-  return normalized;
+  return normalized as T;
 }
 
 /**
@@ -90,7 +63,7 @@ export function normalizeSchema(schema: unknown): unknown {
 export function computeCommonSchemaHash(
   definition: CommonToolSchemaDefinition,
 ): string {
-  const payload: Record<string, unknown> = {
+  const payload: CommonToolSchemaHashPayload = {
     name: definition.name,
     inputSchema: normalizeSchema(definition.inputSchema),
   };
@@ -99,7 +72,10 @@ export function computeCommonSchemaHash(
     payload.outputSchema = normalizeSchema(definition.outputSchema);
   }
 
-  return createHash('sha256')
-    .update(serializeCanonicalJson(payload as JsonValue))
-    .digest('hex');
+  const canonicalPayload = canonicalize(payload);
+  if (canonicalPayload === undefined) {
+    throw new Error('Failed to canonicalize common schema payload');
+  }
+
+  return bytesToHex(sha256(new TextEncoder().encode(canonicalPayload)));
 }
