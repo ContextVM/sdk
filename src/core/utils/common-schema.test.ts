@@ -39,7 +39,9 @@ describe('normalizeSchema', () => {
       ],
     };
 
-    expect(normalizeSchema(schema)).toEqual({
+    const normalized: unknown = normalizeSchema(schema);
+
+    expect(normalized).toEqual({
       type: 'object',
       properties: {
         city: {
