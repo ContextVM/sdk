@@ -13,6 +13,7 @@ import {
   ListResourceTemplatesResultSchema,
   ListToolsResultSchema,
   type JSONRPCMessage,
+  type ListToolsResult,
   type JSONRPCResponse,
   isJSONRPCResultResponse,
 } from '@modelcontextprotocol/sdk/types.js';
@@ -111,6 +112,8 @@ export interface AnnouncementManagerOptions {
   ) => Promise<void>;
   /** Callback to inspect the transport's operational relay URLs. */
   onGetRelayUrls?: () => string[] | undefined;
+  /** Optional transformer for tools/list results before publication. */
+  transformListToolsResult?: (result: ListToolsResult) => ListToolsResult;
   /** Logger for debug output */
   logger: {
     info: (message: string, meta?: unknown) => void;
@@ -166,6 +169,9 @@ export class AnnouncementManager {
     onEvent: (event: NostrEvent) => void,
   ) => Promise<void>;
   private readonly onGetRelayUrls: (() => string[] | undefined) | undefined;
+  private readonly transformListToolsResult:
+    | ((result: ListToolsResult) => ListToolsResult)
+    | undefined;
   private readonly logger: AnnouncementManagerOptions['logger'];
 
   private isInitialized = false;
@@ -194,6 +200,7 @@ export class AnnouncementManager {
     this.onGetPublicKey = options.onGetPublicKey;
     this.onSubscribe = options.onSubscribe;
     this.onGetRelayUrls = options.onGetRelayUrls;
+    this.transformListToolsResult = options.transformListToolsResult;
     this.logger = options.logger;
   }
 
@@ -570,12 +577,17 @@ export class AnnouncementManager {
     try {
       const recipientPubkey = await this.onGetPublicKey();
       const announcementMapping = this.getAnnouncementMapping();
+      const parsedListToolsResult = ListToolsResultSchema.safeParse(result);
+      const announcementResult =
+        this.transformListToolsResult && parsedListToolsResult.success
+          ? this.transformListToolsResult(parsedListToolsResult.data)
+          : result;
 
       for (const mapping of announcementMapping) {
-        if (mapping.schema.safeParse(result).success) {
+        if (mapping.schema.safeParse(announcementResult).success) {
           const eventTemplate = {
             kind: mapping.kind,
-            content: JSON.stringify(result),
+            content: JSON.stringify(announcementResult),
             tags: mapping.tags,
             created_at: Math.floor(Date.now() / 1000),
             pubkey: recipientPubkey,
