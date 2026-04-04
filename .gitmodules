@@ -1,9 +1,3 @@
-[submodule "typescript-sdk"]
-	path = typescript-sdk
-	url = https://github.com/modelcontextprotocol/typescript-sdk.git
 [submodule "contextvm-docs"]
 	path = contextvm-docs
 	url = https://github.com/ContextVM/contextvm-docs
-[submodule "cvmi"]
-	path = cvmi
-	url = https://github.com/ContextVM/cvmi

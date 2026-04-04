@@ -33,7 +33,7 @@ import {
 import { getNostrEventTag } from '../core/utils/serializers.js';
 import { NostrEvent } from 'nostr-tools';
 import { LogLevel } from '../core/utils/logger.js';
-import { GiftWrapMode } from '../core/interfaces.js';
+import { EncryptionMode, GiftWrapMode } from '../core/interfaces.js';
 import {
   ClientCorrelationStore,
   PendingRequest,
@@ -45,35 +45,22 @@ import {
   selectOperationalRelayUrls,
 } from './nostr-client/server-relay-discovery.js';
 import { StatelessModeHandler } from './nostr-client/stateless-mode-handler.js';
-import { withTimeout } from '../core/utils/utils.js';
+import { hasEventTag, hasSingleTag, withTimeout } from '../core/utils/utils.js';
 import { ApplesauceRelayPool } from '../relay/applesauce-relay-pool.js';
-
-function hasSingleTag(tags: string[][], tag: string): boolean {
-  return tags.some((t) => t.length === 1 && t[0] === tag);
-}
-
-function hasEventTag(event: NostrEvent | undefined, tag: string): boolean {
-  return (
-    Array.isArray(event?.tags) && hasSingleTag(event.tags as string[][], tag)
-  );
-}
-
-function hasKnownDiscoveryTag(event: NostrEvent | undefined): boolean {
-  if (!event || !Array.isArray(event.tags)) {
-    return false;
-  }
-
-  const knownDiscoveryTags = new Set<string>([
-    NOSTR_TAGS.NAME,
-    NOSTR_TAGS.ABOUT,
-    NOSTR_TAGS.WEBSITE,
-    NOSTR_TAGS.PICTURE,
-    NOSTR_TAGS.SUPPORT_ENCRYPTION,
-    NOSTR_TAGS.SUPPORT_ENCRYPTION_EPHEMERAL,
-  ]);
-
-  return event.tags.some((tag) => knownDiscoveryTags.has(tag[0] ?? ''));
-}
+import {
+  OversizedTransferReceiver,
+  sendOversizedTransfer,
+  type TransferPolicy,
+  type OversizedTransferProgress,
+} from './oversized-transfer/index.js';
+import {
+  mergeDiscoveryTags,
+  parseDiscoveredPeerCapabilities,
+} from './discovery-tags.js';
+import {
+  DEFAULT_CHUNK_SIZE,
+  DEFAULT_OVERSIZED_THRESHOLD,
+} from './oversized-transfer/constants.js';
 
 /**
  * Options for configuring the NostrClientTransport.
@@ -103,6 +90,22 @@ export interface NostrTransportOptions extends Omit<
   isStateless?: boolean;
   /** Log level for the transport */
   logLevel?: LogLevel;
+  /** Options controlling CEP-22 oversized payload transfer. */
+  oversizedTransfer?: {
+    /** Whether oversized transfer is enabled. @default true */
+    enabled?: boolean;
+    /**
+     * Byte threshold at which the sender proactively fragments a message.
+     * @default DEFAULT_OVERSIZED_THRESHOLD (48 000)
+     */
+    thresholdBytes?: number;
+    /** Per-chunk data size in bytes. @default DEFAULT_CHUNK_SIZE (48 000) */
+    chunkSizeBytes?: number;
+    /** Timeout while waiting for `accept` when handshake is required. */
+    acceptTimeoutMs?: number;
+    /** Receiver-side admission policy. */
+    policy?: TransferPolicy;
+  };
 }
 
 /**
@@ -156,6 +159,21 @@ export class NostrClientTransport
   /** Whether the server has advertised ephemeral gift wrap support via Nostr tags. */
   private serverSupportsEphemeralGiftWraps: boolean = false;
 
+  /** Whether the server has advertised CEP-22 oversized transfer support. */
+  private serverSupportsOversizedTransfer: boolean = false;
+
+  /** Whether this client has already sent its discovery tags to the server. */
+  private hasSentDiscoveryTags: boolean = false;
+
+  // Oversized-transfer sender settings
+  private readonly oversizedEnabled: boolean;
+  private readonly oversizedThreshold: number;
+  private readonly oversizedChunkSize: number;
+  private readonly oversizedAcceptTimeoutMs: number;
+
+  /** Receives inbound oversized-transfer frames from the server (server→client responses). */
+  private readonly oversizedReceiver: OversizedTransferReceiver;
+
   /**
    * Deduplicate inbound events to avoid redundant work.
    *
@@ -190,6 +208,16 @@ export class NostrClientTransport
       },
     });
     this.statelessHandler = new StatelessModeHandler();
+
+    const ot = options.oversizedTransfer;
+    this.oversizedEnabled = ot?.enabled ?? true;
+    this.oversizedThreshold = ot?.thresholdBytes ?? DEFAULT_OVERSIZED_THRESHOLD;
+    this.oversizedChunkSize = ot?.chunkSizeBytes ?? DEFAULT_CHUNK_SIZE;
+    this.oversizedAcceptTimeoutMs = ot?.acceptTimeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.oversizedReceiver = new OversizedTransferReceiver(
+      ot?.policy ?? {},
+      this.logger,
+    );
   }
 
   /**
@@ -199,6 +227,62 @@ export class NostrClientTransport
    */
   public setClientPmis(pmis: readonly string[]): void {
     this.clientPmis = pmis;
+  }
+
+  private getClientCapabilityTags(): string[][] {
+    const tags: string[][] = [];
+
+    if (this.encryptionMode !== EncryptionMode.DISABLED) {
+      tags.push([NOSTR_TAGS.SUPPORT_ENCRYPTION]);
+    }
+
+    if (
+      this.encryptionMode !== EncryptionMode.DISABLED &&
+      this.giftWrapMode !== GiftWrapMode.PERSISTENT
+    ) {
+      tags.push([NOSTR_TAGS.SUPPORT_ENCRYPTION_EPHEMERAL]);
+    }
+
+    if (this.oversizedEnabled) {
+      tags.push([NOSTR_TAGS.SUPPORT_OVERSIZED_TRANSFER]);
+    }
+
+    return tags;
+  }
+
+  private getClientNegotiationTags(): string[][] {
+    const tags: string[][] = [];
+
+    if (this.clientPmis) {
+      tags.push(...this.clientPmis.map((pmi) => ['pmi', pmi]));
+    }
+
+    return tags;
+  }
+
+  private getPendingClientDiscoveryTags(): string[][] {
+    return this.hasSentDiscoveryTags ? [] : this.getClientCapabilityTags();
+  }
+
+  private buildOutboundClientTags(params: {
+    baseTags: readonly string[][];
+    includeDiscovery: boolean;
+  }): string[][] {
+    const { baseTags, includeDiscovery } = params;
+
+    return this.composeOutboundTags({
+      baseTags,
+      discoveryTags: includeDiscovery
+        ? this.getPendingClientDiscoveryTags()
+        : [],
+      negotiationTags: includeDiscovery ? this.getClientNegotiationTags() : [],
+    });
+  }
+
+  private markClientDiscoveryTagsSent(): void {
+    if (this.getPendingClientDiscoveryTags().length > 0) {
+      this.hasSentDiscoveryTags = true;
+    }
   }
 
   /**
@@ -246,6 +330,7 @@ export class NostrClientTransport
       await this.disconnect();
       this.correlationStore.clear();
       this.seenEventIds.clear();
+      this.oversizedReceiver.clear();
       this.onclose?.();
     } catch (error) {
       this.onerror?.(error instanceof Error ? error : new Error(String(error)));
@@ -297,16 +382,31 @@ export class NostrClientTransport
   private async sendRequest(message: JSONRPCMessage): Promise<string> {
     const isRequest = isJSONRPCRequest(message);
 
-    const pmiTags: string[][] =
-      isRequest && this.clientPmis
-        ? this.clientPmis.map((pmi) => ['pmi', pmi] as string[])
-        : [];
+    // --- CEP-22 Oversized Transfer (proactive path) ---
+    if (this.oversizedEnabled && isRequest) {
+      const progressToken = message.params?._meta?.progressToken;
+      if (progressToken !== undefined) {
+        const serialized = JSON.stringify(message);
+        const byteLength = new TextEncoder().encode(serialized).byteLength;
+        if (byteLength > this.oversizedThreshold) {
+          await this.sendOversizedRequest(
+            message,
+            serialized,
+            String(progressToken),
+          );
+          return 'oversized-transfer';
+        }
+      }
+    }
 
-    const tags = [...this.createRecipientTags(this.serverPubkey), ...pmiTags];
+    const tags = this.buildOutboundClientTags({
+      baseTags: this.createRecipientTags(this.serverPubkey),
+      includeDiscovery: isRequest,
+    });
 
     const giftWrapKind = this.chooseOutboundGiftWrapKind();
 
-    return await this.sendMcpMessage(
+    const eventId = await this.sendMcpMessage(
       message,
       this.serverPubkey,
       CTXVM_MESSAGES_KIND,
@@ -329,6 +429,80 @@ export class NostrClientTransport
       },
       giftWrapKind,
     );
+
+    if (isRequest) {
+      this.markClientDiscoveryTagsSent();
+    }
+
+    return eventId;
+  }
+
+  //Splits an oversized request into CEP-22 transfer frames and sends them sequentially. Waits for an `accept` frame from the server when the server's support is not yet known.
+
+  private async sendOversizedRequest(
+    originalMessage: Extract<
+      JSONRPCMessage,
+      { id: string | number; method: string }
+    >,
+    serialized: string,
+    progressToken: string,
+  ): Promise<void> {
+    const frameRecipientTags = this.createRecipientTags(this.serverPubkey);
+    const startFrameTags = this.buildOutboundClientTags({
+      baseTags: frameRecipientTags,
+      includeDiscovery: true,
+    });
+    const giftWrapKind = this.chooseOutboundGiftWrapKind();
+
+    const needsAcceptHandshake = !this.serverSupportsOversizedTransfer;
+
+    const sendFrame = async (
+      params: OversizedTransferProgress,
+      tags: string[][],
+    ): Promise<string> => {
+      const notification: JSONRPCMessage = {
+        jsonrpc: '2.0',
+        method: 'notifications/progress',
+        params,
+      };
+      return await this.sendMcpMessage(
+        notification,
+        this.serverPubkey,
+        CTXVM_MESSAGES_KIND,
+        tags,
+        undefined,
+        undefined,
+        giftWrapKind,
+      );
+    };
+
+    const endFrameEventId = await sendOversizedTransfer(serialized, {
+      progressToken,
+      chunkSizeBytes: this.oversizedChunkSize,
+      needsAcceptHandshake,
+      publishFrame: async (frame, ctx) =>
+        await sendFrame(
+          frame,
+          ctx.isStartFrame ? startFrameTags : frameRecipientTags,
+        ),
+      waitForAccept: async (token) =>
+        await this.oversizedReceiver.waitForAccept(
+          token,
+          this.oversizedAcceptTimeoutMs,
+        ),
+    });
+
+    // Register the original request for correlating the final response.
+    if (endFrameEventId) {
+      this.correlationStore.registerRequest(endFrameEventId, {
+        originalRequestId: originalMessage.id,
+        isInitialize: originalMessage.method === INITIALIZE_METHOD,
+        progressToken,
+        originalRequestContext: this.getOriginalRequestContext(originalMessage),
+      });
+    }
+
+    this.markClientDiscoveryTagsSent();
   }
 
   private chooseOutboundGiftWrapKind(): number {
@@ -487,28 +661,9 @@ export class NostrClientTransport
         return;
       }
 
-      // Learn server transport capabilities from any inbound server envelope tags.
-      // This enables ephemeral gift wrap discovery even when clients operate in stateless
-      // mode (no real initialize handshake observed).
-      if (
-        !this.serverSupportsEphemeralGiftWraps &&
-        Array.isArray(nostrEvent.tags) &&
-        hasSingleTag(
-          nostrEvent.tags as string[][],
-          NOSTR_TAGS.SUPPORT_ENCRYPTION_EPHEMERAL,
-        )
-      ) {
-        this.serverSupportsEphemeralGiftWraps = true;
-      }
+      this.learnServerDiscovery(nostrEvent);
 
       const eTag = getNostrEventTag(nostrEvent.tags, 'e');
-
-      if (!this.serverInitializeEvent && hasKnownDiscoveryTag(nostrEvent)) {
-        this.serverInitializeEvent = nostrEvent;
-        this.logger.info('Learned server discovery tags from direct response', {
-          eventId: nostrEvent.id,
-        });
-      }
 
       if (!this.serverInitializeEvent && eTag) {
         try {
@@ -724,6 +879,64 @@ export class NostrClientTransport
     return this.serverPromptsListEvent;
   }
 
+  private learnServerDiscovery(event: NostrEvent): void {
+    if (!Array.isArray(event.tags)) {
+      return;
+    }
+
+    const discovered = parseDiscoveredPeerCapabilities(event.tags);
+    if (discovered.discoveryTags.length === 0) {
+      return;
+    }
+
+    this.serverSupportsEphemeralGiftWraps ||=
+      discovered.supportsEphemeralEncryption;
+    this.serverSupportsOversizedTransfer ||=
+      discovered.supportsOversizedTransfer;
+
+    if (!this.serverInitializeEvent) {
+      this.serverInitializeEvent = event;
+      this.logger.info('Learned server discovery tags from inbound event', {
+        eventId: event.id,
+      });
+      return;
+    }
+
+    const mergedTags = mergeDiscoveryTags(
+      this.serverInitializeEvent.tags,
+      discovered.discoveryTags,
+    );
+    const currentHasInitializeResult = InitializeResultSchema.safeParse(
+      this.getInitializeResultCandidate(event),
+    ).success;
+    const existingHasInitializeResult = InitializeResultSchema.safeParse(
+      this.getInitializeResultCandidate(this.serverInitializeEvent),
+    ).success;
+
+    this.serverInitializeEvent = {
+      ...(currentHasInitializeResult ? event : this.serverInitializeEvent),
+      tags: mergedTags,
+    };
+
+    if (!existingHasInitializeResult && currentHasInitializeResult) {
+      this.logger.info(
+        'Upgraded learned server discovery event to initialize response',
+        {
+          eventId: event.id,
+        },
+      );
+    }
+  }
+
+  private getInitializeResultCandidate(event: NostrEvent): unknown {
+    try {
+      const content = JSON.parse(event.content) as { result?: unknown };
+      return content.result;
+    } catch {
+      return undefined;
+    }
+  }
+
   private async resolveOperationalRelayHandler(): Promise<void> {
     const configuredRelayUrls = this.relayHandler.getRelayUrls?.() ?? [];
 
@@ -874,6 +1087,46 @@ export class NostrClientTransport
         });
         return;
       }
+
+      // CEP-22: intercept oversized-transfer frames and do NOT forward raw frames.
+      if (
+        isJSONRPCNotification(mcpMessage) &&
+        mcpMessage.method === 'notifications/progress' &&
+        OversizedTransferReceiver.isOversizedFrame(mcpMessage)
+      ) {
+        this.oversizedReceiver
+          .processFrame(mcpMessage)
+          .then((synthetic) => {
+            if (synthetic !== null) {
+              if (
+                isJSONRPCResultResponse(synthetic) ||
+                isJSONRPCErrorResponse(synthetic)
+              ) {
+                if (correlatedEventId) {
+                  this.handleResponse(correlatedEventId, synthetic);
+                } else {
+                  this.logger.warn(
+                    'Oversized response completed without correlation `e` tag',
+                    {
+                      eventId,
+                    },
+                  );
+                }
+                return;
+              }
+
+              this.handleNotification(eventId, correlatedEventId, synthetic);
+            }
+          })
+          .catch((err: unknown) => {
+            this.logger.error('Oversized transfer error (client)', {
+              error: err instanceof Error ? err.message : String(err),
+            });
+            this.onerror?.(err instanceof Error ? err : new Error(String(err)));
+          });
+        return;
+      }
+
       this.onmessage?.(mcpMessage);
       this.onmessageWithContext?.(mcpMessage, {
         eventId,
