@@ -3,7 +3,6 @@ import {
   JSONRPCMessageSchema,
   JSONRPCRequest,
 } from '@modelcontextprotocol/sdk/types.js';
-import { NostrEvent } from 'nostr-tools';
 
 /**
  * Sleeps for a specified number of milliseconds.
@@ -133,7 +132,7 @@ export async function sleepWithAbort(params: {
   });
 }
 
-// TODO: Probably these methods (getTagValue, getTagValues, hasSingleTag, hasEventTag) are bit redundant
+// TODO: Probably these methods (getTagValue, getTagValues) are bit redundant
 export function getTagValue(
   tags: string[][],
   name: string,
@@ -146,17 +145,4 @@ export function getTagValues(tags: string[][], name: string): string[] {
     .filter((t) => t[0] === name)
     .map((t) => t[1])
     .filter((v): v is string => typeof v === 'string' && v.length > 0);
-}
-
-export function hasSingleTag(tags: string[][], tag: string): boolean {
-  return tags.some((t) => t.length === 1 && t[0] === tag);
-}
-
-export function hasEventTag(
-  event: NostrEvent | undefined,
-  tag: string,
-): boolean {
-  return (
-    Array.isArray(event?.tags) && hasSingleTag(event.tags as string[][], tag)
-  );
 }

@@ -47,15 +47,17 @@ import {
 import type { RelayHandler } from '../core/interfaces.js';
 import {
   OversizedTransferReceiver,
-  sendOversizedTransfer,
   type TransferPolicy,
-  type OversizedTransferProgress,
 } from './oversized-transfer/index.js';
-import { parseDiscoveredPeerCapabilities } from './discovery-tags.js';
 import {
   DEFAULT_CHUNK_SIZE,
   DEFAULT_OVERSIZED_THRESHOLD,
 } from './oversized-transfer/constants.js';
+import { learnPeerCapabilities } from './nostr-server/capability-learner.js';
+import {
+  sendAcceptFrame,
+  sendOversizedServerResponse,
+} from './nostr-server/oversized-server-handler.js';
 
 /**
  * Options for configuring the NostrServerTransport.
@@ -620,13 +622,37 @@ export class NostrServerTransport
       const serialized = JSON.stringify(response);
       const byteLength = new TextEncoder().encode(serialized).byteLength;
       if (byteLength > this.oversizedThreshold) {
-        await this.sendOversizedResponse(
-          serialized,
+        const continuationFrameTags = this.createResponseTags(
           route.clientPubkey,
-          route.progressToken,
           nostrEventId,
+        );
+        const startFrameTags = this.buildServerOutboundTags({
+          baseTags: continuationFrameTags,
           session,
-          route.wrapKind,
+        });
+        const giftWrapKind = this.chooseServerOutboundGiftWrapKind({
+          session,
+          fallbackWrapKind: route.wrapKind,
+        });
+
+        await sendOversizedServerResponse(
+          {
+            serialized,
+            clientPubkey: route.clientPubkey,
+            progressToken: route.progressToken,
+            startFrameTags,
+            continuationFrameTags,
+            isEncrypted: session.isEncrypted,
+            giftWrapKind,
+          },
+          {
+            chunkSizeBytes: this.oversizedChunkSize,
+          },
+          {
+            sendMcpMessage: this.sendMcpMessage.bind(this),
+            sendNotification: this.sendNotification.bind(this),
+            logger: this.logger,
+          },
         );
         return;
       }
@@ -775,82 +801,6 @@ export class NostrServerTransport
       undefined,
       giftWrapKind,
     );
-  }
-
-  //Fragments an oversized response into CEP-22 transfer frames and sends them
-  //as `notifications/progress` messages to the client.
-  private async sendOversizedResponse(
-    serialized: string,
-    clientPubkey: string,
-    progressToken: string,
-    correlatedEventId: string,
-    session: ClientSession,
-    fallbackWrapKind?: number,
-  ): Promise<void> {
-    const frameTags = this.createResponseTags(clientPubkey, correlatedEventId);
-    const startFrameTags = this.buildServerOutboundTags({
-      baseTags: frameTags,
-      session,
-    });
-
-    const giftWrapKind = this.chooseServerOutboundGiftWrapKind({
-      session,
-      fallbackWrapKind,
-    });
-
-    const sendFrame = async (
-      params: OversizedTransferProgress,
-      tags: string[][],
-    ): Promise<void> => {
-      const notification: JSONRPCMessage = {
-        jsonrpc: '2.0',
-        method: 'notifications/progress',
-        params,
-      };
-      await this.sendMcpMessage(
-        notification,
-        clientPubkey,
-        CTXVM_MESSAGES_KIND,
-        tags,
-        session.isEncrypted,
-        undefined,
-        giftWrapKind,
-      );
-    };
-
-    await sendOversizedTransfer(serialized, {
-      progressToken,
-      chunkSizeBytes: this.oversizedChunkSize,
-      needsAcceptHandshake: false,
-      publishFrame: async (frame, ctx) => {
-        await sendFrame(frame, ctx.isStartFrame ? startFrameTags : frameTags);
-        return undefined;
-      },
-    });
-  }
-
-  // Sends a CEP-22 `accept` frame back to a client that has initiated
-  // an oversized transfer (stateless bootstrap).
-  private async sendAcceptFrame(
-    clientPubkey: string,
-    progressToken: string,
-  ): Promise<void> {
-    const acceptParams: OversizedTransferProgress = {
-      progressToken,
-      // progress=2 is the slot reserved between start(1) and the first chunk(3).
-      progress: 2,
-      message: 'oversized request accepted',
-      cvm: {
-        type: 'oversized-transfer',
-        frameType: 'accept',
-      },
-    };
-    const notification: JSONRPCMessage = {
-      jsonrpc: '2.0',
-      method: 'notifications/progress',
-      params: acceptParams,
-    };
-    await this.sendNotification(clientPubkey, notification);
   }
 
   /**
@@ -1028,8 +978,9 @@ export class NostrServerTransport
 
       const session = this.getOrCreateClientSession(event.pubkey, isEncrypted);
       const hadLearnedOversizedSupport = session.supportsOversizedTransfer;
-      const discoveredCapabilities = parseDiscoveredPeerCapabilities(
-        event.tags,
+      const discoveredCapabilities = learnPeerCapabilities(
+        event.tags as string[][],
+        this.oversizedEnabled,
       );
       session.supportsEncryption ||= discoveredCapabilities.supportsEncryption;
       session.supportsEphemeralEncryption ||=
@@ -1096,9 +1047,16 @@ export class NostrServerTransport
                     ?.frameType === 'start' &&
                   shouldSendAccept
                 ) {
-                  await this.sendAcceptFrame(
-                    event.pubkey,
-                    String(mcpMessage.params?.progressToken ?? ''),
+                  await sendAcceptFrame(
+                    {
+                      clientPubkey: event.pubkey,
+                      progressToken: String(
+                        mcpMessage.params?.progressToken ?? '',
+                      ),
+                    },
+                    {
+                      sendNotification: this.sendNotification.bind(this),
+                    },
                   ).catch((err: unknown) => {
                     this.logger.error('Failed to send oversized accept', {
                       error: err instanceof Error ? err.message : String(err),
