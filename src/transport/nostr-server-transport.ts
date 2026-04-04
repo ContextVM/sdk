@@ -4,6 +4,7 @@ import {
   ListResourcesResultSchema,
   ListResourceTemplatesResultSchema,
   ListToolsResultSchema,
+  type ListToolsResult,
   isJSONRPCRequest,
   isJSONRPCNotification,
   type JSONRPCMessage,
@@ -132,6 +133,10 @@ export interface NostrServerTransportOptions extends BaseNostrTransportOptions {
   };
 }
 
+export type ListToolsResultTransformer = (
+  result: ListToolsResult,
+) => ListToolsResult;
+
 export type InboundMiddlewareFn = (
   message: JSONRPCMessage,
   ctx: { clientPubkey: string; clientPmis?: readonly string[] },
@@ -168,6 +173,7 @@ export class NostrServerTransport
       }) => void | Promise<void>)
     | undefined;
   private readonly inboundMiddlewares: InboundMiddlewareFn[] = [];
+  private readonly listToolsResultTransformers: ListToolsResultTransformer[] = [];
 
   /**
    * Deduplicate inbound events to avoid redundant work.
@@ -261,6 +267,8 @@ export class NostrServerTransport
       publishRelayList: options.publishRelayList,
       relayListUrls: options.relayListUrls,
       bootstrapRelayUrls: options.bootstrapRelayUrls,
+      transformListToolsResult: (result) =>
+        this.applyListToolsResultTransformers(result),
       onDispatchMessage: (message) => this.onmessage?.(message),
       onPublishEvent: (event) => this.publishEvent(event),
       onPublishEventToRelays: (event, relayUrls) =>
@@ -315,6 +323,17 @@ export class NostrServerTransport
    */
   public addInboundMiddleware(middleware: InboundMiddlewareFn): void {
     this.inboundMiddlewares.push(middleware);
+  }
+
+  /**
+   * Adds a transformer for `tools/list` results emitted by the server.
+   *
+   * Transformers are applied to direct responses and public announcement payloads.
+   */
+  public addListToolsResultTransformer(
+    transformer: ListToolsResultTransformer,
+  ): void {
+    this.listToolsResultTransformers.push(transformer);
   }
 
   /**
@@ -573,6 +592,15 @@ export class NostrServerTransport
    * Handles response messages by finding the original request and routing back to client.
    * @param response The JSON-RPC response or error to send.
    */
+  private applyListToolsResultTransformers(
+    result: ListToolsResult,
+  ): ListToolsResult {
+    return this.listToolsResultTransformers.reduce(
+      (currentResult, transformer) => transformer(currentResult),
+      result,
+    );
+  }
+
   private async handleResponse(
     response: JSONRPCResponse | JSONRPCErrorResponse,
   ): Promise<void> {
@@ -607,8 +635,19 @@ export class NostrServerTransport
       return;
     }
 
+    const parsedListToolsResult = isJSONRPCResultResponse(response)
+      ? ListToolsResultSchema.safeParse(response.result)
+      : null;
+
+    const responseToSend = parsedListToolsResult?.success
+      ? {
+          ...response,
+          result: this.applyListToolsResultTransformers(parsedListToolsResult.data),
+        }
+      : response;
+
     // Restore the original request ID in the response
-    response.id = route.originalRequestId;
+    responseToSend.id = route.originalRequestId;
 
     // CEP-22 Oversized Transfer (proactive path for server responses)
     if (
@@ -617,7 +656,7 @@ export class NostrServerTransport
       session.supportsOversizedTransfer
     ) {
       // Serialize before restoring id so the client receives the correct id.
-      const serialized = JSON.stringify(response);
+      const serialized = JSON.stringify(responseToSend);
       const byteLength = new TextEncoder().encode(serialized).byteLength;
       if (byteLength > this.oversizedThreshold) {
         await this.sendOversizedResponse(
@@ -644,8 +683,8 @@ export class NostrServerTransport
     });
 
     // Attach pricing tags to capability list responses so clients can access CEP-8 pricing
-    if (isJSONRPCResultResponse(response)) {
-      const result = response.result;
+    if (isJSONRPCResultResponse(responseToSend)) {
+      const result = responseToSend.result;
       if (
         ListToolsResultSchema.safeParse(result).success ||
         ListResourcesResultSchema.safeParse(result).success ||
@@ -657,7 +696,7 @@ export class NostrServerTransport
     }
 
     await this.sendMcpMessage(
-      response,
+      responseToSend,
       route.clientPubkey,
       CTXVM_MESSAGES_KIND,
       tags,
