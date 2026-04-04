@@ -133,30 +133,29 @@ export async function sleepWithAbort(params: {
   });
 }
 
-// TODO: Probably these methods (getTagValue, getTagValues, hasSingleTag, hasEventTag) are bit redundant
-export function getTagValue(
-  tags: string[][],
+/**
+ * A consolidated utility to query Nostr tags from an event or a tag array.
+ */
+export function queryTags(
+  source: NostrEvent | string[][] | undefined,
   name: string,
-): string | undefined {
-  return tags.find((t) => t[0] === name)?.[1];
-}
+) {
+  const tags = Array.isArray(source) ? source : source?.tags;
+  const matches = Array.isArray(tags)
+    ? (tags as string[][]).filter((t) => t[0] === name)
+    : [];
 
-export function getTagValues(tags: string[][], name: string): string[] {
-  return tags
-    .filter((t) => t[0] === name)
-    .map((t) => t[1])
-    .filter((v): v is string => typeof v === 'string' && v.length > 0);
-}
-
-export function hasSingleTag(tags: string[][], tag: string): boolean {
-  return tags.some((t) => t.length === 1 && t[0] === tag);
-}
-
-export function hasEventTag(
-  event: NostrEvent | undefined,
-  tag: string,
-): boolean {
-  return (
-    Array.isArray(event?.tags) && hasSingleTag(event.tags as string[][], tag)
-  );
+  return {
+    get firstValue(): string | undefined {
+      return matches[0]?.[1];
+    },
+    get allValues(): string[] {
+      return matches
+        .map((t) => t[1])
+        .filter((v): v is string => typeof v === 'string' && v.length > 0);
+    },
+    get isFlag(): boolean {
+      return matches.some((t) => t.length === 1);
+    },
+  };
 }

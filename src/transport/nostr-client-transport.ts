@@ -45,7 +45,7 @@ import {
   selectOperationalRelayUrls,
 } from './nostr-client/server-relay-discovery.js';
 import { StatelessModeHandler } from './nostr-client/stateless-mode-handler.js';
-import { hasEventTag, hasSingleTag, withTimeout } from '../core/utils/utils.js';
+import { queryTags, withTimeout } from '../core/utils/utils.js';
 import { ApplesauceRelayPool } from '../relay/applesauce-relay-pool.js';
 import {
   OversizedTransferReceiver,
@@ -515,13 +515,10 @@ export class NostrClientTransport
       return EPHEMERAL_GIFT_WRAP_KIND;
     }
 
-    const initTags = this.serverInitializeEvent?.tags;
-    const supportsEphemeralFromInit =
-      Array.isArray(initTags) &&
-      hasSingleTag(
-        initTags as string[][],
-        NOSTR_TAGS.SUPPORT_ENCRYPTION_EPHEMERAL,
-      );
+    const supportsEphemeralFromInit = queryTags(
+      this.serverInitializeEvent,
+      NOSTR_TAGS.SUPPORT_ENCRYPTION_EPHEMERAL,
+    ).isFlag;
 
     return supportsEphemeralFromInit
       ? EPHEMERAL_GIFT_WRAP_KIND
@@ -798,10 +795,10 @@ export class NostrClientTransport
    * @returns True when the initialize event contains the support_encryption tag
    */
   public serverSupportsEncryption(): boolean {
-    return hasEventTag(
+    return queryTags(
       this.serverInitializeEvent,
       NOSTR_TAGS.SUPPORT_ENCRYPTION,
-    );
+    ).isFlag;
   }
 
   /**
@@ -809,10 +806,10 @@ export class NostrClientTransport
    * @returns True when the initialize event contains the support_encryption_ephemeral tag
    */
   public serverSupportsEphemeralEncryption(): boolean {
-    return hasEventTag(
+    return queryTags(
       this.serverInitializeEvent,
       NOSTR_TAGS.SUPPORT_ENCRYPTION_EPHEMERAL,
-    );
+    ).isFlag;
   }
 
   /**
