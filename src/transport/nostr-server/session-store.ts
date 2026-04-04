@@ -18,6 +18,12 @@ export interface ClientSession {
   isEncrypted: boolean;
   /** Whether server common transport capability tags were already sent to this client */
   hasSentCommonTags: boolean;
+  /** Whether the client has advertised encrypted transport support. */
+  supportsEncryption: boolean;
+  /** Whether the client has advertised ephemeral gift wrap support. */
+  supportsEphemeralEncryption: boolean;
+  /** Whether the client has advertised CEP-22 oversized transfer support. */
+  supportsOversizedTransfer: boolean;
 }
 
 /**
@@ -75,6 +81,9 @@ export class SessionStore {
       isInitialized: false,
       isEncrypted,
       hasSentCommonTags: false,
+      supportsEncryption: false,
+      supportsEphemeralEncryption: false,
+      supportsOversizedTransfer: false,
     };
 
     this.sessions.set(clientPubkey, newSession);

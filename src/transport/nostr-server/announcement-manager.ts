@@ -122,6 +122,7 @@ export class AnnouncementManager {
   private readonly encryptionMode: EncryptionMode;
   private readonly giftWrapMode: GiftWrapMode;
   private extraCommonTags: string[][];
+  private internalCommonTags: string[][];
   private pricingTags: string[][];
   private readonly shouldPublishRelayList: boolean;
   private readonly relayListUrls?: string[];
@@ -152,6 +153,7 @@ export class AnnouncementManager {
     this.encryptionMode = options.encryptionMode;
     this.giftWrapMode = options.giftWrapMode;
     this.extraCommonTags = options.extraCommonTags ?? [];
+    this.internalCommonTags = [];
     this.pricingTags = options.pricingTags ?? [];
     this.shouldPublishRelayList = options.publishRelayList ?? true;
     this.relayListUrls = options.relayListUrls;
@@ -214,6 +216,15 @@ export class AnnouncementManager {
    */
   public setExtraCommonTags(tags: string[][]): void {
     this.extraCommonTags = tags;
+    this.cachedCommonTags = undefined;
+  }
+
+  /**
+   * Updates transport-owned capability tags that must be preserved regardless of
+   * caller-provided extra discovery tags.
+   */
+  public setInternalCommonTags(tags: string[][]): void {
+    this.internalCommonTags = tags;
     this.cachedCommonTags = undefined;
   }
 
@@ -297,6 +308,10 @@ export class AnnouncementManager {
     }
 
     for (const tag of this.extraCommonTags) {
+      tags.push(tag);
+    }
+
+    for (const tag of this.internalCommonTags) {
       tags.push(tag);
     }
 
