@@ -498,10 +498,7 @@ export class NostrClientTransport
     const initTags = this.serverInitializeEvent?.tags;
     const supportsEphemeralFromInit =
       Array.isArray(initTags) &&
-      hasSingleTag(
-        initTags as string[][],
-        NOSTR_TAGS.SUPPORT_ENCRYPTION_EPHEMERAL,
-      );
+      hasSingleTag(initTags, NOSTR_TAGS.SUPPORT_ENCRYPTION_EPHEMERAL);
 
     return supportsEphemeralFromInit
       ? EPHEMERAL_GIFT_WRAP_KIND

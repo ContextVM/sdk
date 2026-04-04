@@ -979,7 +979,7 @@ export class NostrServerTransport
       const session = this.getOrCreateClientSession(event.pubkey, isEncrypted);
       const hadLearnedOversizedSupport = session.supportsOversizedTransfer;
       const discoveredCapabilities = learnPeerCapabilities(
-        event.tags as string[][],
+        event.tags,
         this.oversizedEnabled,
       );
       session.supportsEncryption ||= discoveredCapabilities.supportsEncryption;

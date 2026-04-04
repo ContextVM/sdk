@@ -85,15 +85,13 @@ export async function sendOversizedServerResponse(
     progressToken: options.progressToken,
     chunkSizeBytes: config.chunkSizeBytes,
     needsAcceptHandshake: false,
-    publishFrame: async (frame, ctx) => {
-      await sendFrame(
+    publishFrame: (frame, ctx) =>
+      sendFrame(
         frame,
         ctx.isStartFrame
           ? options.startFrameTags
           : options.continuationFrameTags,
-      );
-      return undefined;
-    },
+      ).then(() => undefined),
   });
 }
 

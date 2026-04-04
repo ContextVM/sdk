@@ -14,7 +14,7 @@ export interface PeerCapabilities {
  * Inspects inbound tags and returns discovered client capabilities.
  */
 export function learnPeerCapabilities(
-  eventTags: string[][],
+  eventTags: readonly (readonly string[])[],
   oversizedEnabled: boolean,
 ): PeerCapabilities {
   const supportsOversizedTransfer = oversizedEnabled

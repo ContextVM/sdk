@@ -58,9 +58,7 @@ export async function resolveOperationalRelays(
   const discoveryPromise = fetchServerRelayList({
     serverPubkey: config.serverPubkey,
     relayUrls: [...config.discoveryRelayUrls],
-  }).then((relayListEntries) =>
-    selectOperationalRelayUrls(relayListEntries).map((relayUrl) => relayUrl),
-  );
+  }).then((relayListEntries) => selectOperationalRelayUrls(relayListEntries));
 
   const fallbackConnectionPromise = connectFallbackOperationalRelays(
     config.fallbackOperationalRelayUrls,

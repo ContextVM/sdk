@@ -20,7 +20,10 @@ function cloneTag(tag: readonly string[]): string[] {
 /**
  * Returns true when a single-valued tag is present (e.g. ['support_oversized_transfer']).
  */
-export function hasSingleTag(tags: string[][], tag: string): boolean {
+export function hasSingleTag(
+  tags: readonly (readonly string[])[],
+  tag: string,
+): boolean {
   return tags.some((t) => t.length === 1 && t[0] === tag);
 }
 
@@ -31,9 +34,7 @@ export function hasEventTag(
   event: NostrEvent | undefined,
   tag: string,
 ): boolean {
-  return (
-    Array.isArray(event?.tags) && hasSingleTag(event.tags as string[][], tag)
-  );
+  return Array.isArray(event?.tags) && hasSingleTag(event.tags, tag);
 }
 
 /**

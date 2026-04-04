@@ -64,7 +64,7 @@ export async function sendOversizedClientRequest(
       params,
     };
 
-    return await deps.sendMcpMessage(
+    return deps.sendMcpMessage(
       notification,
       config.serverPubkey,
       CTXVM_MESSAGES_KIND,
@@ -79,13 +79,13 @@ export async function sendOversizedClientRequest(
     progressToken,
     chunkSizeBytes: config.chunkSizeBytes,
     needsAcceptHandshake,
-    publishFrame: async (frame, ctx) =>
-      await sendFrame(
+    publishFrame: (frame, ctx) =>
+      sendFrame(
         frame,
         ctx.isStartFrame ? config.startFrameTags : config.continuationFrameTags,
       ),
-    waitForAccept: async (token) =>
-      await deps.waitForAccept(token, config.acceptTimeoutMs),
+    waitForAccept: (token) =>
+      deps.waitForAccept(token, config.acceptTimeoutMs),
   });
 
   return endFrameEventId;
