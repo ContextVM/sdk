@@ -11,11 +11,13 @@ import {
   ListPromptsResultSchema,
   ListResourcesResultSchema,
   ListResourceTemplatesResultSchema,
+  ListToolsResult,
   ListToolsResultSchema,
   type JSONRPCMessage,
   type JSONRPCResponse,
   isJSONRPCResultResponse,
 } from '@modelcontextprotocol/sdk/types.js';
+import { enrichToolsWithSchemaHash } from '../../core/utils/canonical-schema.js';
 import type { Filter } from 'nostr-tools';
 import { NostrEvent } from 'nostr-tools';
 import { EventDeletion } from 'nostr-tools/kinds';
@@ -497,9 +499,15 @@ export class AnnouncementManager {
 
       for (const mapping of announcementMapping) {
         if (mapping.schema.safeParse(result).success) {
+          // Enrich tools/list results with schemaHash for CEP-15 consistency
+          const enrichedResult =
+            ListToolsResultSchema.safeParse(result).success
+              ? await enrichToolsWithSchemaHash(result as ListToolsResult)
+              : result;
+
           const eventTemplate = {
             kind: mapping.kind,
-            content: JSON.stringify(result),
+            content: JSON.stringify(enrichedResult),
             tags: mapping.tags,
             created_at: Math.floor(Date.now() / 1000),
             pubkey: recipientPubkey,
