@@ -42,8 +42,8 @@ import {
 } from './nostr-server/authorization-policy.js';
 import {
   AnnouncementManager,
-  ProfileMetadata,
-  ServerInfo,
+  type ProfileMetadata,
+  type ServerInfo,
 } from './nostr-server/announcement-manager.js';
 import type { RelayHandler } from '../core/interfaces.js';
 import {
