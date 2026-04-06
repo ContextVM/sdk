@@ -42,6 +42,7 @@ import {
 } from './nostr-server/authorization-policy.js';
 import {
   AnnouncementManager,
+  ProfileMetadata,
   ServerInfo,
 } from './nostr-server/announcement-manager.js';
 import type { RelayHandler } from '../core/interfaces.js';
@@ -62,6 +63,8 @@ import {
  */
 export interface NostrServerTransportOptions extends BaseNostrTransportOptions {
   serverInfo?: ServerInfo;
+  /** Optional NIP-01 kind:0 profile metadata for server identity (CEP-23). Opt-in. */
+  profileMetadata?: ProfileMetadata;
   /**
    * @deprecated Use `isAnnouncedServer` instead. `isPublicServer` will be removed in a future version.
    */
@@ -254,6 +257,7 @@ export class NostrServerTransport
     // Initialize announcement manager
     this.announcementManager = new AnnouncementManager({
       serverInfo: options.serverInfo,
+      profileMetadata: options.profileMetadata,
       encryptionMode: this.encryptionMode,
       giftWrapMode: this.giftWrapMode,
       extraCommonTags: [],
