@@ -29,13 +29,19 @@ import {
 } from '../core/utils/logger.js';
 import { TaskQueue } from '../core/utils/task-queue.js';
 import { ApplesauceRelayPool } from '../relay/applesauce-relay-pool.js';
+import { PrivateKeySigner } from '../signer/private-key-signer.js';
 
 /**
  * Base options for configuring Nostr-based transports.
  */
-// TODO: We could improve the ergonomics of this and simplify the signer creation, it can accept a NostrSigner instance or an string defaulting to a private key signer
 export interface BaseNostrTransportOptions {
-  signer: NostrSigner;
+  /**
+   * Signer for Nostr events.
+   *
+   * Accepts a {@link NostrSigner} instance or a hex-encoded private key string.
+   * When a string is provided, a {@link PrivateKeySigner} is created automatically.
+   */
+  signer: NostrSigner | string;
   relayHandler: RelayHandler | string[];
   encryptionMode?: EncryptionMode;
   giftWrapMode?: GiftWrapMode;
@@ -70,7 +76,9 @@ export abstract class BaseNostrTransport {
   private readonly subscriptionUnsubscribers = new Set<() => void>();
 
   constructor(module: string, options: BaseNostrTransportOptions) {
-    this.signer = options.signer;
+    this.signer = typeof options.signer === 'string'
+      ? new PrivateKeySigner(options.signer)
+      : options.signer;
     this.relayHandler = Array.isArray(options.relayHandler)
       ? new ApplesauceRelayPool(options.relayHandler)
       : options.relayHandler;
