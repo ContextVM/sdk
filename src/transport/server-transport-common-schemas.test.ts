@@ -185,6 +185,40 @@ describe('createCommonSchemaAnnouncementTagsProducer', () => {
     ]);
   });
 
+
+
+  test('reuses existing schemaHash metadata when producing announcement tags', () => {
+    const result: ListToolsResult = {
+      tools: [
+        {
+          name: 'translate_text',
+          title: 'Translate Text',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              text: { type: 'string' },
+            },
+            required: ['text'],
+          },
+          _meta: {
+            [COMMON_SCHEMA_META_NAMESPACE]: {
+              schemaHash: 'precomputed-hash',
+            },
+          },
+        },
+      ],
+    };
+
+    const produceTags = createCommonSchemaAnnouncementTagsProducer({
+      tools: [{ name: 'translate_text' }],
+    });
+
+    expect(produceTags(result)).toEqual([
+      ['i', 'precomputed-hash', 'translate_text'],
+      ['k', COMMON_SCHEMA_META_NAMESPACE],
+    ]);
+  });
+
   test('returns no tags when no common-schema tools are present', () => {
     const result: ListToolsResult = {
       tools: [
