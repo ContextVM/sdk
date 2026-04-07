@@ -28,12 +28,17 @@ function getCurrentSchemaHash(meta: Tool['_meta']): string | undefined {
     : undefined;
 }
 
-function buildSchemaHash(tool: Pick<Tool, 'name' | 'inputSchema' | 'outputSchema'>): string {
-  return computeCommonSchemaHash({
-    name: tool.name,
-    inputSchema: tool.inputSchema,
-    outputSchema: tool.outputSchema,
-  });
+function getToolSchemaHash(
+  tool: Pick<Tool, 'name' | 'inputSchema' | 'outputSchema' | '_meta'>,
+): string {
+  return (
+    getCurrentSchemaHash(tool._meta) ??
+    computeCommonSchemaHash({
+      name: tool.name,
+      inputSchema: tool.inputSchema,
+      outputSchema: tool.outputSchema,
+    })
+  );
 }
 
 function mergeCommonSchemaMeta(
@@ -91,7 +96,7 @@ export function createCommonSchemaToolsResultTransformer(
         return;
       }
 
-      const schemaHash = buildSchemaHash(tool);
+      const schemaHash = getToolSchemaHash(tool);
       const mergedMeta = mergeCommonSchemaMeta(tool._meta, schemaHash);
 
       if (!mergedMeta.didChange) {
@@ -140,13 +145,7 @@ export function createCommonSchemaAnnouncementTagsProducer(
         return [];
       }
 
-      const schemaHash = computeCommonSchemaHash({
-        name: tool.name,
-        inputSchema: tool.inputSchema,
-        outputSchema: tool.outputSchema,
-      });
-
-      return [['i', schemaHash, tool.name]];
+      return [['i', getToolSchemaHash(tool), tool.name]];
     });
 
     if (!iTags.length) {
