@@ -134,3 +134,7 @@ export const announcementMethods: AnnouncementMethods = {
 
 export const INITIALIZE_METHOD = 'initialize';
 export const NOTIFICATIONS_INITIALIZED_METHOD = 'notifications/initialized';
+export const NOTIFICATIONS_RESOURCES_UPDATED_METHOD =
+  'notifications/resources/updated';
+export const RESOURCES_SUBSCRIBE_METHOD = 'resources/subscribe';
+export const RESOURCES_UNSUBSCRIBE_METHOD = 'resources/unsubscribe';
