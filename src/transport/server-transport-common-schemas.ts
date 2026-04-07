@@ -32,13 +32,19 @@ function mergeCommonSchemaMeta(
   };
 }
 
+function getCommonToolNames(
+  options: CommonToolSchemasOptions,
+): Set<CommonSchemaToolConfig['name']> {
+  return new Set(options.tools.map((tool) => tool.name));
+}
+
 /**
  * Creates a pure transformer that enriches opted-in `tools/list` results with CEP-15 schema hashes.
  */
 export function createCommonSchemaToolsResultTransformer(
   options: CommonToolSchemasOptions,
 ): (result: ListToolsResult) => ListToolsResult {
-  const commonToolNames = new Set(options.tools.map((tool) => tool.name));
+  const commonToolNames = getCommonToolNames(options);
 
   return (result: ListToolsResult): ListToolsResult => {
     if (!commonToolNames.size) {
@@ -88,6 +94,41 @@ export function createCommonSchemaToolsResultTransformer(
 }
 
 /**
+ * Creates NIP-73 `i` / `k` tags for tools/list announcements of opted-in CEP-15 tools.
+ */
+export function createCommonSchemaAnnouncementTagsProducer(
+  options: CommonToolSchemasOptions,
+): (result: ListToolsResult) => string[][] {
+  const commonToolNames = getCommonToolNames(options);
+
+  return (result: ListToolsResult): string[][] => {
+    if (!commonToolNames.size) {
+      return [];
+    }
+
+    const iTags = result.tools.flatMap((tool) => {
+      if (!commonToolNames.has(tool.name)) {
+        return [];
+      }
+
+      const schemaHash = computeCommonSchemaHash({
+        name: tool.name,
+        inputSchema: tool.inputSchema,
+        outputSchema: tool.outputSchema,
+      });
+
+      return [['i', schemaHash, tool.name]];
+    });
+
+    if (!iTags.length) {
+      return [];
+    }
+
+    return [...iTags, ['k', COMMON_SCHEMA_META_NAMESPACE]];
+  };
+}
+
+/**
  * Attaches CEP-15 common-schema metadata injection to a NostrServerTransport.
  */
 export function withCommonToolSchemas(
@@ -96,6 +137,9 @@ export function withCommonToolSchemas(
 ): NostrServerTransport {
   transport.addListToolsResultTransformer(
     createCommonSchemaToolsResultTransformer(options),
+  );
+  transport.addListToolsAnnouncementTagsProducer(
+    createCommonSchemaAnnouncementTagsProducer(options),
   );
 
   return transport;

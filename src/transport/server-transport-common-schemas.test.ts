@@ -3,6 +3,7 @@ import type { ListToolsResult } from '@modelcontextprotocol/sdk/types.js';
 import { computeCommonSchemaHash } from '../core/utils/common-schema.js';
 import {
   COMMON_SCHEMA_META_NAMESPACE,
+  createCommonSchemaAnnouncementTagsProducer,
   createCommonSchemaToolsResultTransformer,
 } from './server-transport-common-schemas.js';
 
@@ -91,5 +92,76 @@ describe('createCommonSchemaToolsResultTransformer', () => {
     });
 
     expect(transform(result)).toBe(result);
+  });
+});
+
+describe('createCommonSchemaAnnouncementTagsProducer', () => {
+  test('creates NIP-73 i/k tags for opted-in common-schema tools only', () => {
+    const result: ListToolsResult = {
+      tools: [
+        {
+          name: 'translate_text',
+          title: 'Translate Text',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              text: { type: 'string' },
+              targetLanguage: { type: 'string' },
+            },
+            required: ['text', 'targetLanguage'],
+          },
+        },
+        {
+          name: 'bespoke_tool',
+          title: 'Bespoke Tool',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              query: { type: 'string' },
+            },
+            required: ['query'],
+          },
+        },
+      ],
+    };
+
+    const produceTags = createCommonSchemaAnnouncementTagsProducer({
+      tools: [{ name: 'translate_text' }],
+    });
+
+    expect(produceTags(result)).toEqual([
+      [
+        'i',
+        computeCommonSchemaHash({
+          name: 'translate_text',
+          inputSchema: result.tools[0]!.inputSchema,
+        }),
+        'translate_text',
+      ],
+      ['k', COMMON_SCHEMA_META_NAMESPACE],
+    ]);
+  });
+
+  test('returns no tags when no common-schema tools are present', () => {
+    const result: ListToolsResult = {
+      tools: [
+        {
+          name: 'bespoke_tool',
+          title: 'Bespoke Tool',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              query: { type: 'string' },
+            },
+          },
+        },
+      ],
+    };
+
+    const produceTags = createCommonSchemaAnnouncementTagsProducer({
+      tools: [{ name: 'translate_text' }],
+    });
+
+    expect(produceTags(result)).toEqual([]);
   });
 });

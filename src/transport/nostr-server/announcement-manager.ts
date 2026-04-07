@@ -91,6 +91,8 @@ export interface AnnouncementManagerOptions {
   onGetRelayUrls?: () => string[] | undefined;
   /** Optional transformer for tools/list results before publication. */
   transformListToolsResult?: (result: ListToolsResult) => ListToolsResult;
+  /** Optional producer for extra tags on public tools/list announcements. */
+  getListToolsAnnouncementTags?: (result: ListToolsResult) => string[][];
   /** Logger for debug output */
   logger: {
     info: (message: string, meta?: unknown) => void;
@@ -147,6 +149,9 @@ export class AnnouncementManager {
   private readonly transformListToolsResult:
     | ((result: ListToolsResult) => ListToolsResult)
     | undefined;
+  private readonly getListToolsAnnouncementTags:
+    | ((result: ListToolsResult) => string[][])
+    | undefined;
   private readonly logger: AnnouncementManagerOptions['logger'];
 
   private isInitialized = false;
@@ -173,6 +178,7 @@ export class AnnouncementManager {
     this.onSubscribe = options.onSubscribe;
     this.onGetRelayUrls = options.onGetRelayUrls;
     this.transformListToolsResult = options.transformListToolsResult;
+    this.getListToolsAnnouncementTags = options.getListToolsAnnouncementTags;
     this.logger = options.logger;
   }
 
@@ -517,17 +523,26 @@ export class AnnouncementManager {
       const recipientPubkey = await this.onGetPublicKey();
       const announcementMapping = this.getAnnouncementMapping();
       const parsedListToolsResult = ListToolsResultSchema.safeParse(result);
-      const announcementResult =
+      const announcementListToolsResult =
         this.transformListToolsResult && parsedListToolsResult.success
           ? this.transformListToolsResult(parsedListToolsResult.data)
-          : result;
+          : parsedListToolsResult.success
+            ? parsedListToolsResult.data
+            : undefined;
+      const announcementResult = announcementListToolsResult ?? result;
+      const listToolsAnnouncementTags = announcementListToolsResult
+        ? this.getListToolsAnnouncementTags?.(announcementListToolsResult) ?? []
+        : [];
 
       for (const mapping of announcementMapping) {
         if (mapping.schema.safeParse(announcementResult).success) {
           const eventTemplate = {
             kind: mapping.kind,
             content: JSON.stringify(announcementResult),
-            tags: mapping.tags,
+            tags:
+              mapping.kind === TOOLS_LIST_KIND
+                ? [...mapping.tags, ...listToolsAnnouncementTags]
+                : mapping.tags,
             created_at: Math.floor(Date.now() / 1000),
             pubkey: recipientPubkey,
           };
