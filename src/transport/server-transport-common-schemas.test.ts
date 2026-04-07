@@ -70,6 +70,49 @@ describe('createCommonSchemaToolsResultTransformer', () => {
     expect(bespokeTool?._meta?.[COMMON_SCHEMA_META_NAMESPACE]).toBeUndefined();
   });
 
+
+
+  test('returns the original result when opted-in tools already carry the matching schema hash', () => {
+    const schemaHash = computeCommonSchemaHash({
+      name: 'translate_text',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          text: { type: 'string' },
+        },
+        required: ['text'],
+      },
+    });
+
+    const tool = {
+      name: 'translate_text',
+      title: 'Translate Text',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          text: { type: 'string' },
+        },
+        required: ['text'],
+      },
+      _meta: {
+        [COMMON_SCHEMA_META_NAMESPACE]: {
+          schemaHash,
+          note: 'already present',
+        },
+      },
+    } satisfies ListToolsResult['tools'][number];
+
+    const result: ListToolsResult = {
+      tools: [tool],
+    };
+
+    const transform = createCommonSchemaToolsResultTransformer({
+      tools: [{ name: 'translate_text' }],
+    });
+
+    expect(transform(result)).toBe(result);
+  });
+
   test('returns the original result when no configured tools match', () => {
     const result: ListToolsResult = {
       tools: [
