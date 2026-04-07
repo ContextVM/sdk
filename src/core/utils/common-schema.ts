@@ -1,23 +1,16 @@
-import canonicalizePackage from 'canonicalize';
+import { createRequire } from 'node:module';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
 
+const require = createRequire(import.meta.url);
+const canonicalize: typeof import('canonicalize').default = require('canonicalize');
+
 export interface CommonToolSchemaDefinition {
   name: Tool['name'];
   inputSchema: Tool['inputSchema'];
-  outputSchema?: NonNullable<Tool['outputSchema']>;
+  outputSchema?: Tool['outputSchema'];
 }
-
-interface CommonToolSchemaHashPayload {
-  name: Tool['name'];
-  inputSchema: Tool['inputSchema'];
-  outputSchema?: NonNullable<Tool['outputSchema']>;
-}
-
-type CanonicalizeFn = (input: unknown) => string | undefined;
-
-const canonicalize = canonicalizePackage as unknown as CanonicalizeFn;
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -63,7 +56,7 @@ export function normalizeSchema<T>(schema: T): T {
 export function computeCommonSchemaHash(
   definition: CommonToolSchemaDefinition,
 ): string {
-  const payload: CommonToolSchemaHashPayload = {
+  const payload: CommonToolSchemaDefinition = {
     name: definition.name,
     inputSchema: normalizeSchema(definition.inputSchema),
   };
