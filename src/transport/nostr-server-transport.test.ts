@@ -1357,6 +1357,8 @@ describe.serial('NostrServerTransport', () => {
         inputSchema: directCommonTool!.inputSchema,
         outputSchema: directCommonTool!.outputSchema ?? undefined,
       });
+      const iTags = toolsListEvent.tags.filter((tag) => tag[0] === 'i');
+      const kTags = toolsListEvent.tags.filter((tag) => tag[0] === 'k');
 
       expect(directCommonTool?._meta).toMatchObject({
         [COMMON_SCHEMA_META_NAMESPACE]: {
@@ -1377,6 +1379,12 @@ describe.serial('NostrServerTransport', () => {
           COMMON_SCHEMA_META_NAMESPACE
         ],
       ).toBeUndefined();
+
+      expect(iTags).toEqual(
+        expect.arrayContaining([['i', expectedSchemaHash, commonToolName]]),
+      );
+      expect(iTags.some((tag) => tag[2] === bespokeToolName)).toBe(false);
+      expect(kTags).toEqual([['k', COMMON_SCHEMA_META_NAMESPACE]]);
 
       await client.close();
       await server.close();

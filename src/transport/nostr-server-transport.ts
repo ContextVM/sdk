@@ -142,6 +142,10 @@ export type ListToolsResultTransformer = (
   result: ListToolsResult,
 ) => ListToolsResult;
 
+export type ListToolsAnnouncementTagsProducer = (
+  result: ListToolsResult,
+) => string[][];
+
 export type InboundMiddlewareFn = (
   message: JSONRPCMessage,
   ctx: { clientPubkey: string; clientPmis?: readonly string[] },
@@ -179,6 +183,7 @@ export class NostrServerTransport
     | undefined;
   private readonly inboundMiddlewares: InboundMiddlewareFn[] = [];
   private readonly listToolsResultTransformers: ListToolsResultTransformer[] = [];
+  private readonly listToolsAnnouncementTagsProducers: ListToolsAnnouncementTagsProducer[] = [];
 
   /**
    * Deduplicate inbound events to avoid redundant work.
@@ -275,6 +280,8 @@ export class NostrServerTransport
       bootstrapRelayUrls: options.bootstrapRelayUrls,
       transformListToolsResult: (result) =>
         this.applyListToolsResultTransformers(result),
+      getListToolsAnnouncementTags: (result) =>
+        this.buildListToolsAnnouncementTags(result),
       onDispatchMessage: (message) => this.onmessage?.(message),
       onPublishEvent: (event) => this.publishEvent(event),
       onPublishEventToRelays: (event, relayUrls) =>
@@ -340,6 +347,15 @@ export class NostrServerTransport
     transformer: ListToolsResultTransformer,
   ): void {
     this.listToolsResultTransformers.push(transformer);
+  }
+
+  /**
+   * Adds a provider for extra tags on public tools/list announcement events.
+   */
+  public addListToolsAnnouncementTagsProducer(
+    producer: ListToolsAnnouncementTagsProducer,
+  ): void {
+    this.listToolsAnnouncementTagsProducers.push(producer);
   }
 
   /**
@@ -606,6 +622,14 @@ export class NostrServerTransport
     return this.listToolsResultTransformers.reduce(
       (currentResult, transformer) => transformer(currentResult),
       result,
+    );
+  }
+
+  private buildListToolsAnnouncementTags(
+    result: ListToolsResult,
+  ): string[][] {
+    return this.listToolsAnnouncementTagsProducers.flatMap((producer) =>
+      producer(result),
     );
   }
 
