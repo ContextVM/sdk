@@ -16,19 +16,49 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+function getCurrentSchemaHash(meta: Tool['_meta']): string | undefined {
+  const commonSchemaMeta = meta?.[COMMON_SCHEMA_META_NAMESPACE];
+
+  if (!isPlainObject(commonSchemaMeta)) {
+    return undefined;
+  }
+
+  return typeof commonSchemaMeta.schemaHash === 'string'
+    ? commonSchemaMeta.schemaHash
+    : undefined;
+}
+
+function buildSchemaHash(tool: Pick<Tool, 'name' | 'inputSchema' | 'outputSchema'>): string {
+  return computeCommonSchemaHash({
+    name: tool.name,
+    inputSchema: tool.inputSchema,
+    outputSchema: tool.outputSchema,
+  });
+}
+
 function mergeCommonSchemaMeta(
   meta: Tool['_meta'],
   schemaHash: string,
-): NonNullable<Tool['_meta']> {
+): { meta: NonNullable<Tool['_meta']>; didChange: boolean } {
+  if (getCurrentSchemaHash(meta) === schemaHash && meta) {
+    return {
+      meta,
+      didChange: false,
+    };
+  }
+
   const existingMeta = meta ?? {};
   const existingNamespace = existingMeta[COMMON_SCHEMA_META_NAMESPACE];
 
   return {
-    ...existingMeta,
-    [COMMON_SCHEMA_META_NAMESPACE]: {
-      ...(isPlainObject(existingNamespace) ? existingNamespace : {}),
-      schemaHash,
+    meta: {
+      ...existingMeta,
+      [COMMON_SCHEMA_META_NAMESPACE]: {
+        ...(isPlainObject(existingNamespace) ? existingNamespace : {}),
+        schemaHash,
+      },
     },
+    didChange: true,
   };
 }
 
@@ -45,50 +75,51 @@ export function createCommonSchemaToolsResultTransformer(
       return result;
     }
 
-    let didChange = false;
+    let nextTools: Tool[] | undefined;
 
-    const tools = result.tools.map((tool) => {
+    result.tools.forEach((tool, index) => {
       if (!commonToolNames.has(tool.name)) {
-        return tool;
+        if (nextTools) {
+          nextTools.push(tool);
+        }
+        return;
       }
 
-      const schemaHash = computeCommonSchemaHash({
-        name: tool.name,
-        inputSchema: tool.inputSchema,
-        outputSchema: tool.outputSchema,
-      });
+      const schemaHash = buildSchemaHash(tool);
+      const mergedMeta = mergeCommonSchemaMeta(tool._meta, schemaHash);
 
-      const nextMeta = mergeCommonSchemaMeta(tool._meta, schemaHash);
-      const currentSchemaHash = isPlainObject(
-        tool._meta?.[COMMON_SCHEMA_META_NAMESPACE],
-      )
-        ? tool._meta?.[COMMON_SCHEMA_META_NAMESPACE].schemaHash
-        : undefined;
-
-      if (currentSchemaHash === schemaHash && nextMeta === tool._meta) {
-        return tool;
+      if (!mergedMeta.didChange) {
+        if (nextTools) {
+          nextTools.push(tool);
+        }
+        return;
       }
 
-      didChange = true;
-      return {
+      if (!nextTools) {
+        nextTools = result.tools.slice(0, index);
+      }
+
+      nextTools.push({
         ...tool,
-        _meta: nextMeta,
-      };
+        _meta: mergedMeta.meta,
+      });
     });
 
-    if (!didChange) {
+    if (!nextTools) {
       return result;
     }
 
     return {
       ...result,
-      tools,
+      tools: nextTools,
     };
   };
 }
 
 /**
  * Attaches CEP-15 common-schema metadata injection to a NostrServerTransport.
+ * Apply this decorator before connecting the transport so direct and announced `tools/list`
+ * payloads stay consistent from the first announcement onward.
  */
 export function withCommonToolSchemas(
   transport: NostrServerTransport,
