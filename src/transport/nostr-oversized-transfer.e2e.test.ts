@@ -9,7 +9,7 @@ import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { bytesToHex, hexToBytes } from 'nostr-tools/utils';
 import { waitFor } from '../core/utils/test.utils.js';
 import { EncryptionMode } from '../core/interfaces.js';
-import { NOSTR_TAGS } from '../core/constants.js';
+import { CTXVM_MESSAGES_KIND, NOSTR_TAGS } from '../core/constants.js';
 import { NostrClientTransport } from './nostr-client-transport.js';
 import { NostrServerTransport } from './nostr-server-transport.js';
 import { PrivateKeySigner } from '../signer/private-key-signer.js';
@@ -408,7 +408,11 @@ describe('Nostr oversized transfer end-to-end', () => {
       produce: () => {
         const events = relayHub
           .getEvents()
-          .filter((event) => event.pubkey === serverPublicKey);
+          .filter(
+            (event) =>
+              event.pubkey === serverPublicKey &&
+              event.kind === CTXVM_MESSAGES_KIND,
+          );
         return events.length >= 2 ? events : undefined;
       },
       timeoutMs: 5_000,
