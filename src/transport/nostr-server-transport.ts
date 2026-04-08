@@ -353,9 +353,9 @@ export class NostrServerTransport
 
       if (this.authorizationPolicy.isAnnouncedServer) {
         await this.announcementManager.publishPublicAnnouncements();
-      } else {
-        await this.announcementManager.publishProfileMetadata();
       }
+
+      await this.announcementManager.publishProfileMetadata();
 
       await this.announcementManager.publishRelayList();
     } catch (error) {

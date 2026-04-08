@@ -370,7 +370,6 @@ describe.serial('NostrServerTransport', () => {
         name: 'Private Profile Server',
         about: 'Publishes kind 0 without public announcements',
         website: 'https://example.com/private-server',
-        contextvm: true,
       };
 
       const server = new McpServer({
@@ -382,6 +381,7 @@ describe.serial('NostrServerTransport', () => {
         signer: new PrivateKeySigner(serverPrivateKey),
         relayHandler: new ApplesauceRelayPool([relayUrl]),
         profileMetadata,
+        bootstrapRelayUrls: [],
       });
 
       await server.connect(transport);

@@ -425,7 +425,6 @@ export class AnnouncementManager {
    */
   public async publishPublicAnnouncements(): Promise<void> {
     await this.requestAnnouncementPublication();
-    await this.publishProfileMetadata();
   }
 
   /**
