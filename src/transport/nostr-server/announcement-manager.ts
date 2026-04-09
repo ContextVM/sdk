@@ -34,6 +34,7 @@ import {
   NOTIFICATIONS_INITIALIZED_METHOD,
 } from '../../core/index.js';
 import { EncryptionMode, GiftWrapMode } from '../../core/interfaces.js';
+import { isLocalRelayUrl, isWebsocketRelayUrl } from './utils.js';
 
 /**
  * Information about a server.
@@ -630,7 +631,7 @@ export class AnnouncementManager {
     const shouldSkipDefaultBootstrapRelayUrls =
       !this.hasExplicitBootstrapRelayUrls &&
       advertisedRelayUrls.length > 0 &&
-      advertisedRelayUrls.every((relayUrl) => this.isLocalRelayUrl(relayUrl));
+      advertisedRelayUrls.every((relayUrl) => isLocalRelayUrl(relayUrl));
 
     const bootstrapRelayUrls = shouldSkipDefaultBootstrapRelayUrls
       ? []
@@ -646,44 +647,12 @@ export class AnnouncementManager {
     return [...new Set(relayUrls.filter((relayUrl) => relayUrl.length > 0))];
   }
 
-  private isLocalRelayUrl(relayUrl: string): boolean {
-    if (relayUrl.startsWith('memory://')) {
-      return true;
-    }
-
-    let url: URL;
-    try {
-      url = new URL(relayUrl);
-    } catch {
-      return false;
-    }
-
-    const hostname = url.hostname.toLowerCase();
-    return (
-      hostname === 'localhost' ||
-      hostname === '127.0.0.1' ||
-      hostname === '::1' ||
-      hostname === '0.0.0.0'
-    );
-  }
-
-  private isWebsocketRelayUrl(relayUrl: string): boolean {
-    let url: URL;
-    try {
-      url = new URL(relayUrl);
-    } catch {
-      return false;
-    }
-
-    return url.protocol === 'ws:' || url.protocol === 'wss:';
-  }
-
   private async publishDiscoverabilityEvent(event: NostrEvent): Promise<void> {
     const relayUrls = this.getDiscoverabilityPublishRelayUrls();
     if (
       relayUrls.length &&
       this.onPublishEventToRelays &&
-      relayUrls.every((relayUrl) => this.isWebsocketRelayUrl(relayUrl))
+      relayUrls.every((relayUrl) => isWebsocketRelayUrl(relayUrl))
     ) {
       await this.onPublishEventToRelays(event, relayUrls);
       return;
