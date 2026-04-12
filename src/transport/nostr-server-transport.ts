@@ -53,7 +53,7 @@ import {
   DEFAULT_CHUNK_SIZE,
   DEFAULT_OVERSIZED_THRESHOLD,
 } from './oversized-transfer/constants.js';
-import { learnPeerCapabilities } from './nostr-server/capability-learner.js';
+import { learnPeerCapabilities } from './discovery-tags.js';
 import {
   sendAcceptFrame,
   sendOversizedServerResponse,
@@ -978,14 +978,12 @@ export class NostrServerTransport
 
       const session = this.getOrCreateClientSession(event.pubkey, isEncrypted);
       const hadLearnedOversizedSupport = session.supportsOversizedTransfer;
-      const discoveredCapabilities = learnPeerCapabilities(
-        event.tags,
-        this.oversizedEnabled,
-      );
+      const discoveredCapabilities = learnPeerCapabilities(event.tags);
       session.supportsEncryption ||= discoveredCapabilities.supportsEncryption;
       session.supportsEphemeralEncryption ||=
         discoveredCapabilities.supportsEphemeralEncryption;
       session.supportsOversizedTransfer ||=
+        this.oversizedEnabled &&
         discoveredCapabilities.supportsOversizedTransfer;
 
       const shouldSendAccept = !hadLearnedOversizedSupport;

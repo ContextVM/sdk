@@ -13,6 +13,15 @@ export interface DiscoveredPeerCapabilities {
   supportsOversizedTransfer: boolean;
 }
 
+/**
+ * Capability flags learned from inbound peer discovery tags.
+ */
+export interface PeerCapabilities {
+  supportsEncryption: boolean;
+  supportsEphemeralEncryption: boolean;
+  supportsOversizedTransfer: boolean;
+}
+
 function cloneTag(tag: readonly string[]): string[] {
   return [...tag];
 }
@@ -58,19 +67,29 @@ export function parseDiscoveredPeerCapabilities(
   tags: readonly string[][],
 ): DiscoveredPeerCapabilities {
   const discoveryTags = getDiscoveryTags(tags);
+  const capabilities = learnPeerCapabilities(discoveryTags);
 
   return {
     discoveryTags,
-    supportsEncryption: discoveryTags.some(
-      (tag) => tag.length === 1 && tag[0] === NOSTR_TAGS.SUPPORT_ENCRYPTION,
+    ...capabilities,
+  };
+}
+
+/**
+ * Inspects inbound tags and returns discovered peer capabilities.
+ */
+export function learnPeerCapabilities(
+  eventTags: readonly (readonly string[])[],
+): PeerCapabilities {
+  return {
+    supportsEncryption: hasSingleTag(eventTags, NOSTR_TAGS.SUPPORT_ENCRYPTION),
+    supportsEphemeralEncryption: hasSingleTag(
+      eventTags,
+      NOSTR_TAGS.SUPPORT_ENCRYPTION_EPHEMERAL,
     ),
-    supportsEphemeralEncryption: discoveryTags.some(
-      (tag) =>
-        tag.length === 1 && tag[0] === NOSTR_TAGS.SUPPORT_ENCRYPTION_EPHEMERAL,
-    ),
-    supportsOversizedTransfer: discoveryTags.some(
-      (tag) =>
-        tag.length === 1 && tag[0] === NOSTR_TAGS.SUPPORT_OVERSIZED_TRANSFER,
+    supportsOversizedTransfer: hasSingleTag(
+      eventTags,
+      NOSTR_TAGS.SUPPORT_OVERSIZED_TRANSFER,
     ),
   };
 }
