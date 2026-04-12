@@ -18,6 +18,7 @@ import { bytesToHex, hexToBytes } from 'nostr-tools/utils';
 import {
   CTXVM_MESSAGES_KIND,
   INITIALIZE_METHOD,
+  PROFILE_METADATA_KIND,
   PROMPTS_LIST_KIND,
   RELAY_LIST_METADATA_KIND,
   RESOURCES_LIST_KIND,
@@ -341,6 +342,65 @@ describe.serial('NostrServerTransport', () => {
 
       expect(relayListEvent.kind).toBe(RELAY_LIST_METADATA_KIND);
       expect(relayListEvent.tags).toEqual([['r', relayUrl]]);
+
+      await expect(
+        waitForNostrEvent({
+          relayPool,
+          filters: [
+            { kinds: [SERVER_ANNOUNCEMENT_KIND], authors: [serverPublicKey] },
+          ],
+          where: () => true,
+          timeoutMs: 750,
+        }),
+      ).rejects.toThrow('Timed out waiting for matching Nostr event');
+
+      await server.close();
+      await relayPool.disconnect();
+    },
+    10000,
+  );
+
+  test.serial(
+    'should publish profile metadata when configured even if server is not announced',
+    async () => {
+      const serverPrivateKey = bytesToHex(generateSecretKey());
+      const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
+
+      const profileMetadata = {
+        name: 'Private Profile Server',
+        about: 'Publishes kind 0 without public announcements',
+        website: 'https://example.com/private-server',
+      };
+
+      const server = new McpServer({
+        name: 'Profile Metadata Server',
+        version: '1.0.0',
+      });
+
+      const transport = new NostrServerTransport({
+        signer: new PrivateKeySigner(serverPrivateKey),
+        relayHandler: new ApplesauceRelayPool([relayUrl]),
+        profileMetadata,
+        bootstrapRelayUrls: [],
+      });
+
+      await server.connect(transport);
+
+      const relayPool = new ApplesauceRelayPool([relayUrl]);
+      await relayPool.connect();
+
+      const profileEvent = await waitForNostrEvent({
+        relayPool,
+        filters: [
+          { kinds: [PROFILE_METADATA_KIND], authors: [serverPublicKey] },
+        ],
+        where: () => true,
+      });
+
+      expect(profileEvent.kind).toBe(PROFILE_METADATA_KIND);
+      expect(profileEvent.pubkey).toBe(serverPublicKey);
+      expect(profileEvent.tags).toEqual([]);
+      expect(JSON.parse(profileEvent.content)).toEqual(profileMetadata);
 
       await expect(
         waitForNostrEvent({
