@@ -34,6 +34,7 @@ import {
   NOTIFICATIONS_INITIALIZED_METHOD,
 } from '../../core/index.js';
 import { EncryptionMode, GiftWrapMode } from '../../core/interfaces.js';
+import { isLocalRelayUrl, isWebsocketRelayUrl } from './utils.js';
 
 /**
  * Information about a server.
@@ -126,6 +127,7 @@ export class AnnouncementManager {
   private pricingTags: string[][];
   private readonly shouldPublishRelayList: boolean;
   private readonly relayListUrls?: string[];
+  private readonly hasExplicitBootstrapRelayUrls: boolean;
   private readonly bootstrapRelayUrls: readonly string[];
   private readonly onDispatchMessage: (message: JSONRPCMessage) => void;
   private readonly onPublishEvent: (event: NostrEvent) => Promise<void>;
@@ -157,6 +159,8 @@ export class AnnouncementManager {
     this.pricingTags = options.pricingTags ?? [];
     this.shouldPublishRelayList = options.publishRelayList ?? true;
     this.relayListUrls = options.relayListUrls;
+    this.hasExplicitBootstrapRelayUrls =
+      options.bootstrapRelayUrls !== undefined;
     this.bootstrapRelayUrls =
       options.bootstrapRelayUrls ?? DEFAULT_BOOTSTRAP_RELAY_URLS;
     this.onDispatchMessage = options.onDispatchMessage;
@@ -623,9 +627,19 @@ export class AnnouncementManager {
   }
 
   private getDiscoverabilityPublishRelayUrls(): string[] {
+    const advertisedRelayUrls = this.getAdvertisedRelayUrls();
+    const shouldSkipDefaultBootstrapRelayUrls =
+      !this.hasExplicitBootstrapRelayUrls &&
+      advertisedRelayUrls.length > 0 &&
+      advertisedRelayUrls.every((relayUrl) => isLocalRelayUrl(relayUrl));
+
+    const bootstrapRelayUrls = shouldSkipDefaultBootstrapRelayUrls
+      ? []
+      : this.bootstrapRelayUrls;
+
     return this.dedupeRelayUrls([
-      ...this.getAdvertisedRelayUrls(),
-      ...this.bootstrapRelayUrls,
+      ...advertisedRelayUrls,
+      ...bootstrapRelayUrls,
     ]);
   }
 
@@ -635,7 +649,11 @@ export class AnnouncementManager {
 
   private async publishDiscoverabilityEvent(event: NostrEvent): Promise<void> {
     const relayUrls = this.getDiscoverabilityPublishRelayUrls();
-    if (relayUrls.length && this.onPublishEventToRelays) {
+    if (
+      relayUrls.length &&
+      this.onPublishEventToRelays &&
+      relayUrls.every((relayUrl) => isWebsocketRelayUrl(relayUrl))
+    ) {
       await this.onPublishEventToRelays(event, relayUrls);
       return;
     }
