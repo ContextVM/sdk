@@ -84,8 +84,7 @@ export async function sendOversizedClientRequest(
         frame,
         ctx.isStartFrame ? config.startFrameTags : config.continuationFrameTags,
       ),
-    waitForAccept: (token) =>
-      deps.waitForAccept(token, config.acceptTimeoutMs),
+    waitForAccept: (token) => deps.waitForAccept(token, config.acceptTimeoutMs),
   });
 
   return endFrameEventId;

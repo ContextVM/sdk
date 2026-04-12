@@ -40,9 +40,7 @@ import {
   type OriginalRequestContext,
 } from './nostr-client/correlation-store.js';
 import { parseServerIdentity } from './nostr-client/server-identity.js';
-import {
-  resolveOperationalRelays,
-} from './nostr-client/relay-resolution.js';
+import { resolveOperationalRelays } from './nostr-client/relay-resolution.js';
 import { StatelessModeHandler } from './nostr-client/stateless-mode-handler.js';
 import { withTimeout } from '../core/utils/utils.js';
 import {
