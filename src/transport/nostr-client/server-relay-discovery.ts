@@ -1,4 +1,5 @@
 import type { NostrEvent } from 'nostr-tools';
+import { verifyEvent } from 'nostr-tools';
 import {
   DEFAULT_TIMEOUT_MS,
   NOSTR_TAGS,
@@ -102,6 +103,11 @@ export async function fetchServerRelayList(params: {
   )[0];
 
   if (!latestEvent) {
+    return [];
+  }
+
+  if (!verifyEvent(latestEvent)) {
+    console.warn('Relay list event signature verification failed, ignoring');
     return [];
   }
 

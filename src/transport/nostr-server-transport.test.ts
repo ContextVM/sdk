@@ -302,7 +302,7 @@ describe.serial('NostrServerTransport', () => {
       });
 
       expect(relayListEvent.kind).toBe(RELAY_LIST_METADATA_KIND);
-      expect(relayListEvent.tags).toEqual([['r', relayUrl]]);
+      expect(relayListEvent.tags).toEqual([['d', ''], ['r', relayUrl]]);
 
       await server.close();
       await relayPool.disconnect();
@@ -341,7 +341,7 @@ describe.serial('NostrServerTransport', () => {
       });
 
       expect(relayListEvent.kind).toBe(RELAY_LIST_METADATA_KIND);
-      expect(relayListEvent.tags).toEqual([['r', relayUrl]]);
+      expect(relayListEvent.tags).toEqual([['d', ''], ['r', relayUrl]]);
 
       await expect(
         waitForNostrEvent({
@@ -495,7 +495,7 @@ describe.serial('NostrServerTransport', () => {
     });
 
     expect(bootstrapAnnouncement.kind).toBe(SERVER_ANNOUNCEMENT_KIND);
-    expect(bootstrapRelayList.tags).toEqual([['r', relayUrl]]);
+    expect(bootstrapRelayList.tags).toEqual([['d', ''], ['r', relayUrl]]);
 
     await server.close();
     await bootstrapPool.disconnect();

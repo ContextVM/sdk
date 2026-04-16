@@ -218,7 +218,7 @@ export class AnnouncementManager {
       const eventTemplate = {
         kind: RELAY_LIST_METADATA_KIND,
         content: '',
-        tags: relayUrls.map((relayUrl) => [NOSTR_TAGS.RELAY, relayUrl]),
+        tags: [['d', ''], ...relayUrls.map((relayUrl) => [NOSTR_TAGS.RELAY, relayUrl])],
         created_at: Math.floor(Date.now() / 1000),
         pubkey: publicKey,
       };
@@ -576,7 +576,7 @@ export class AnnouncementManager {
           const eventTemplate = {
             kind: mapping.kind,
             content: JSON.stringify(result),
-            tags: mapping.tags,
+            tags: [['d', ''], ...mapping.tags],
             created_at: Math.floor(Date.now() / 1000),
             pubkey: recipientPubkey,
           };
