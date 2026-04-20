@@ -18,6 +18,12 @@ export interface EventRoute {
   /** Optional progress token for this request */
   progressToken?: string;
 
+  /** Optional original JSON-RPC method for request-specific post-processing. */
+  requestMethod?: string;
+
+  /** Optional resource URI for resources/subscribe and resources/unsubscribe requests. */
+  resourceUri?: string;
+
   /**
    * Optional gift wrap kind used for the correlated request.
    *
@@ -85,6 +91,9 @@ export class CorrelationStore {
    * @param clientPubkey The client's public key
    * @param originalRequestId The original JSON-RPC request ID
    * @param progressToken Optional progress token for this request
+   * @param wrapKind Optional inbound gift-wrap kind for reply mirroring
+   * @param requestMethod Optional original JSON-RPC method
+   * @param resourceUri Optional resource URI for subscribe/unsubscribe tracking
    */
   registerEventRoute(
     eventId: string,
@@ -92,12 +101,16 @@ export class CorrelationStore {
     originalRequestId: string | number,
     progressToken?: string,
     wrapKind?: number,
+    requestMethod?: string,
+    resourceUri?: string,
   ): void {
     const route: EventRoute = {
       clientPubkey,
       originalRequestId,
       progressToken,
       wrapKind,
+      requestMethod,
+      resourceUri,
     };
 
     this.eventRoutes.set(eventId, route);

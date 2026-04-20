@@ -3,7 +3,10 @@ import {
   ListPromptsResultSchema,
   ListResourcesResultSchema,
   ListResourceTemplatesResultSchema,
+  ResourceUpdatedNotificationSchema,
   ListToolsResultSchema,
+  SubscribeRequestSchema,
+  UnsubscribeRequestSchema,
   isJSONRPCRequest,
   isJSONRPCNotification,
   type JSONRPCMessage,
@@ -32,7 +35,10 @@ import { EncryptionMode, GiftWrapMode } from '../core/interfaces.js';
 import { NostrEvent } from 'nostr-tools';
 import { LogLevel } from '../core/utils/logger.js';
 import { injectClientPubkey, withTimeout } from '../core/utils/utils.js';
-import { CorrelationStore } from './nostr-server/correlation-store.js';
+import {
+  CorrelationStore,
+  type EventRoute,
+} from './nostr-server/correlation-store.js';
 import { ClientSession, SessionStore } from './nostr-server/session-store.js';
 import { LruCache } from '../core/utils/lru-cache.js';
 import { ApplesauceRelayPool } from '../relay/applesauce-relay-pool.js';
@@ -158,6 +164,7 @@ export class NostrServerTransport
 
   private readonly sessionStore: SessionStore;
   private readonly correlationStore: CorrelationStore;
+  private readonly resourceSubscriptionsByUri: Map<string, Map<string, string>>;
   private readonly authorizationPolicy: AuthorizationPolicy;
   private readonly announcementManager: AnnouncementManager;
   private readonly injectClientPubkey: boolean;
@@ -227,6 +234,8 @@ export class NostrServerTransport
           return; // Don't call onClientSessionEvicted for vetoed eviction
         }
 
+        this.removeResourceSubscriptionsForClient(clientPubkey);
+
         if (this.onClientSessionEvicted) {
           Promise.resolve(
             this.onClientSessionEvicted({ clientPubkey, session }),
@@ -250,6 +259,8 @@ export class NostrServerTransport
         });
       },
     });
+
+    this.resourceSubscriptionsByUri = new Map<string, Map<string, string>>();
 
     // Initialize announcement manager
     this.announcementManager = new AnnouncementManager({
@@ -371,6 +382,7 @@ export class NostrServerTransport
       await this.disconnect();
       this.sessionStore.clear();
       this.correlationStore.clear();
+      this.resourceSubscriptionsByUri.clear();
       this.seenEventIds.clear();
       this.oversizedReceiver.clear();
       this.onclose?.();
@@ -543,13 +555,101 @@ export class NostrServerTransport
 
     // Register the event route in the correlation store
     const progressToken = request.params?._meta?.progressToken;
+    const parsedSubscribeRequest = SubscribeRequestSchema.safeParse(request);
+    const parsedUnsubscribeRequest = UnsubscribeRequestSchema.safeParse(request);
+    const resourceUri =
+      parsedSubscribeRequest.success || parsedUnsubscribeRequest.success
+        ? request.params?.uri
+        : undefined;
+
     this.correlationStore.registerEventRoute(
       eventId,
       clientPubkey,
       originalRequestId,
       progressToken ? String(progressToken) : undefined,
       wrapKind,
+      request.method,
+      typeof resourceUri === 'string' ? resourceUri : undefined,
     );
+  }
+
+  private registerResourceSubscription(
+    clientPubkey: string,
+    resourceUri: string,
+    correlatedEventId: string,
+  ): void {
+    let subscribers = this.resourceSubscriptionsByUri.get(resourceUri);
+    if (!subscribers) {
+      subscribers = new Map<string, string>();
+      this.resourceSubscriptionsByUri.set(resourceUri, subscribers);
+    }
+
+    subscribers.set(clientPubkey, correlatedEventId);
+  }
+
+  private unregisterResourceSubscription(
+    clientPubkey: string,
+    resourceUri: string,
+  ): void {
+    const subscribers = this.resourceSubscriptionsByUri.get(resourceUri);
+    if (!subscribers) {
+      return;
+    }
+
+    subscribers.delete(clientPubkey);
+    if (subscribers.size === 0) {
+      this.resourceSubscriptionsByUri.delete(resourceUri);
+    }
+  }
+
+  private removeResourceSubscriptionsForClient(clientPubkey: string): void {
+    for (const [resourceUri, subscribers] of this.resourceSubscriptionsByUri) {
+      subscribers.delete(clientPubkey);
+      if (subscribers.size === 0) {
+        this.resourceSubscriptionsByUri.delete(resourceUri);
+      }
+    }
+  }
+
+  private getResourceSubscribers(resourceUri: string): Array<{
+    clientPubkey: string;
+    correlatedEventId: string;
+  }> {
+    const subscribers = this.resourceSubscriptionsByUri.get(resourceUri);
+    if (!subscribers) {
+      return [];
+    }
+
+    return Array.from(
+      subscribers,
+      ([clientPubkey, correlatedEventId]) => ({
+        clientPubkey,
+        correlatedEventId,
+      }),
+    );
+  }
+
+  private applyResourceSubscriptionResult(
+    route: EventRoute,
+    nostrEventId: string,
+    response: JSONRPCResponse | JSONRPCErrorResponse,
+  ): void {
+    if (!isJSONRPCResultResponse(response) || !route.resourceUri) {
+      return;
+    }
+
+    if (route.requestMethod === 'resources/subscribe') {
+      this.registerResourceSubscription(
+        route.clientPubkey,
+        route.resourceUri,
+        nostrEventId,
+      );
+      return;
+    }
+
+    if (route.requestMethod === 'resources/unsubscribe') {
+      this.unregisterResourceSubscription(route.clientPubkey, route.resourceUri);
+    }
   }
 
   /**
@@ -606,6 +706,8 @@ export class NostrServerTransport
       );
       return;
     }
+
+    this.applyResourceSubscriptionResult(route, nostrEventId, response);
 
     // Restore the original request ID in the response
     response.id = route.originalRequestId;
@@ -676,7 +778,6 @@ export class NostrServerTransport
   ): Promise<void> {
     try {
       // Special handling for progress notifications
-      // TODO: Add handling for `notifications/resources/updated`, as they need to be associated with an id
       if (
         isJSONRPCNotification(notification) &&
         notification.method === 'notifications/progress' &&
@@ -703,6 +804,79 @@ export class NostrServerTransport
         const error = new Error(`No client found for progress token: ${token}`);
         this.logger.error('Progress token not found', { token });
         this.onerror?.(error);
+        return;
+      }
+
+      // `notifications/resources/updated` must be delivered only to correlated
+      // subscribers, never via the generic broadcast fan-out.
+      if (
+        isJSONRPCNotification(notification) &&
+        notification.method === 'notifications/resources/updated'
+      ) {
+        const parsedNotification =
+          ResourceUpdatedNotificationSchema.safeParse(notification);
+
+        if (!parsedNotification.success) {
+          this.logger.warn('Invalid resources/updated notification payload', {
+            notification,
+          });
+          return;
+        }
+
+        const resourceUri = parsedNotification.data.params.uri;
+        const progressToken = parsedNotification.data.params._meta?.progressToken;
+
+        if (progressToken !== undefined) {
+          const token = String(progressToken);
+          const nostrEventId =
+            this.correlationStore.getEventIdByProgressToken(token);
+
+          if (nostrEventId) {
+            const route = this.correlationStore.getEventRoute(nostrEventId);
+            if (route) {
+              await this.sendNotification(
+                route.clientPubkey,
+                notification,
+                nostrEventId,
+              );
+              return;
+            }
+          }
+        }
+
+        const subscribers = this.getResourceSubscribers(resourceUri).filter(
+          ({ clientPubkey }) => {
+            const session = this.sessionStore.getSession(clientPubkey);
+            return !!session?.isInitialized;
+          },
+        );
+
+        if (subscribers.length === 0) {
+          this.logger.debug(
+            'Dropping resources/updated notification with no correlated subscribers',
+            { resourceUri },
+          );
+          return;
+        }
+
+        await Promise.all(
+          subscribers.map(async ({ clientPubkey, correlatedEventId }) => {
+            try {
+              await this.sendNotification(
+                clientPubkey,
+                notification,
+                correlatedEventId,
+              );
+            } catch (error) {
+              this.logger.error('Error sending resources/updated notification', {
+                error: error instanceof Error ? error.message : String(error),
+                clientPubkey,
+                resourceUri,
+              });
+            }
+          }),
+        );
+
         return;
       }
 
