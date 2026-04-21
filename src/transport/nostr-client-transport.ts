@@ -40,18 +40,12 @@ import {
   type OriginalRequestContext,
 } from './nostr-client/correlation-store.js';
 import { parseServerIdentity } from './nostr-client/server-identity.js';
-import {
-  fetchServerRelayList,
-  selectOperationalRelayUrls,
-} from './nostr-client/server-relay-discovery.js';
+import { resolveOperationalRelays } from './nostr-client/relay-resolution.js';
 import { StatelessModeHandler } from './nostr-client/stateless-mode-handler.js';
 import { queryTags, withTimeout } from '../core/utils/utils.js';
-import { ApplesauceRelayPool } from '../relay/applesauce-relay-pool.js';
 import {
   OversizedTransferReceiver,
-  sendOversizedTransfer,
   type TransferPolicy,
-  type OversizedTransferProgress,
 } from './oversized-transfer/index.js';
 import {
   mergeDiscoveryTags,
@@ -61,6 +55,7 @@ import {
   DEFAULT_CHUNK_SIZE,
   DEFAULT_OVERSIZED_THRESHOLD,
 } from './oversized-transfer/constants.js';
+import { sendOversizedClientRequest } from './nostr-client/oversized-client-sender.js';
 
 /**
  * Options for configuring the NostrClientTransport.
@@ -452,45 +447,26 @@ export class NostrClientTransport
       baseTags: frameRecipientTags,
       includeDiscovery: true,
     });
-    const giftWrapKind = this.chooseOutboundGiftWrapKind();
-
-    const needsAcceptHandshake = !this.serverSupportsOversizedTransfer;
-
-    const sendFrame = async (
-      params: OversizedTransferProgress,
-      tags: string[][],
-    ): Promise<string> => {
-      const notification: JSONRPCMessage = {
-        jsonrpc: '2.0',
-        method: 'notifications/progress',
-        params,
-      };
-      return await this.sendMcpMessage(
-        notification,
-        this.serverPubkey,
-        CTXVM_MESSAGES_KIND,
-        tags,
-        undefined,
-        undefined,
-        giftWrapKind,
-      );
-    };
-
-    const endFrameEventId = await sendOversizedTransfer(serialized, {
+    const endFrameEventId = await sendOversizedClientRequest(
+      serialized,
       progressToken,
-      chunkSizeBytes: this.oversizedChunkSize,
-      needsAcceptHandshake,
-      publishFrame: async (frame, ctx) =>
-        await sendFrame(
-          frame,
-          ctx.isStartFrame ? startFrameTags : frameRecipientTags,
+      {
+        chunkSizeBytes: this.oversizedChunkSize,
+        acceptTimeoutMs: this.oversizedAcceptTimeoutMs,
+        serverPubkey: this.serverPubkey,
+        serverSupportsOversizedTransfer: this.serverSupportsOversizedTransfer,
+        giftWrapKind: this.chooseOutboundGiftWrapKind(),
+        startFrameTags,
+        continuationFrameTags: frameRecipientTags,
+      },
+      {
+        sendMcpMessage: this.sendMcpMessage.bind(this),
+        waitForAccept: this.oversizedReceiver.waitForAccept.bind(
+          this.oversizedReceiver,
         ),
-      waitForAccept: async (token) =>
-        await this.oversizedReceiver.waitForAccept(
-          token,
-          this.oversizedAcceptTimeoutMs,
-        ),
-    });
+        logger: this.logger,
+      },
+    );
 
     // Register the original request for correlating the final response.
     if (endFrameEventId) {
@@ -795,10 +771,8 @@ export class NostrClientTransport
    * @returns True when the initialize event contains the support_encryption tag
    */
   public serverSupportsEncryption(): boolean {
-    return queryTags(
-      this.serverInitializeEvent,
-      NOSTR_TAGS.SUPPORT_ENCRYPTION,
-    ).isFlag;
+    return queryTags(this.serverInitializeEvent, NOSTR_TAGS.SUPPORT_ENCRYPTION)
+      .isFlag;
   }
 
   /**
@@ -935,103 +909,19 @@ export class NostrClientTransport
   }
 
   private async resolveOperationalRelayHandler(): Promise<void> {
-    const configuredRelayUrls = this.relayHandler.getRelayUrls?.() ?? [];
-
-    if (configuredRelayUrls.length > 0) {
-      return;
-    }
-
-    if (this.hintedRelayUrls.length > 0) {
-      this.logger.info('Using relay hints from server identity', {
-        relayCount: this.hintedRelayUrls.length,
-      });
-      this.setRelayHandler([...this.hintedRelayUrls]);
-      return;
-    }
-
-    if (this.discoveryRelayUrls.length === 0) {
-      if (this.fallbackOperationalRelayUrls.length > 0) {
-        this.logger.info('Using configured fallback operational relays', {
-          relayCount: this.fallbackOperationalRelayUrls.length,
-        });
-        this.setRelayHandler([...this.fallbackOperationalRelayUrls]);
-      }
-      return;
-    }
-
-    const discoveryPromise = fetchServerRelayList({
-      serverPubkey: this.serverPubkey,
-      relayUrls: [...this.discoveryRelayUrls],
-    }).then((relayListEntries) =>
-      selectOperationalRelayUrls(relayListEntries).map((relayUrl) => relayUrl),
-    );
-
-    const fallbackConnectionPromise = this.connectFallbackOperationalRelays();
-
-    const firstConnectedRelayUrls = await Promise.race([
-      discoveryPromise,
-      fallbackConnectionPromise,
-    ]);
-
-    if (firstConnectedRelayUrls.length > 0) {
-      this.logger.info('Resolved operational relays', {
-        relayCount: firstConnectedRelayUrls.length,
-      });
-      this.setRelayHandler(firstConnectedRelayUrls);
-      return;
-    }
-
-    const [discoveryRelayUrls, fallbackRelayUrls] = await Promise.all([
-      discoveryPromise,
-      fallbackConnectionPromise,
-    ]);
-
-    if (discoveryRelayUrls.length > 0) {
-      this.logger.info('Resolved operational relays from server relay list', {
-        relayCount: discoveryRelayUrls.length,
-      });
-      this.setRelayHandler(discoveryRelayUrls);
-      return;
-    }
-
-    if (fallbackRelayUrls.length > 0) {
-      this.logger.info('Using configured fallback operational relays', {
-        relayCount: fallbackRelayUrls.length,
-      });
-      this.setRelayHandler(fallbackRelayUrls);
-      return;
-    }
-
-    this.logger.warn(
-      'No operational relays discovered from kind 10002; falling back to discovery relays',
+    await resolveOperationalRelays(
       {
-        relayCount: this.discoveryRelayUrls.length,
+        configuredRelayUrls: this.relayHandler.getRelayUrls?.() ?? [],
+        hintedRelayUrls: this.hintedRelayUrls,
+        discoveryRelayUrls: this.discoveryRelayUrls,
+        fallbackOperationalRelayUrls: this.fallbackOperationalRelayUrls,
+        serverPubkey: this.serverPubkey,
+      },
+      {
+        setRelayHandler: this.setRelayHandler.bind(this),
+        logger: this.logger,
       },
     );
-    this.setRelayHandler([...this.discoveryRelayUrls]);
-  }
-
-  private async connectFallbackOperationalRelays(): Promise<string[]> {
-    if (this.fallbackOperationalRelayUrls.length === 0) {
-      return [];
-    }
-
-    const relayPool = new ApplesauceRelayPool([
-      ...this.fallbackOperationalRelayUrls,
-    ]);
-
-    try {
-      await withTimeout(
-        relayPool.connect(),
-        DEFAULT_TIMEOUT_MS,
-        'Fallback operational relay probing timed out',
-      );
-      return [...this.fallbackOperationalRelayUrls];
-    } catch {
-      return [];
-    } finally {
-      await relayPool.disconnect().catch(() => undefined);
-    }
   }
 
   /**

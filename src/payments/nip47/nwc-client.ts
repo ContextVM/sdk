@@ -10,10 +10,7 @@ import type {
   NwcRequest,
   NwcResponse,
 } from './types.js';
-import {
-  queryTags,
-  withTimeout,
-} from '../../core/utils/utils.js';
+import { queryTags, withTimeout } from '../../core/utils/utils.js';
 
 // Per NIP-47.
 export const NWC_NOTIFICATION_KIND = 23197;

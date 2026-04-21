@@ -22,8 +22,10 @@ const createBaseOptions = (
       sig: 'signed-event-sig',
     }) as NostrEvent,
   onGetPublicKey: async () => 'server-pubkey',
-  onSubscribe: async (_filters: Filter[], _onEvent: (event: NostrEvent) => void) =>
-    undefined,
+  onSubscribe: async (
+    _filters: Filter[],
+    _onEvent: (event: NostrEvent) => void,
+  ) => undefined,
   logger: {
     info: () => undefined,
     warn: () => undefined,
@@ -204,10 +206,13 @@ describe('AnnouncementManager profile metadata publication', () => {
     let requestCalled = false;
     let profileCalled = false;
 
-    (manager as unknown as { requestAnnouncementPublication: () => Promise<void> }).requestAnnouncementPublication =
-      async () => {
-        requestCalled = true;
-      };
+    (
+      manager as unknown as {
+        requestAnnouncementPublication: () => Promise<void>;
+      }
+    ).requestAnnouncementPublication = async () => {
+      requestCalled = true;
+    };
 
     manager.publishProfileMetadata = async () => {
       profileCalled = true;
