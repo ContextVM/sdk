@@ -8,9 +8,9 @@ import {
 } from '../oversized-transfer/index.js';
 
 /**
- * Dependencies required by oversized server frame helpers.
+ * Dependencies required to publish oversized server response frames.
  */
-export interface OversizedServerHandlerDeps {
+export interface OversizedServerResponseDeps {
   sendMcpMessage: (
     message: JSONRPCMessage,
     recipientPublicKey: string,
@@ -20,12 +20,18 @@ export interface OversizedServerHandlerDeps {
     onEventCreated?: (eventId: string) => void,
     giftWrapKind?: number,
   ) => Promise<string>;
+  logger: Logger;
+}
+
+/**
+ * Dependencies required to publish a CEP-22 accept frame.
+ */
+export interface OversizedAcceptFrameDeps {
   sendNotification: (
     clientPubkey: string,
     notification: JSONRPCMessage,
     correlatedEventId?: string,
   ) => Promise<void>;
-  logger: Logger;
 }
 
 /**
@@ -54,7 +60,7 @@ export interface SendOversizedServerResponseOptions {
 export async function sendOversizedServerResponse(
   options: SendOversizedServerResponseOptions,
   config: OversizedServerHandlerConfig,
-  deps: OversizedServerHandlerDeps,
+  deps: OversizedServerResponseDeps,
 ): Promise<void> {
   deps.logger.debug('Sending oversized server response', {
     progressToken: options.progressToken,
@@ -108,7 +114,7 @@ export interface SendAcceptFrameOptions {
  */
 export async function sendAcceptFrame(
   options: SendAcceptFrameOptions,
-  deps: Pick<OversizedServerHandlerDeps, 'sendNotification'>,
+  deps: OversizedAcceptFrameDeps,
 ): Promise<void> {
   const acceptParams: OversizedTransferProgress = {
     progressToken: options.progressToken,
