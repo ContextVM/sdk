@@ -43,14 +43,11 @@ import { parseServerIdentity } from './nostr-client/server-identity.js';
 import { resolveOperationalRelays } from './nostr-client/relay-resolution.js';
 import { StatelessModeHandler } from './nostr-client/stateless-mode-handler.js';
 import { queryTags, withTimeout } from '../core/utils/utils.js';
-import { ApplesauceRelayPool } from '../relay/applesauce-relay-pool.js';
 import {
   OversizedTransferReceiver,
   type TransferPolicy,
 } from './oversized-transfer/index.js';
 import {
-  hasEventTag,
-  hasSingleTag,
   mergeDiscoveryTags,
   parseDiscoveredPeerCapabilities,
 } from './discovery-tags.js';
@@ -774,10 +771,8 @@ export class NostrClientTransport
    * @returns True when the initialize event contains the support_encryption tag
    */
   public serverSupportsEncryption(): boolean {
-    return queryTags(
-      this.serverInitializeEvent,
-      NOSTR_TAGS.SUPPORT_ENCRYPTION,
-    ).isFlag;
+    return queryTags(this.serverInitializeEvent, NOSTR_TAGS.SUPPORT_ENCRYPTION)
+      .isFlag;
   }
 
   /**
