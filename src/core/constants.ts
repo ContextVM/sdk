@@ -52,6 +52,12 @@ export const PROMPTS_LIST_KIND = 11320;
 export const RELAY_LIST_METADATA_KIND = 10002;
 
 /**
+ * NIP-01 profile metadata event kind.
+ * Used for optional server identity publication (CEP-23).
+ */
+export const PROFILE_METADATA_KIND = 0;
+
+/**
  * Default relay targets for discoverability publication.
  *
  * These relays are used as additional publication targets for server metadata,

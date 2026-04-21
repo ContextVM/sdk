@@ -29,11 +29,13 @@ import {
   RESOURCETEMPLATES_LIST_KIND,
   PROMPTS_LIST_KIND,
   RELAY_LIST_METADATA_KIND,
+  PROFILE_METADATA_KIND,
   NOSTR_TAGS,
   INITIALIZE_METHOD,
   NOTIFICATIONS_INITIALIZED_METHOD,
 } from '../../core/index.js';
 import { EncryptionMode, GiftWrapMode } from '../../core/interfaces.js';
+import { isLocalRelayUrl, isWebsocketRelayUrl } from './utils.js';
 
 /**
  * Information about a server.
@@ -46,11 +48,32 @@ export interface ServerInfo {
 }
 
 /**
+ * Optional NIP-01 kind:0 profile metadata for server identity.
+ * When provided, the server publishes a kind:0 event at startup
+ * to establish a social presence on Nostr.
+ *
+ * This is separate from ServerInfo - not all servers want a social profile.
+ * kind:0 events are rendered by social Nostr clients.
+ */
+export interface ProfileMetadata {
+  name?: string;
+  about?: string;
+  picture?: string;
+  banner?: string;
+  website?: string;
+  nip05?: string;
+  lud16?: string;
+  [key: string]: unknown;
+}
+
+/**
  * Options for configuring the AnnouncementManager.
  */
 export interface AnnouncementManagerOptions {
   /** Server information to include in announcements */
   serverInfo?: ServerInfo;
+  /** Optional kind:0 profile metadata. When provided, publishes a kind:0 event at startup. */
+  profileMetadata?: ProfileMetadata;
   /** Encryption mode for determining tag inclusion */
   encryptionMode: EncryptionMode;
 
@@ -119,6 +142,7 @@ interface AnnouncementMapping {
  */
 export class AnnouncementManager {
   private readonly serverInfo?: ServerInfo;
+  private readonly profileMetadata?: ProfileMetadata;
   private readonly encryptionMode: EncryptionMode;
   private readonly giftWrapMode: GiftWrapMode;
   private extraCommonTags: string[][];
@@ -126,6 +150,7 @@ export class AnnouncementManager {
   private pricingTags: string[][];
   private readonly shouldPublishRelayList: boolean;
   private readonly relayListUrls?: string[];
+  private readonly hasExplicitBootstrapRelayUrls: boolean;
   private readonly bootstrapRelayUrls: readonly string[];
   private readonly onDispatchMessage: (message: JSONRPCMessage) => void;
   private readonly onPublishEvent: (event: NostrEvent) => Promise<void>;
@@ -150,6 +175,7 @@ export class AnnouncementManager {
 
   constructor(options: AnnouncementManagerOptions) {
     this.serverInfo = options.serverInfo;
+    this.profileMetadata = options.profileMetadata;
     this.encryptionMode = options.encryptionMode;
     this.giftWrapMode = options.giftWrapMode;
     this.extraCommonTags = options.extraCommonTags ?? [];
@@ -157,6 +183,8 @@ export class AnnouncementManager {
     this.pricingTags = options.pricingTags ?? [];
     this.shouldPublishRelayList = options.publishRelayList ?? true;
     this.relayListUrls = options.relayListUrls;
+    this.hasExplicitBootstrapRelayUrls =
+      options.bootstrapRelayUrls !== undefined;
     this.bootstrapRelayUrls =
       options.bootstrapRelayUrls ?? DEFAULT_BOOTSTRAP_RELAY_URLS;
     this.onDispatchMessage = options.onDispatchMessage;
@@ -203,6 +231,39 @@ export class AnnouncementManager {
       });
     } catch (error) {
       this.logger.error('Error publishing relay list metadata', {
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+      });
+    }
+  }
+
+  /**
+   * Publishes NIP-01 kind:0 profile metadata when configured.
+   * This creates a social identity for the server on Nostr.
+   */
+  public async publishProfileMetadata(): Promise<void> {
+    if (!this.profileMetadata) {
+      return;
+    }
+
+    try {
+      const publicKey = await this.onGetPublicKey();
+      const content = JSON.stringify(this.profileMetadata);
+      const eventTemplate = {
+        kind: PROFILE_METADATA_KIND,
+        content,
+        tags: [] as string[][],
+        created_at: Math.floor(Date.now() / 1000),
+        pubkey: publicKey,
+      };
+
+      const signedEvent = await this.onSignEvent(eventTemplate as NostrEvent);
+      await this.publishDiscoverabilityEvent(signedEvent);
+      this.logger.debug('Published profile metadata event', {
+        eventId: signedEvent.id,
+      });
+    } catch (error) {
+      this.logger.error('Error publishing profile metadata', {
         error: error instanceof Error ? error.message : String(error),
         stack: error instanceof Error ? error.stack : undefined,
       });
@@ -623,9 +684,19 @@ export class AnnouncementManager {
   }
 
   private getDiscoverabilityPublishRelayUrls(): string[] {
+    const advertisedRelayUrls = this.getAdvertisedRelayUrls();
+    const shouldSkipDefaultBootstrapRelayUrls =
+      !this.hasExplicitBootstrapRelayUrls &&
+      advertisedRelayUrls.length > 0 &&
+      advertisedRelayUrls.every((relayUrl) => isLocalRelayUrl(relayUrl));
+
+    const bootstrapRelayUrls = shouldSkipDefaultBootstrapRelayUrls
+      ? []
+      : this.bootstrapRelayUrls;
+
     return this.dedupeRelayUrls([
-      ...this.getAdvertisedRelayUrls(),
-      ...this.bootstrapRelayUrls,
+      ...advertisedRelayUrls,
+      ...bootstrapRelayUrls,
     ]);
   }
 
@@ -635,7 +706,11 @@ export class AnnouncementManager {
 
   private async publishDiscoverabilityEvent(event: NostrEvent): Promise<void> {
     const relayUrls = this.getDiscoverabilityPublishRelayUrls();
-    if (relayUrls.length && this.onPublishEventToRelays) {
+    if (
+      relayUrls.length &&
+      this.onPublishEventToRelays &&
+      relayUrls.every((relayUrl) => isWebsocketRelayUrl(relayUrl))
+    ) {
       await this.onPublishEventToRelays(event, relayUrls);
       return;
     }

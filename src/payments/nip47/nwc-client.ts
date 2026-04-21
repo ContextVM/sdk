@@ -11,8 +11,7 @@ import type {
   NwcResponse,
 } from './types.js';
 import {
-  getTagValue,
-  getTagValues,
+  queryTags,
   withTimeout,
 } from '../../core/utils/utils.js';
 
@@ -85,7 +84,7 @@ export class NwcClient {
           (event) => {
             settled = true;
             const tags = event.tags as string[][];
-            const raw = getTagValues(tags, 'notifications').join(' ');
+            const raw = queryTags(tags, 'notifications').allValues.join(' ');
             const types = raw
               .split(/\s+/)
               .map((t) => t.trim())
@@ -285,7 +284,7 @@ export class NwcClient {
       );
 
       // Validate correlation.
-      const eTag = getTagValue(responseEvent.tags as string[][], 'e');
+      const eTag = queryTags(responseEvent.tags, 'e').firstValue;
       if (eTag !== signedRequest.id) {
         throw new Error('NWC response did not correlate to request');
       }
