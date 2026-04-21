@@ -656,7 +656,6 @@ export class NostrServerTransport
           },
           {
             sendMcpMessage: this.sendMcpMessage.bind(this),
-            sendNotification: this.sendNotification.bind(this),
             logger: this.logger,
           },
         );
