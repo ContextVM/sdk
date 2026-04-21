@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import type { JSONRPCNotification } from '@modelcontextprotocol/sdk/types.js';
 import { buildOversizedTransferFrames } from './sender.js';
 import {
+  OversizedTransferDigestError,
   OversizedTransferPolicyError,
   OversizedTransferReassemblyError,
   OversizedTransferReceiver,
@@ -541,5 +542,102 @@ describe('OversizedTransferReceiver', () => {
         }),
       ),
     ).toBeNull();
+  });
+
+  test('fails on start frame whose digest is missing the sha256: prefix', async () => {
+    const receiver = new OversizedTransferReceiver({}, testLogger);
+
+    await expect(
+      receiver.processFrame(
+        toNotification({
+          progressToken: 'token-bad-digest-prefix',
+          progress: 1,
+          cvm: {
+            type: 'oversized-transfer',
+            frameType: 'start',
+            completionMode: 'render',
+            digest:
+              'abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789',
+            totalBytes: 4,
+            totalChunks: 1,
+          },
+        }),
+      ),
+    ).rejects.toBeInstanceOf(OversizedTransferReassemblyError);
+  });
+
+  test('fails on byte-length mismatch between declared totalBytes and reassembled payload', async () => {
+    const receiver = new OversizedTransferReceiver({}, testLogger);
+
+    const { startFrame, chunkFrames, endFrame } =
+      await buildOversizedTransferFrames(
+        JSON.stringify({ jsonrpc: '2.0', id: 10, result: { v: 'abcdefgh' } }),
+        {
+          progressToken: 'token-byte-len-mismatch',
+          chunkSizeBytes: 16,
+        },
+      );
+
+    const originalStartCvm = startFrame.cvm;
+    if (originalStartCvm.frameType !== 'start') {
+      throw new Error('Expected start frame');
+    }
+
+    // Tamper: advertise a totalBytes that does not match the real payload size.
+    const tamperedStart = {
+      ...startFrame,
+      cvm: {
+        ...originalStartCvm,
+        totalBytes: originalStartCvm.totalBytes + 100,
+      },
+    };
+
+    await receiver.processFrame(toNotification(tamperedStart));
+    for (const chunkFrame of chunkFrames) {
+      await receiver.processFrame(toNotification(chunkFrame));
+    }
+
+    await expect(
+      receiver.processFrame(toNotification(endFrame)),
+    ).rejects.toBeInstanceOf(OversizedTransferDigestError);
+  });
+
+  test('fails on SHA-256 digest mismatch after valid reassembly', async () => {
+    const receiver = new OversizedTransferReceiver({}, testLogger);
+
+    const { startFrame, chunkFrames, endFrame } =
+      await buildOversizedTransferFrames(
+        JSON.stringify({ jsonrpc: '2.0', id: 11, result: { v: 'payload' } }),
+        {
+          progressToken: 'token-digest-mismatch',
+          chunkSizeBytes: 16,
+        },
+      );
+
+    const originalStartCvm = startFrame.cvm;
+    if (originalStartCvm.frameType !== 'start') {
+      throw new Error('Expected start frame');
+    }
+
+    // Tamper: keep the sha256: prefix but replace the hash with an obviously
+    // wrong all-zero value. Reassembly and byte-length checks should succeed
+    // and the digest comparison should be the only thing that fails.
+    const tamperedStart = {
+      ...startFrame,
+      cvm: {
+        ...originalStartCvm,
+        digest:
+          'sha256:0000000000000000000000000000000000000000000000000000000000000000',
+      },
+    };
+
+    await receiver.processFrame(toNotification(tamperedStart));
+    for (const chunkFrame of chunkFrames) {
+      await receiver.processFrame(toNotification(chunkFrame));
+    }
+
+    await expect(
+      receiver.processFrame(toNotification(endFrame)),
+    ).rejects.toBeInstanceOf(OversizedTransferDigestError);
   });
 });
