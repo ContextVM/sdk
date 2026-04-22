@@ -13,6 +13,7 @@ import {
   ListResourceTemplatesResultSchema,
   ListToolsResultSchema,
   type JSONRPCMessage,
+  type ListToolsResult,
   type JSONRPCResponse,
   isJSONRPCResultResponse,
 } from '@modelcontextprotocol/sdk/types.js';
@@ -111,6 +112,10 @@ export interface AnnouncementManagerOptions {
   ) => Promise<void>;
   /** Callback to inspect the transport's operational relay URLs. */
   onGetRelayUrls?: () => string[] | undefined;
+  /** Optional transformer for tools/list results before publication. */
+  transformListToolsResult?: (result: ListToolsResult) => ListToolsResult;
+  /** Optional producer for extra tags on public tools/list announcements. */
+  getListToolsAnnouncementTags?: (result: ListToolsResult) => string[][];
   /** Logger for debug output */
   logger: {
     info: (message: string, meta?: unknown) => void;
@@ -166,6 +171,12 @@ export class AnnouncementManager {
     onEvent: (event: NostrEvent) => void,
   ) => Promise<void>;
   private readonly onGetRelayUrls: (() => string[] | undefined) | undefined;
+  private readonly transformListToolsResult:
+    | ((result: ListToolsResult) => ListToolsResult)
+    | undefined;
+  private readonly getListToolsAnnouncementTags:
+    | ((result: ListToolsResult) => string[][])
+    | undefined;
   private readonly logger: AnnouncementManagerOptions['logger'];
 
   private isInitialized = false;
@@ -194,6 +205,8 @@ export class AnnouncementManager {
     this.onGetPublicKey = options.onGetPublicKey;
     this.onSubscribe = options.onSubscribe;
     this.onGetRelayUrls = options.onGetRelayUrls;
+    this.transformListToolsResult = options.transformListToolsResult;
+    this.getListToolsAnnouncementTags = options.getListToolsAnnouncementTags;
     this.logger = options.logger;
   }
 
@@ -570,13 +583,27 @@ export class AnnouncementManager {
     try {
       const recipientPubkey = await this.onGetPublicKey();
       const announcementMapping = this.getAnnouncementMapping();
+      const parsedListToolsResult = ListToolsResultSchema.safeParse(result);
+      const announcementListToolsResult =
+        this.transformListToolsResult && parsedListToolsResult.success
+          ? this.transformListToolsResult(parsedListToolsResult.data)
+          : parsedListToolsResult.success
+            ? parsedListToolsResult.data
+            : undefined;
+      const announcementResult = announcementListToolsResult ?? result;
+      const listToolsAnnouncementTags = announcementListToolsResult
+        ? this.getListToolsAnnouncementTags?.(announcementListToolsResult) ?? []
+        : [];
 
       for (const mapping of announcementMapping) {
-        if (mapping.schema.safeParse(result).success) {
+        if (mapping.schema.safeParse(announcementResult).success) {
           const eventTemplate = {
             kind: mapping.kind,
-            content: JSON.stringify(result),
-            tags: mapping.tags,
+            content: JSON.stringify(announcementResult),
+            tags:
+              mapping.kind === TOOLS_LIST_KIND
+                ? [...mapping.tags, ...listToolsAnnouncementTags]
+                : mapping.tags,
             created_at: Math.floor(Date.now() / 1000),
             pubkey: recipientPubkey,
           };

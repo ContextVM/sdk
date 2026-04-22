@@ -28,6 +28,7 @@ import {
 } from '../core/constants.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { EncryptionMode, GiftWrapMode } from '../core/interfaces.js';
+import { computeCommonSchemaHash } from '../core/index.js';
 import { ApplesauceRelayPool } from '../relay/applesauce-relay-pool.js';
 import { z } from 'zod';
 import { injectClientPubkey } from '../core/utils/utils.js';
@@ -36,6 +37,10 @@ import {
   JSONRPCMessage,
 } from '@modelcontextprotocol/sdk/types.js';
 import { withServerPayments } from '../payments/server-transport-payments.js';
+import {
+  COMMON_SCHEMA_META_NAMESPACE,
+  withCommonToolSchemas,
+} from './server-transport-common-schemas.js';
 import { FakePaymentProcessor } from '../payments/fake-payment-processor.js';
 import {
   spawnMockRelay,
@@ -1247,4 +1252,144 @@ describe.serial('NostrServerTransport', () => {
     await server.close();
     await relayPool.disconnect();
   }, 15000);
+
+  test.serial(
+    'withCommonToolSchemas injects schema hashes into direct and announced tools/list payloads',
+    async () => {
+      const serverPrivateKey = bytesToHex(generateSecretKey());
+      const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
+      const clientPrivateKey = bytesToHex(generateSecretKey());
+      const uniqueSuffix = Math.random().toString(36).substring(2, 8);
+      const commonToolName =         `translate_text_${uniqueSuffix}`;
+      const bespokeToolName = `bespoke_tool_${uniqueSuffix}`;
+
+      const server = new McpServer({
+        name: 'Common Schema Server',
+        version: '1.0.0',
+      });
+
+      server.registerTool(
+        commonToolName,
+        {
+          title: 'Translate Text',
+          description: 'Translate text between languages',
+          inputSchema: {
+            text: z.string(),
+            targetLanguage: z.string(),
+          },
+        },
+        async ({ text, targetLanguage }) => ({
+          content: [
+            {
+              type: 'text',
+              text: `${targetLanguage}: ${text}`,
+            },
+          ],
+        }),
+      );
+
+      server.registerTool(
+        bespokeToolName,
+        {
+          title: 'Bespoke Tool',
+          description: 'Do something custom',
+          inputSchema: {
+            query: z.string(),
+          },
+        },
+        async ({ query }) => ({
+          content: [{ type: 'text', text: query.toUpperCase() }],
+        }),
+      );
+
+      const transport = new NostrServerTransport({
+        signer: new PrivateKeySigner(serverPrivateKey),
+        relayHandler: new ApplesauceRelayPool([relayUrl]),
+        serverInfo: { name: 'Common Schema Server' },
+        isPublicServer: true,
+        encryptionMode: EncryptionMode.DISABLED,
+      });
+
+      withCommonToolSchemas(transport, {
+        tools: [{ name: commonToolName }],
+      });
+
+      await server.connect(transport);
+
+      const relayPool = new ApplesauceRelayPool([relayUrl]);
+      await relayPool.connect();
+
+      const toolsListEvent = await waitForNostrEvent({
+        relayPool,
+        filters: [{ kinds: [TOOLS_LIST_KIND], authors: [serverPublicKey] }],
+        where: () => true,
+      });
+
+      const announcedToolsList = JSON.parse(toolsListEvent.content) as {
+        tools: Array<Record<string, unknown>>;
+      };
+      const announcedCommonTool = announcedToolsList.tools.find(
+        (tool) => tool.name === commonToolName,
+      ) as Record<string, unknown> | undefined;
+      const announcedBespokeTool = announcedToolsList.tools.find(
+        (tool) => tool.name === bespokeToolName,
+      ) as Record<string, unknown> | undefined;
+
+      const { client, clientNostrTransport } = createClientAndTransport(
+        clientPrivateKey,
+        'Common-Schema Client',
+        serverPublicKey,
+        EncryptionMode.DISABLED,
+      );
+
+      await client.connect(clientNostrTransport);
+      const listToolsResult = await client.listTools();
+
+      const directCommonTool = listToolsResult.tools.find(
+        (tool) => tool.name === commonToolName,
+      );
+      const directBespokeTool = listToolsResult.tools.find(
+        (tool) => tool.name === bespokeToolName,
+      );
+
+      const expectedSchemaHash = computeCommonSchemaHash({
+        name: directCommonTool!.name,
+        inputSchema: directCommonTool!.inputSchema,
+        outputSchema: directCommonTool!.outputSchema ?? undefined,
+      });
+      const iTags = toolsListEvent.tags.filter((tag) => tag[0] === 'i');
+      const kTags = toolsListEvent.tags.filter((tag) => tag[0] === 'k');
+
+      expect(directCommonTool?._meta).toMatchObject({
+        [COMMON_SCHEMA_META_NAMESPACE]: {
+          schemaHash: expectedSchemaHash,
+        },
+      });
+      expect(
+        directBespokeTool?._meta?.[COMMON_SCHEMA_META_NAMESPACE],
+      ).toBeUndefined();
+
+      expect(announcedCommonTool?.['_meta']).toMatchObject({
+        [COMMON_SCHEMA_META_NAMESPACE]: {
+          schemaHash: expectedSchemaHash,
+        },
+      });
+      expect(
+        (announcedBespokeTool?.['_meta'] as Record<string, unknown> | undefined)?.[
+          COMMON_SCHEMA_META_NAMESPACE
+        ],
+      ).toBeUndefined();
+
+      expect(iTags).toEqual(
+        expect.arrayContaining([['i', expectedSchemaHash, commonToolName]]),
+      );
+      expect(iTags.some((tag) => tag[2] === bespokeToolName)).toBe(false);
+      expect(kTags).toEqual([['k', COMMON_SCHEMA_META_NAMESPACE]]);
+
+      await client.close();
+      await server.close();
+      await relayPool.disconnect();
+    },
+    15000,
+  );
 });
