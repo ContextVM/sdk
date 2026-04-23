@@ -635,6 +635,14 @@ export class ApplesauceRelayPool implements RelayHandler {
         logger.warn('Liveness check failed, triggering rebuild', { error });
       }
       this.rebuild('liveness-timeout');
+    } finally {
+      for (const relay of connectedRelays) {
+        try {
+          (relay as Relay).send(['CLOSE', pingId]);
+        } catch {
+          // best effort
+        }
+      }
     }
   }
 
