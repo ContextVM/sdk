@@ -1,5 +1,24 @@
 # @contextvm/sdk
 
+## 0.9.0
+
+### Minor Changes
+
+- 8f70313: feat(transport): add optional NIP-01 kind:0 profile metadata publication (CEP-23) for `NostrServerTransport`.
+
+  Also improves discoverability relay publication behavior in local/non-websocket relay environments and stabilizes related transport tests.
+
+### Patch Changes
+
+- 89d58f0: fix(transport): make discoverability relay publication deterministic for local and memory relay environments.
+  - Skip default bootstrap relays when operational relays are local/memory and no explicit bootstrap list is configured.
+  - Fallback to direct publish when discoverability targets are non-websocket relay URLs.
+  - Stabilize oversized transfer event assertions and add focused announcement manager coverage for relay target selection.
+
+- 9eba731: feat(transport): simplify NostrSigner initialization to accept hex string
+- 5736ad2: Post-merge cleanup for #35 (oversized-payloads). Extracts focused submodules from the two largest
+  transport files without changing any public API or behavior.
+
 ## 0.8.0
 
 ### Minor Changes

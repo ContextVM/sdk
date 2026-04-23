@@ -76,9 +76,10 @@ export abstract class BaseNostrTransport {
   private readonly subscriptionUnsubscribers = new Set<() => void>();
 
   constructor(module: string, options: BaseNostrTransportOptions) {
-    this.signer = typeof options.signer === 'string'
-      ? new PrivateKeySigner(options.signer)
-      : options.signer;
+    this.signer =
+      typeof options.signer === 'string'
+        ? new PrivateKeySigner(options.signer)
+        : options.signer;
     this.relayHandler = Array.isArray(options.relayHandler)
       ? new ApplesauceRelayPool(options.relayHandler)
       : options.relayHandler;

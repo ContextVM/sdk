@@ -113,7 +113,7 @@ describe('AnnouncementManager', () => {
           onPublishEventToRelays: async () => {
             publishCalled = true;
           },
-        })
+        }),
       );
       await manager.publishRelayList();
       expect(publishCalled).toBe(false);
@@ -127,9 +127,13 @@ describe('AnnouncementManager', () => {
           relayListUrls: [], // No explicit relays
           bootstrapRelayUrls: [],
           onGetRelayUrls: () => [], // No operational relays
-          onPublishEvent: async () => { publishCalled = true; },
-          onPublishEventToRelays: async () => { publishCalled = true; },
-        })
+          onPublishEvent: async () => {
+            publishCalled = true;
+          },
+          onPublishEventToRelays: async () => {
+            publishCalled = true;
+          },
+        }),
       );
 
       await manager.publishRelayList();
@@ -267,7 +271,9 @@ describe('AnnouncementManager', () => {
 
       expect(threw).toBe(false);
       expect(loggedErrors.length).toBe(1);
-      expect(loggedErrors[0]!.message).toBe('Error publishing profile metadata');
+      expect(loggedErrors[0]!.message).toBe(
+        'Error publishing profile metadata',
+      );
     });
   });
 
@@ -286,17 +292,21 @@ describe('AnnouncementManager', () => {
                 manager.handleAnnouncementResponse({
                   jsonrpc: '2.0',
                   id: 'announcement',
-                  result: { protocolVersion: '2024-11-05', capabilities: {}, serverInfo: { name: 'Test', version: '1' } }
+                  result: {
+                    protocolVersion: '2024-11-05',
+                    capabilities: {},
+                    serverInfo: { name: 'Test', version: '1' },
+                  },
                 });
               }, 10);
             }
-          }
+          },
         }),
       );
 
       await manager.publishPublicAnnouncements();
 
-      // Because publishPublicAnnouncements awaits the internal initialization and then triggers 
+      // Because publishPublicAnnouncements awaits the internal initialization and then triggers
       // requests for tools, resources, etc., the initial initialize response will trigger at least 1 publish
       expect(publishedEventCount).toBeGreaterThan(0);
     });
@@ -307,21 +317,23 @@ describe('AnnouncementManager', () => {
       let publishedEvent: NostrEvent | undefined;
       const manager = new AnnouncementManager(
         createBaseOptions({
-          onPublishEvent: async (event) => { publishedEvent = event; },
+          onPublishEvent: async (event) => {
+            publishedEvent = event;
+          },
           encryptionMode: EncryptionMode.DISABLED, // no extra tags
-        })
+        }),
       );
 
       const initResult = {
         protocolVersion: '2024-11-05',
         capabilities: {},
-        serverInfo: { name: 'Test Server', version: '1.0' }
+        serverInfo: { name: 'Test Server', version: '1.0' },
       };
 
       const handled = await manager.handleAnnouncementResponse({
         jsonrpc: '2.0',
         id: 'announcement',
-        result: initResult
+        result: initResult,
       });
 
       expect(handled).toBe(true);
@@ -334,15 +346,25 @@ describe('AnnouncementManager', () => {
       let publishedEvent: NostrEvent | undefined;
       const manager = new AnnouncementManager(
         createBaseOptions({
-          onPublishEvent: async (event) => { publishedEvent = event; }
-        })
+          onPublishEvent: async (event) => {
+            publishedEvent = event;
+          },
+        }),
       );
 
-      const toolsResult = { tools: [{ name: 'test_tool', description: 'A tool', inputSchema: { type: 'object', properties: {} } }] };
+      const toolsResult = {
+        tools: [
+          {
+            name: 'test_tool',
+            description: 'A tool',
+            inputSchema: { type: 'object', properties: {} },
+          },
+        ],
+      };
       await manager.handleAnnouncementResponse({
         jsonrpc: '2.0',
         id: 'announcement',
-        result: toolsResult
+        result: toolsResult,
       });
 
       expect(publishedEvent).toBeDefined();
@@ -354,14 +376,16 @@ describe('AnnouncementManager', () => {
       let publishedEvent: NostrEvent | undefined;
       const manager = new AnnouncementManager(
         createBaseOptions({
-          onPublishEvent: async (event) => { publishedEvent = event; }
-        })
+          onPublishEvent: async (event) => {
+            publishedEvent = event;
+          },
+        }),
       );
 
       await manager.handleAnnouncementResponse({
         jsonrpc: '2.0',
         id: 'announcement',
-        result: { tools: [] }
+        result: { tools: [] },
       });
 
       expect(publishedEvent).toBeDefined();
@@ -375,8 +399,8 @@ describe('AnnouncementManager', () => {
       const ephemeralManager = new AnnouncementManager(
         createBaseOptions({
           encryptionMode: EncryptionMode.OPTIONAL,
-          giftWrapMode: GiftWrapMode.EPHEMERAL
-        })
+          giftWrapMode: GiftWrapMode.EPHEMERAL,
+        }),
       );
       const ephemeralTags = ephemeralManager.getCapabilityTags();
       expect(ephemeralTags).toContainEqual(['support_encryption']);
@@ -387,12 +411,14 @@ describe('AnnouncementManager', () => {
       const persistentManager = new AnnouncementManager(
         createBaseOptions({
           encryptionMode: EncryptionMode.OPTIONAL,
-          giftWrapMode: GiftWrapMode.PERSISTENT
-        })
+          giftWrapMode: GiftWrapMode.PERSISTENT,
+        }),
       );
       const persistentTags = persistentManager.getCapabilityTags();
       expect(persistentTags).toContainEqual(['support_encryption']);
-      expect(persistentTags.some(t => t[0] === 'support_encryption_ephemeral')).toBe(false);
+      expect(
+        persistentTags.some((t) => t[0] === 'support_encryption_ephemeral'),
+      ).toBe(false);
     });
   });
 
@@ -401,16 +427,22 @@ describe('AnnouncementManager', () => {
       let publishedEvent: NostrEvent | undefined;
       const manager = new AnnouncementManager(
         createBaseOptions({
-          onPublishEvent: async (event) => { publishedEvent = event; }
-        })
+          onPublishEvent: async (event) => {
+            publishedEvent = event;
+          },
+        }),
       );
-      
+
       manager.setExtraCommonTags([['custom_tag', 'value']]);
 
       await manager.handleAnnouncementResponse({
         jsonrpc: '2.0',
         id: 'announcement',
-        result: { protocolVersion: '2024-11-05', capabilities: {}, serverInfo: { name: 'Test', version: '1' } }
+        result: {
+          protocolVersion: '2024-11-05',
+          capabilities: {},
+          serverInfo: { name: 'Test', version: '1' },
+        },
       });
 
       expect(publishedEvent).toBeDefined();
@@ -421,20 +453,27 @@ describe('AnnouncementManager', () => {
       let publishedEvent: NostrEvent | undefined;
       const manager = new AnnouncementManager(
         createBaseOptions({
-          onPublishEvent: async (event) => { publishedEvent = event; }
-        })
+          onPublishEvent: async (event) => {
+            publishedEvent = event;
+          },
+        }),
       );
-      
+
       manager.setPricingTags([['cap', 'test_tool', 'msat', '1000']]);
 
       await manager.handleAnnouncementResponse({
         jsonrpc: '2.0',
         id: 'announcement',
-        result: { tools: [] }
+        result: { tools: [] },
       });
 
       expect(publishedEvent).toBeDefined();
-      expect(publishedEvent!.tags).toContainEqual(['cap', 'test_tool', 'msat', '1000']);
+      expect(publishedEvent!.tags).toContainEqual([
+        'cap',
+        'test_tool',
+        'msat',
+        '1000',
+      ]);
     });
   });
 });
