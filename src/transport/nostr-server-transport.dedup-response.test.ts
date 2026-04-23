@@ -1,7 +1,11 @@
 import { describe, it, expect } from 'bun:test';
 import type { RelayHandler } from '../core/interfaces.js';
 import type { NostrEvent } from 'nostr-tools';
-import type { JSONRPCResponse } from '@modelcontextprotocol/sdk/types.js';
+import type {
+  JSONRPCMessage,
+  JSONRPCRequest,
+  JSONRPCResponse,
+} from '@modelcontextprotocol/sdk/types.js';
 import { NostrServerTransport } from './nostr-server-transport.js';
 import { PrivateKeySigner } from '../signer/private-key-signer.js';
 import { EncryptionMode } from '../core/interfaces.js';
@@ -10,6 +14,7 @@ import {
   GIFT_WRAP_KIND,
   NOSTR_TAGS,
 } from '../core/constants.js';
+import { waitFor } from '../core/utils/test.utils.js';
 
 function makeCountingRelayHandler(counter: {
   publishCalls: number;
@@ -259,5 +264,122 @@ describe.serial('NostrServerTransport duplicate response prevention', () => {
     expect(secondTags.some((tag) => tag[0] === NOSTR_TAGS.ABOUT)).toBe(false);
 
     expect(session.hasSentCommonTags).toBe(true);
+  });
+
+  it('delivers notifications/resources/updated only to correlated subscribed clients', async () => {
+    const publishedEvents: NostrEvent[] = [];
+
+    const transport = new NostrServerTransport({
+      signer: new PrivateKeySigner('1'.repeat(64)),
+      relayHandler: makeCapturingRelayHandler(publishedEvents),
+      encryptionMode: EncryptionMode.DISABLED,
+    });
+
+    const state = transport.getInternalStateForTesting();
+    const clientA = 'a'.repeat(64);
+    const clientB = 'b'.repeat(64);
+
+    const [sessionA] = state.sessionStore.getOrCreateSession(clientA, false);
+    const [sessionB] = state.sessionStore.getOrCreateSession(clientB, false);
+    sessionA.isInitialized = true;
+    sessionB.isInitialized = true;
+
+    const subscribeEventA = 'e'.repeat(64);
+    const subscribeEventB = 'f'.repeat(64);
+
+    const subscribeA: JSONRPCRequest = {
+      jsonrpc: '2.0',
+      id: 'sub-a',
+      method: 'resources/subscribe',
+      params: { uri: 'resource://alpha' },
+    };
+    const subscribeB: JSONRPCRequest = {
+      jsonrpc: '2.0',
+      id: 'sub-b',
+      method: 'resources/subscribe',
+      params: { uri: 'resource://beta' },
+    };
+
+    transport['handleIncomingRequest'](subscribeEventA, subscribeA, clientA);
+    transport['handleIncomingRequest'](subscribeEventB, subscribeB, clientB);
+
+    await transport.send({
+      jsonrpc: '2.0',
+      id: subscribeEventA,
+      result: {},
+    } as JSONRPCResponse);
+    await transport.send({
+      jsonrpc: '2.0',
+      id: subscribeEventB,
+      result: {},
+    } as JSONRPCResponse);
+
+    publishedEvents.length = 0;
+
+    const update: JSONRPCMessage = {
+      jsonrpc: '2.0',
+      method: 'notifications/resources/updated',
+      params: { uri: 'resource://alpha' },
+    };
+
+    await transport.send(update);
+
+    expect(publishedEvents).toHaveLength(1);
+    expect(
+      publishedEvents[0].tags.some(
+        (tag) => tag[0] === NOSTR_TAGS.PUBKEY && tag[1] === clientA,
+      ),
+    ).toBe(true);
+    expect(
+      publishedEvents[0].tags.some(
+        (tag) => tag[0] === NOSTR_TAGS.PUBKEY && tag[1] === clientB,
+      ),
+    ).toBe(false);
+    expect(
+      publishedEvents[0].tags.some(
+        (tag) => tag[0] === NOSTR_TAGS.EVENT_ID && tag[1] === subscribeEventA,
+      ),
+    ).toBe(true);
+  });
+
+  it('continues broadcasting non-correlated notifications to initialized sessions', async () => {
+    const publishedEvents: NostrEvent[] = [];
+
+    const transport = new NostrServerTransport({
+      signer: new PrivateKeySigner('1'.repeat(64)),
+      relayHandler: makeCapturingRelayHandler(publishedEvents),
+      encryptionMode: EncryptionMode.DISABLED,
+    });
+
+    const state = transport.getInternalStateForTesting();
+    const clientA = 'a'.repeat(64);
+    const clientB = 'b'.repeat(64);
+
+    const [sessionA] = state.sessionStore.getOrCreateSession(clientA, false);
+    const [sessionB] = state.sessionStore.getOrCreateSession(clientB, false);
+    sessionA.isInitialized = true;
+    sessionB.isInitialized = true;
+
+    await transport.send({
+      jsonrpc: '2.0',
+      method: 'notifications/custom',
+      params: { ok: true },
+    });
+
+    await waitFor({
+      produce: () => (publishedEvents.length >= 2 ? true : undefined),
+      timeoutMs: 2_000,
+    });
+
+    const recipients = new Set(
+      publishedEvents
+        .map((event) =>
+          event.tags.find((tag) => tag[0] === NOSTR_TAGS.PUBKEY)?.[1],
+        )
+        .filter((pubkey): pubkey is string => typeof pubkey === 'string'),
+    );
+
+    expect(recipients.has(clientA)).toBe(true);
+    expect(recipients.has(clientB)).toBe(true);
   });
 });
