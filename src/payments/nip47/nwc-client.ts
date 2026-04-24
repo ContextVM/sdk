@@ -175,9 +175,8 @@ export class NwcClient {
     responseResultGuard?: (result: unknown) => result is R;
     expirationSeconds?: number;
   }): Promise<NwcResponse<M, R>> {
-    const now = nowSeconds();
-
     const run = async (): Promise<NwcResponse<M, R>> => {
+      const now = nowSeconds();
       await this.connect();
 
       const clientSecretKey = hexToBytes(this.connection.clientSecretKeyHex);
