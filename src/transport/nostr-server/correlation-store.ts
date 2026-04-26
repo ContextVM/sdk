@@ -34,6 +34,8 @@ export interface CorrelationStoreOptions {
   maxEventRoutes?: number;
   /** Callback invoked when an event route is evicted */
   onEventRouteEvicted?: (eventId: string, route: EventRoute) => void;
+  /** Callback invoked when an event route is removed by any lifecycle path */
+  onEventRouteRemoved?: (eventId: string, route: EventRoute) => void;
 }
 
 /**
@@ -51,12 +53,21 @@ export class CorrelationStore {
   private readonly eventRoutes: LruCache<EventRoute>;
   private readonly progressTokenToEventId: Map<string, string>;
   private readonly clientEventIds: Map<string, Set<string>>;
+  private readonly onEventRouteRemoved?: (
+    eventId: string,
+    route: EventRoute,
+  ) => void;
 
   constructor(options: CorrelationStoreOptions = {}) {
-    const { maxEventRoutes = DEFAULT_LRU_SIZE, onEventRouteEvicted } = options;
+    const {
+      maxEventRoutes = DEFAULT_LRU_SIZE,
+      onEventRouteEvicted,
+      onEventRouteRemoved,
+    } = options;
 
     this.progressTokenToEventId = new Map<string, string>();
     this.clientEventIds = new Map<string, Set<string>>();
+    this.onEventRouteRemoved = onEventRouteRemoved;
 
     this.eventRoutes = new LruCache<EventRoute>(
       maxEventRoutes,
@@ -73,9 +84,27 @@ export class CorrelationStore {
             this.clientEventIds.delete(route.clientPubkey);
           }
         }
+        this.onEventRouteRemoved?.(eventId, route);
         onEventRouteEvicted?.(eventId, route);
       },
     );
+  }
+
+  private removeRoute(eventId: string, route: EventRoute): void {
+    if (route.progressToken) {
+      this.progressTokenToEventId.delete(route.progressToken);
+    }
+
+    const clientSet = this.clientEventIds.get(route.clientPubkey);
+    if (clientSet) {
+      clientSet.delete(eventId);
+      if (clientSet.size === 0) {
+        this.clientEventIds.delete(route.clientPubkey);
+      }
+    }
+
+    this.eventRoutes.delete(eventId);
+    this.onEventRouteRemoved?.(eventId, route);
   }
 
   /**
@@ -137,22 +166,7 @@ export class CorrelationStore {
       return undefined;
     }
 
-    // Remove progress token mapping if it exists
-    if (route.progressToken) {
-      this.progressTokenToEventId.delete(route.progressToken);
-    }
-
-    // Remove from client index
-    const clientSet = this.clientEventIds.get(route.clientPubkey);
-    if (clientSet) {
-      clientSet.delete(eventId);
-      if (clientSet.size === 0) {
-        this.clientEventIds.delete(route.clientPubkey);
-      }
-    }
-
-    // Remove the event route
-    this.eventRoutes.delete(eventId);
+    this.removeRoute(eventId, route);
     return route;
   }
 

@@ -51,6 +51,29 @@ export function injectClientPubkey(
 }
 
 /**
+ * Injects the inbound Nostr request event id into the `_meta` field of an MCP
+ * request message.
+ * This function performs in-place mutation for optimal performance.
+ *
+ * @param request The JSON-RPC request message to modify (must be a request).
+ * @param requestEventId The inbound signed Nostr request event id.
+ */
+export function injectRequestEventId(
+  request: JSONRPCRequest,
+  requestEventId: string,
+): void {
+  if (!request.params) {
+    return;
+  }
+
+  if (!request.params._meta) {
+    request.params._meta = { requestEventId };
+  } else {
+    request.params._meta.requestEventId = requestEventId;
+  }
+}
+
+/**
  * Wraps a Promise with a timeout.
  * @param promise The promise to wrap.
  * @param timeoutMs Timeout in milliseconds.

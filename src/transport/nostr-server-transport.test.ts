@@ -30,7 +30,10 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { EncryptionMode, GiftWrapMode } from '../core/interfaces.js';
 import { ApplesauceRelayPool } from '../relay/applesauce-relay-pool.js';
 import { z } from 'zod';
-import { injectClientPubkey } from '../core/utils/utils.js';
+import {
+  injectClientPubkey,
+  injectRequestEventId,
+} from '../core/utils/utils.js';
 import {
   isJSONRPCRequest,
   JSONRPCMessage,
@@ -43,6 +46,10 @@ import {
   clearRelayCache,
 } from '../__mocks__/test-relay-helpers.js';
 import { waitFor } from '../core/utils/test.utils.js';
+import {
+  getNostrRequestContext,
+  getNostrRequestEvent,
+} from './nostr-request-context.js';
 
 describe.serial('NostrServerTransport', () => {
   let relay: MockRelayInstance;
@@ -934,6 +941,129 @@ describe.serial('NostrServerTransport', () => {
     ).not.toThrow();
     expect(messageWithoutParams.params).toBeUndefined();
   });
+
+  test('should inject request event id into _meta field', () => {
+    const testMessage: JSONRPCMessage = {
+      jsonrpc: '2.0' as const,
+      id: 'test-id-4',
+      method: 'test/method',
+      params: {
+        someParam: 'value',
+      },
+    };
+
+    injectRequestEventId(testMessage, 'event-123');
+
+    if (isJSONRPCRequest(testMessage)) {
+      expect(testMessage.params?._meta?.requestEventId).toBe('event-123');
+      expect(testMessage.params?.someParam).toBe('value');
+    }
+  });
+
+  test('should preserve existing _meta when injecting request event id', () => {
+    const messageWithMeta: JSONRPCMessage = {
+      jsonrpc: '2.0' as const,
+      id: 'test-id-5',
+      method: 'test/method',
+      params: {
+        _meta: {
+          progressToken: 'existing-token',
+        },
+      },
+    };
+
+    injectRequestEventId(messageWithMeta, 'event-456');
+
+    expect(messageWithMeta.params?._meta?.requestEventId).toBe('event-456');
+    expect(messageWithMeta.params?._meta?.progressToken).toBe('existing-token');
+  });
+
+  test.serial(
+    'should expose inbound request event by requestEventId during inbound processing and clean it up after response',
+    async () => {
+      const serverPrivateKey = bytesToHex(generateSecretKey());
+      const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
+      const clientPrivateKey = bytesToHex(generateSecretKey());
+      const clientPublicKey = getPublicKey(hexToBytes(clientPrivateKey));
+
+      let observedEventId: string | undefined;
+      let observedEventPubkey: string | undefined;
+      let observedContextDuringMiddleware = false;
+
+      const server = new McpServer({
+        name: 'Test Server',
+        version: '1.0.0',
+      });
+
+      server.registerTool(
+        'inspect-request-event',
+        {
+          title: 'Inspect Request Event',
+          description: 'Reads the inbound Nostr request event from context',
+          inputSchema: {},
+        },
+        async () => {
+          return {
+            content: [{ type: 'text', text: observedEventId ?? 'missing' }],
+          };
+        },
+      );
+
+      const serverTransport = new NostrServerTransport({
+        signer: new PrivateKeySigner(serverPrivateKey),
+        relayHandler: new ApplesauceRelayPool([relayUrl]),
+        injectClientPubkey: true,
+        inboundMiddleware: async (message, _ctx, forward) => {
+          if (isJSONRPCRequest(message) && message.method === 'tools/call') {
+            const requestEventId = message.params?._meta?.requestEventId;
+            expect(typeof requestEventId).toBe('string');
+
+            const requestEvent = getNostrRequestEvent(String(requestEventId));
+            const requestContext = getNostrRequestContext(
+              String(requestEventId),
+            );
+
+            expect(requestEvent).toBeDefined();
+            expect(requestContext).toBeDefined();
+
+            observedEventId = String(requestEventId);
+            observedEventPubkey = requestEvent?.pubkey;
+            observedContextDuringMiddleware = true;
+          }
+
+          await forward(message);
+        },
+      });
+
+      await server.connect(serverTransport);
+
+      const { client, clientNostrTransport } = createClientAndTransport(
+        clientPrivateKey,
+        'Test Client',
+        serverPublicKey,
+      );
+
+      await client.connect(clientNostrTransport);
+      await client.callTool({
+        name: 'inspect-request-event',
+        arguments: {},
+      });
+
+      expect(observedContextDuringMiddleware).toBe(true);
+      expect(observedEventId).toBeDefined();
+      expect(observedEventPubkey).toBe(clientPublicKey);
+      await waitFor({
+        produce: () => getNostrRequestEvent(observedEventId!) ?? undefined,
+        timeoutMs: 100,
+        intervalMs: 10,
+      }).catch(() => undefined);
+      expect(getNostrRequestEvent(observedEventId!)).toBeUndefined();
+
+      await client.close();
+      await server.close();
+    },
+    10000,
+  );
 
   test('should include common tags in initialize response', async () => {
     const serverPrivateKey = bytesToHex(generateSecretKey());

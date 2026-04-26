@@ -31,7 +31,11 @@ import {
 import { EncryptionMode, GiftWrapMode } from '../core/interfaces.js';
 import { NostrEvent } from 'nostr-tools';
 import { LogLevel } from '../core/utils/logger.js';
-import { injectClientPubkey, withTimeout } from '../core/utils/utils.js';
+import {
+  injectClientPubkey,
+  injectRequestEventId,
+  withTimeout,
+} from '../core/utils/utils.js';
 import { CorrelationStore } from './nostr-server/correlation-store.js';
 import { ClientSession, SessionStore } from './nostr-server/session-store.js';
 import { LruCache } from '../core/utils/lru-cache.js';
@@ -59,6 +63,10 @@ import {
   sendAcceptFrame,
   sendOversizedServerResponse,
 } from './nostr-server/oversized-server-handler.js';
+import {
+  deleteNostrRequestContext,
+  setNostrRequestContext,
+} from './nostr-request-context.js';
 
 /**
  * Options for configuring the NostrServerTransport.
@@ -249,6 +257,9 @@ export class NostrServerTransport
     // Progress tokens use a Map (lifecycle-coupled to routes, no separate bound needed)
     this.correlationStore = new CorrelationStore({
       maxEventRoutes: 10000,
+      onEventRouteRemoved: (eventId) => {
+        deleteNostrRequestContext(eventId);
+      },
       onEventRouteEvicted: (eventId, route) => {
         this.logger.debug(`Evicted event route for ${eventId}`, {
           clientPubkey: route.clientPubkey,
@@ -539,6 +550,7 @@ export class NostrServerTransport
    * @param clientPubkey The client's public key.
    */
   private handleIncomingRequest(
+    event: NostrEvent,
     eventId: string,
     request: JSONRPCRequest,
     clientPubkey: string,
@@ -558,6 +570,8 @@ export class NostrServerTransport
       progressToken ? String(progressToken) : undefined,
       wrapKind,
     );
+
+    setNostrRequestContext(eventId, event);
   }
 
   /**
@@ -1025,11 +1039,14 @@ export class NostrServerTransport
 
       if (isJSONRPCRequest(mcpMessage)) {
         this.handleIncomingRequest(
+          event,
           event.id,
           mcpMessage,
           event.pubkey,
           wrapKind,
         );
+
+        injectRequestEventId(mcpMessage, event.id);
 
         if (this.injectClientPubkey) {
           injectClientPubkey(mcpMessage, event.pubkey);
@@ -1071,11 +1088,14 @@ export class NostrServerTransport
 
               if (isJSONRPCRequest(synthetic)) {
                 this.handleIncomingRequest(
+                  event,
                   event.id,
                   synthetic,
                   event.pubkey,
                   wrapKind,
                 );
+
+                injectRequestEventId(synthetic, event.id);
 
                 if (this.injectClientPubkey) {
                   injectClientPubkey(synthetic, event.pubkey);
