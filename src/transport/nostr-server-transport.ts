@@ -687,15 +687,26 @@ export class NostrServerTransport
       }
     }
 
-    await this.sendMcpMessage(
-      response,
-      route.clientPubkey,
-      CTXVM_MESSAGES_KIND,
-      tags,
-      session.isEncrypted,
-      undefined,
-      giftWrapKind,
-    );
+    try {
+      await this.sendMcpMessage(
+        response,
+        route.clientPubkey,
+        CTXVM_MESSAGES_KIND,
+        tags,
+        session.isEncrypted,
+        undefined,
+        giftWrapKind,
+      );
+    } catch (error) {
+      this.correlationStore.registerEventRoute(
+        nostrEventId,
+        route.clientPubkey,
+        route.originalRequestId,
+        route.progressToken,
+        route.wrapKind,
+      );
+      throw error;
+    }
   }
 
   /**

@@ -39,6 +39,26 @@ function makeCapturingRelayHandler(events: NostrEvent[]): RelayHandler {
   } as unknown as RelayHandler;
 }
 
+function makeFailOnceRelayHandler(counter: {
+  publishCalls: number;
+  failuresRemaining: number;
+}): RelayHandler {
+  return {
+    async connect() {},
+    async disconnect() {},
+    async publish(_event: NostrEvent) {
+      counter.publishCalls += 1;
+      if (counter.failuresRemaining > 0) {
+        counter.failuresRemaining -= 1;
+        throw new Error('simulated publish failure');
+      }
+    },
+    async subscribe() {
+      return () => {};
+    },
+  } as unknown as RelayHandler;
+}
+
 describe.serial('NostrServerTransport duplicate response prevention', () => {
   it('publishes at most once when send() is called concurrently with the same response id', async () => {
     const counter = { publishCalls: 0 };
@@ -68,6 +88,59 @@ describe.serial('NostrServerTransport duplicate response prevention', () => {
     ]);
 
     expect(counter.publishCalls).toBe(1);
+  });
+
+  it('re-registers the route when response publish fails so a retry can succeed', async () => {
+    const counter = { publishCalls: 0, failuresRemaining: 1 };
+
+    const transport = new NostrServerTransport({
+      signer: new PrivateKeySigner('1'.repeat(64)),
+      relayHandler: makeFailOnceRelayHandler(counter),
+      encryptionMode: EncryptionMode.DISABLED,
+    });
+
+    const state = transport.getInternalStateForTesting();
+    state.sessionStore.getOrCreateSession('c'.repeat(64), false);
+    state.correlationStore.registerEventRoute(
+      'event1',
+      'c'.repeat(64),
+      123,
+      'token-1',
+    );
+
+    const response: JSONRPCResponse = {
+      jsonrpc: '2.0',
+      id: 'event1',
+      result: { ok: true },
+    };
+
+    await expect(transport.send(response)).rejects.toThrow(
+      'simulated publish failure',
+    );
+
+    expect(state.correlationStore.getEventRoute('event1')).toEqual({
+      clientPubkey: 'c'.repeat(64),
+      originalRequestId: 123,
+      progressToken: 'token-1',
+      wrapKind: undefined,
+    });
+    expect(state.correlationStore.getEventIdByProgressToken('token-1')).toBe(
+      'event1',
+    );
+
+    await expect(
+      transport.send({
+        jsonrpc: '2.0',
+        id: 'event1',
+        result: { ok: true },
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(counter.publishCalls).toBe(2);
+    expect(state.correlationStore.getEventRoute('event1')).toBeUndefined();
+    expect(
+      state.correlationStore.getEventIdByProgressToken('token-1'),
+    ).toBeUndefined();
   });
 
   it('processes a decrypted inner request only once even if delivered in multiple gift-wrap envelopes', async () => {
