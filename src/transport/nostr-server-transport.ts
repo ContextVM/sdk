@@ -494,8 +494,8 @@ export class NostrServerTransport
     return fallbackWrapKind;
   }
 
-  private getRelayUrls(relayHandler: RelayHandler): string[] | undefined {
-    return relayHandler.getRelayUrls?.();
+  private getRelayUrls(relayHandler: RelayHandler): string[] {
+    return relayHandler.getRelayUrls();
   }
 
   private async publishEventToRelayUrls(

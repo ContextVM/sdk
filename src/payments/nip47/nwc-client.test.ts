@@ -20,6 +20,10 @@ class MockRelayHandler implements RelayHandler {
   public subscribedFilters: Filter[] | undefined;
   private onEvent: ((event: NostrEvent) => void) | undefined;
 
+  getRelayUrls(): string[] {
+    return ['wss://relay.example'];
+  }
+
   async connect(): Promise<void> {
     // no-op
   }
