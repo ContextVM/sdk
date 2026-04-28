@@ -975,6 +975,19 @@ export class NostrClientTransport
         return;
       }
 
+      if (
+        correlatedEventId &&
+        !this.correlationStore.hasPendingRequest(correlatedEventId)
+      ) {
+        this.logger.warn('Received notification for unknown/expired request', {
+          eventId,
+          correlatedEventId,
+          reason:
+            'Notification carried correlation `e` tag that does not map to a pending request',
+        });
+        return;
+      }
+
       // CEP-22: intercept oversized-transfer frames and do NOT forward raw frames.
       if (
         isJSONRPCNotification(mcpMessage) &&

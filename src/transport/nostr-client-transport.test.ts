@@ -337,7 +337,7 @@ describe.serial('NostrClientTransport', () => {
     15000,
   );
 
-  test('should route correlated notifications (with e tag) as notifications even when e is unknown', async () => {
+  test('should drop correlated notifications (with e tag) when e is unknown', async () => {
     const clientPrivateKey = bytesToHex(generateSecretKey());
     const clientPublicKey = getPublicKey(hexToBytes(clientPrivateKey));
 
@@ -355,8 +355,8 @@ describe.serial('NostrClientTransport', () => {
 
     await clientTransport.start();
 
-    // Publish a notification event from the server, but include an `e` tag that does not
-    // correspond to any pending request. This must still be delivered as a notification.
+    // Publish a notification event from the server with an `e` tag that does not
+    // correspond to any pending request. It must be dropped.
     const notification = {
       jsonrpc: '2.0',
       method: 'notifications/payment_required',
@@ -379,6 +379,65 @@ describe.serial('NostrClientTransport', () => {
     };
 
     // Sign with the server private key so it matches serverPubkey filter.
+    const signedEvent = await new PrivateKeySigner(serverPrivateKey).signEvent(
+      unsignedEvent,
+    );
+    await clientTransport['relayHandler'].publish(signedEvent);
+
+    await sleep(150);
+
+    expect(received.length).toBe(0);
+
+    await clientTransport.close();
+  }, 10000);
+
+  test('should route correlated notifications (with e tag) when e matches a pending request', async () => {
+    const clientPrivateKey = bytesToHex(generateSecretKey());
+    const clientPublicKey = getPublicKey(hexToBytes(clientPrivateKey));
+
+    const clientTransport = new NostrClientTransport({
+      signer: new PrivateKeySigner(clientPrivateKey),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      serverPubkey: serverPublicKey,
+      encryptionMode: EncryptionMode.DISABLED,
+    });
+
+    const received: unknown[] = [];
+    clientTransport.onmessage = (msg) => {
+      received.push(msg);
+    };
+
+    await clientTransport.start();
+
+    const knownEventId = '1'.repeat(64);
+    clientTransport
+      .getInternalStateForTesting()
+      .correlationStore.registerRequest(knownEventId, {
+        originalRequestId: 'req-1',
+        isInitialize: false,
+      });
+
+    const notification = {
+      jsonrpc: '2.0',
+      method: 'notifications/payment_required',
+      params: {
+        amount: 1,
+        pay_req: 'test-pay-req',
+        pmi: 'test-pmi',
+      },
+    } as const;
+
+    const unsignedEvent = {
+      kind: CTXVM_MESSAGES_KIND,
+      content: JSON.stringify(notification),
+      created_at: Math.floor(Date.now() / 1000),
+      pubkey: serverPublicKey,
+      tags: [
+        ['p', clientPublicKey],
+        ['e', knownEventId],
+      ],
+    };
+
     const signedEvent = await new PrivateKeySigner(serverPrivateKey).signEvent(
       unsignedEvent,
     );
