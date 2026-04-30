@@ -32,6 +32,7 @@ import {
 } from './base-nostr-transport.js';
 import { getNostrEventTag } from '../core/utils/serializers.js';
 import { NostrEvent } from 'nostr-tools';
+import { verifyEvent } from 'nostr-tools/pure';
 import { LogLevel } from '../core/utils/logger.js';
 import { EncryptionMode, GiftWrapMode } from '../core/interfaces.js';
 import {
@@ -602,6 +603,21 @@ export class NostrClientTransport
             'Decrypt message timed out',
           );
           nostrEvent = JSON.parse(decryptedContent) as NostrEvent;
+
+          // Verify the inner event's cryptographic signature to prevent
+          // identity forgery. Without this check an attacker can place the
+          // server's pubkey inside the plaintext and spoof responses. (Fixes #64)
+          if (!verifyEvent(nostrEvent)) {
+            this.logger.error(
+              'Rejecting decrypted inner event with invalid signature',
+              {
+                innerEventId: nostrEvent.id,
+                innerPubkey: nostrEvent.pubkey,
+                outerEventId: event.id,
+              },
+            );
+            return;
+          }
         } catch (decryptError) {
           this.logger.error('Failed to decrypt gift-wrapped event', {
             error:

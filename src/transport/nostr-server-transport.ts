@@ -30,6 +30,7 @@ import {
 } from '../core/index.js';
 import { EncryptionMode, GiftWrapMode } from '../core/interfaces.js';
 import { NostrEvent } from 'nostr-tools';
+import { verifyEvent } from 'nostr-tools/pure';
 import { LogLevel } from '../core/utils/logger.js';
 import { injectClientPubkey, withTimeout } from '../core/utils/utils.js';
 import { CorrelationStore } from './nostr-server/correlation-store.js';
@@ -881,6 +882,21 @@ export class NostrServerTransport
         'Decrypt message timed out',
       );
       const currentEvent = JSON.parse(decryptedJson) as NostrEvent;
+
+      // Verify the inner event's cryptographic signature to prevent identity
+      // forgery. Without this check an attacker can place any pubkey inside
+      // the plaintext and bypass allowlists. (Fixes #64)
+      if (!verifyEvent(currentEvent)) {
+        this.logger.error(
+          'Rejecting decrypted inner event with invalid signature',
+          {
+            innerEventId: currentEvent.id,
+            innerPubkey: currentEvent.pubkey,
+            outerEventId: event.id,
+          },
+        );
+        return;
+      }
 
       // Deduplicate decrypted inner events before authorization and dispatch.
       if (this.seenEventIds.has(currentEvent.id)) {
