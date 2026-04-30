@@ -104,13 +104,11 @@ export class NwcClient {
         });
     });
 
-    promise.finally(() => unsubscribe?.());
-
     return await withTimeout(
       promise,
       this.responseTimeoutMs,
       'NWC info event fetch timed out',
-    );
+    ).finally(() => unsubscribe?.());
   }
 
   public async subscribeNotifications(params: {
@@ -248,9 +246,6 @@ export class NwcClient {
           });
       });
 
-      // Also cleanup on timeout/error paths.
-      responsePromise.finally(() => unsubscribeResponse?.());
-
       this.logger.debug('publish request', {
         method: params.method,
         requestId: signedRequest.id,
@@ -277,7 +272,7 @@ export class NwcClient {
         responsePromise,
         this.responseTimeoutMs,
         `NWC response timed out for ${params.method}`,
-      );
+      ).finally(() => unsubscribeResponse?.());
 
       // Validate correlation.
       const eTag = queryTags(responseEvent.tags, 'e').firstValue;
