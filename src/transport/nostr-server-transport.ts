@@ -882,6 +882,16 @@ export class NostrServerTransport
       );
       const currentEvent = JSON.parse(decryptedJson) as NostrEvent;
 
+      // Deduplicate decrypted inner events before authorization and dispatch.
+      if (this.seenEventIds.has(currentEvent.id)) {
+        this.logger.debug('Skipping duplicate decrypted inner event', {
+          outerEventId: event.id,
+          innerEventId: currentEvent.id,
+        });
+        return;
+      }
+      this.seenEventIds.set(currentEvent.id, true);
+
       await this.authorizeAndProcessEvent(currentEvent, true, event.kind);
     } catch (error) {
       this.logger.error('Failed to handle encrypted Nostr event', {

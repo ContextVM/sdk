@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect, mock } from 'bun:test';
 import type { RelayHandler } from '../core/interfaces.js';
 import type { NostrEvent } from 'nostr-tools';
 import type { JSONRPCResponse } from '@modelcontextprotocol/sdk/types.js';
@@ -151,6 +151,8 @@ describe.serial('NostrServerTransport duplicate response prevention', () => {
       relayHandler: makeCountingRelayHandler(counter),
       encryptionMode: EncryptionMode.REQUIRED,
     });
+    const onmessage = mock(() => {});
+    transport.onmessage = onmessage;
 
     // Make decryptMessage deterministically return the same inner event id for both envelopes.
     const signer = transport['signer'];
@@ -204,8 +206,13 @@ describe.serial('NostrServerTransport duplicate response prevention', () => {
     await transport['processIncomingEvent'](gw2);
 
     expect(decryptCalls).toBe(2);
-    // The transport should only process the inner request once.
-    // We assert on correlation store size because requests register an event route.
+    expect(onmessage).toHaveBeenCalledTimes(1);
+    expect(onmessage).toHaveBeenCalledWith({
+      jsonrpc: '2.0',
+      id: 'inner-request-id',
+      method: 'tools/list',
+      params: {},
+    });
     expect(
       transport.getInternalStateForTesting().correlationStore.eventRouteCount,
     ).toBe(1);
