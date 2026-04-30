@@ -344,6 +344,53 @@ describe('withClientPayments()', () => {
     });
   });
 
+  test('drops uncorrelated payment_required notifications on Nostr transports', async () => {
+    const transport = createMockNostrTransport();
+
+    let canHandleCalls = 0;
+    let handleCalls = 0;
+    const observed: JSONRPCMessage[] = [];
+
+    const paid = withClientPayments(transport, {
+      handlers: [
+        {
+          pmi: 'fake',
+          async canHandle(): Promise<boolean> {
+            canHandleCalls += 1;
+            return true;
+          },
+          async handle(): Promise<void> {
+            handleCalls += 1;
+          },
+        },
+      ],
+    });
+
+    paid.onmessage = (msg) => observed.push(msg);
+
+    await paid.start();
+
+    const paymentRequired: JSONRPCMessage = {
+      jsonrpc: '2.0',
+      method: 'notifications/payment_required',
+      params: { amount: 1, pay_req: 'x', pmi: 'fake' },
+    };
+
+    (transport as unknown as TransportWithContext).onmessageWithContext?.(
+      paymentRequired,
+      {
+        eventId: 'evt',
+        correlatedEventId: undefined,
+      },
+    );
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(observed).toContainEqual(paymentRequired);
+    expect(canHandleCalls).toBe(0);
+    expect(handleCalls).toBe(0);
+  });
+
   test('handler errors call onerror but do not block message delivery', async () => {
     const observed: JSONRPCMessage[] = [];
     const errors: Error[] = [];
