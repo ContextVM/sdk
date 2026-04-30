@@ -565,6 +565,192 @@ describe.serial('NostrClientTransport', () => {
     expect(capTags).toEqual(
       expect.arrayContaining([['cap', 'tool:add', '123', 'sats']]),
     );
+    expect(
+      clientTransport
+        .getServerInitializeEvent()
+        ?.tags.some((t) => t[0] === 'cap'),
+    ).toBe(false);
+
+    await client.close();
+    await paidServer.close();
+    relayHub.clear();
+  }, 20000);
+
+  test('keeps later tools/list cap tags out of the learned baseline event', async () => {
+    const paidServer = new McpServer({ name: 'Paid-Server', version: '1.0.0' });
+    const relayHub = new MockRelayHub();
+    const paidServerPrivateKey = bytesToHex(generateSecretKey());
+    const paidServerPublicKey = getPublicKey(hexToBytes(paidServerPrivateKey));
+
+    paidServer.registerTool(
+      'add',
+      {
+        title: 'Addition Tool',
+        description: 'Add two numbers',
+        inputSchema: { a: z.number(), b: z.number() },
+      },
+      async ({ a, b }) => ({
+        content: [{ type: 'text', text: String(a + b) }],
+      }),
+    );
+
+    const paidServerTransport = new NostrServerTransport({
+      signer: new PrivateKeySigner(paidServerPrivateKey),
+      relayHandler: relayHub.createRelayHandler(),
+      serverInfo: {
+        name: 'Paid-Server',
+        about: 'Baseline metadata',
+      },
+      encryptionMode: EncryptionMode.OPTIONAL,
+    });
+
+    withServerPayments(paidServerTransport, {
+      processors: [
+        new FakePaymentProcessor({ pmi: 'pmi:test', verifyDelayMs: 1 }),
+      ],
+      pricedCapabilities: [
+        {
+          method: 'tools/call',
+          name: 'add',
+          amount: 123,
+          currencyUnit: 'sats',
+        },
+      ],
+    });
+
+    await paidServer.connect(paidServerTransport);
+
+    const client = new Client({ name: 'Client', version: '1.0.0' });
+    const clientPrivateKey = bytesToHex(generateSecretKey());
+    const clientTransport = new NostrClientTransport({
+      signer: new PrivateKeySigner(clientPrivateKey),
+      relayHandler: relayHub.createRelayHandler(),
+      serverPubkey: paidServerPublicKey,
+      encryptionMode: EncryptionMode.DISABLED,
+    });
+
+    await client.connect(clientTransport);
+    const baselineBeforeList = clientTransport.getServerInitializeEvent();
+    expect(baselineBeforeList).toBeDefined();
+    expect(clientTransport.getServerInitializeResult()).toBeDefined();
+
+    await client.listTools();
+
+    const toolsListEvent = await waitFor({
+      produce: () => clientTransport.getServerToolsListEvent(),
+      predicate: (event) => event.tags.some((t) => t[0] === 'cap'),
+      timeoutMs: 5_000,
+    });
+
+    const baselineEvent = clientTransport.getServerInitializeEvent();
+    expect(baselineEvent).toBeDefined();
+    expect(toolsListEvent.tags).toEqual(
+      expect.arrayContaining([['cap', 'tool:add', '123', 'sats']]),
+    );
+    expect(baselineEvent!.tags).not.toEqual(
+      expect.arrayContaining([['cap', 'tool:add', '123', 'sats']]),
+    );
+    expect(baselineEvent).toEqual(baselineBeforeList);
+    expect(clientTransport.getServerInitializeName()).toBe('Paid-Server');
+    expect(clientTransport.getServerInitializeAbout()).toBe(
+      'Baseline metadata',
+    );
+
+    await client.close();
+    await paidServer.close();
+    relayHub.clear();
+  }, 20000);
+
+  test('preserves initialize baseline metadata after later tools/list responses', async () => {
+    const paidServer = new McpServer({
+      name: 'Preserved Baseline Server',
+      version: '1.0.0',
+    });
+    const relayHub = new MockRelayHub();
+    const paidServerPrivateKey = bytesToHex(generateSecretKey());
+    const paidServerPublicKey = getPublicKey(hexToBytes(paidServerPrivateKey));
+
+    paidServer.registerTool(
+      'add',
+      {
+        title: 'Addition Tool',
+        description: 'Add two numbers',
+        inputSchema: { a: z.number(), b: z.number() },
+      },
+      async ({ a, b }) => ({
+        content: [{ type: 'text', text: String(a + b) }],
+      }),
+    );
+
+    const paidServerTransport = new NostrServerTransport({
+      signer: new PrivateKeySigner(paidServerPrivateKey),
+      relayHandler: relayHub.createRelayHandler(),
+      serverInfo: {
+        name: 'Preserved Baseline Server',
+        about: 'Initialize baseline metadata',
+        website: 'https://example.com/preserved',
+      },
+      encryptionMode: EncryptionMode.OPTIONAL,
+    });
+
+    withServerPayments(paidServerTransport, {
+      processors: [
+        new FakePaymentProcessor({ pmi: 'pmi:test', verifyDelayMs: 1 }),
+      ],
+      pricedCapabilities: [
+        {
+          method: 'tools/call',
+          name: 'add',
+          amount: 123,
+          currencyUnit: 'sats',
+        },
+      ],
+    });
+
+    await paidServer.connect(paidServerTransport);
+
+    const client = new Client({ name: 'Client', version: '1.0.0' });
+    const clientPrivateKey = bytesToHex(generateSecretKey());
+    const clientTransport = new NostrClientTransport({
+      signer: new PrivateKeySigner(clientPrivateKey),
+      relayHandler: relayHub.createRelayHandler(),
+      serverPubkey: paidServerPublicKey,
+      encryptionMode: EncryptionMode.DISABLED,
+    });
+
+    await client.connect(clientTransport);
+
+    const baselineBeforeList = clientTransport.getServerInitializeEvent();
+    expect(baselineBeforeList).toBeDefined();
+    expect(clientTransport.getServerInitializeName()).toBe(
+      'Preserved Baseline Server',
+    );
+    expect(clientTransport.getServerInitializeAbout()).toBe(
+      'Initialize baseline metadata',
+    );
+    expect(clientTransport.getServerInitializeWebsite()).toBe(
+      'https://example.com/preserved',
+    );
+
+    await client.listTools();
+
+    await waitFor({
+      produce: () => clientTransport.getServerToolsListEvent(),
+      predicate: (event) => event.tags.some((t) => t[0] === 'cap'),
+      timeoutMs: 5_000,
+    });
+
+    const baselineAfterList = clientTransport.getServerInitializeEvent();
+    expect(baselineAfterList).toEqual(baselineBeforeList);
+    expect(clientTransport.getServerInitializeName()).toBe(
+      'Preserved Baseline Server',
+    );
+    expect(clientTransport.getServerInitializeAbout()).toBe(
+      'Initialize baseline metadata',
+    );
+    expect(clientTransport.getServerInitializeWebsite()).toBe(
+      'https://example.com/preserved',
+    );
 
     await client.close();
     await paidServer.close();

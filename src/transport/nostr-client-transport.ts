@@ -47,10 +47,7 @@ import {
   OversizedTransferReceiver,
   type TransferPolicy,
 } from './oversized-transfer/index.js';
-import {
-  mergeDiscoveryTags,
-  parseDiscoveredPeerCapabilities,
-} from './discovery-tags.js';
+import { parseDiscoveredPeerCapabilities } from './discovery-tags.js';
 import {
   DEFAULT_CHUNK_SIZE,
   DEFAULT_OVERSIZED_THRESHOLD,
@@ -873,10 +870,6 @@ export class NostrClientTransport
       return;
     }
 
-    const mergedTags = mergeDiscoveryTags(
-      this.serverInitializeEvent.tags,
-      discovered.discoveryTags,
-    );
     const currentHasInitializeResult = InitializeResultSchema.safeParse(
       this.getInitializeResultCandidate(event),
     ).success;
@@ -884,12 +877,8 @@ export class NostrClientTransport
       this.getInitializeResultCandidate(this.serverInitializeEvent),
     ).success;
 
-    this.serverInitializeEvent = {
-      ...(currentHasInitializeResult ? event : this.serverInitializeEvent),
-      tags: mergedTags,
-    };
-
     if (!existingHasInitializeResult && currentHasInitializeResult) {
+      this.serverInitializeEvent = event;
       this.logger.info(
         'Upgraded learned server discovery event to initialize response',
         {
