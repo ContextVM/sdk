@@ -179,7 +179,11 @@ describe('NostrMCPGateway per-client MCP routing', () => {
 
       // Close the connection.
       await client1.close();
-      await sleep(100);
+
+      // Nostr event ids are deterministic over the signed event payload, including
+      // `created_at` at one-second granularity. Wait long enough so the reconnect
+      // sends a fresh initialize event instead of replaying the exact same one.
+      await sleep(1_100);
 
       // Reconnect the same client - should trigger a new transport creation
       // for the initialization request.
