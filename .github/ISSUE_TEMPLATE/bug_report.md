@@ -11,28 +11,20 @@ assignees: ''
 A clear and concise description of what the bug is.
 
 **To Reproduce**
-Steps to reproduce the behavior:
-1. Go to '...'
-2. Click on '....'
-3. Scroll down to '....'
-4. See error
+Steps to reproduce the behavior — ideally a minimal code snippet or test case:
+1. Import/use '...'
+2. Call '...' with arguments '...'
+3. Observe error
 
 **Expected behavior**
 A clear and concise description of what you expected to happen.
 
-**Screenshots**
-If applicable, add screenshots to help explain your problem.
-
-**Desktop (please complete the following information):**
- - OS: [e.g. iOS]
- - Browser [e.g. chrome, safari]
- - Version [e.g. 22]
-
-**Smartphone (please complete the following information):**
- - Device: [e.g. iPhone6]
- - OS: [e.g. iOS8.1]
- - Browser [e.g. stock browser, safari]
- - Version [e.g. 22]
+**Environment (please complete the following information):**
+- `@contextvm/sdk` version: [e.g. 0.9.0]
+- Runtime: [e.g. Bun 1.2.x, Node.js 20.x]
+- Package manager: [e.g. bun, npm, yarn, pnpm]
+- OS: [e.g. macOS 15, Ubuntu 24.04, Windows 11]
+- TypeScript version (if applicable): [e.g. 5.9.3]
 
 **Additional context**
-Add any other context about the problem here.
+Add any other context about the problem here — error logs, stack traces, or related issues.
