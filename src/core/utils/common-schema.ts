@@ -37,8 +37,27 @@ export function normalizeSchema<T>(schema: T): T {
   const normalized: Record<string, unknown> = {};
 
   Object.keys(schema).forEach((key) => {
-    if (key === 'title' || key === 'description') {
+    if (
+      key === 'title' ||
+      key === 'description' ||
+      key === 'default' ||
+      key === 'examples' ||
+      key === 'deprecated' ||
+      key === 'readOnly' ||
+      key === 'writeOnly' ||
+      key.startsWith('x-')
+    ) {
       return;
+    }
+
+    if (
+      key === '$ref' &&
+      typeof schema[key] === 'string' &&
+      !(schema[key] as string).startsWith('#')
+    ) {
+      throw new Error(
+        'External $ref pointers must be resolved before computing common schema hash',
+      );
     }
 
     normalized[key] = normalizeSchema(schema[key]);

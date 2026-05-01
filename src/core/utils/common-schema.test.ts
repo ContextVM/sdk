@@ -66,6 +66,69 @@ describe('normalizeSchema', () => {
       ],
     });
   });
+
+  test('recursively removes all documentation and vendor-extension fields', () => {
+    const schema = {
+      title: 'Top Level',
+      description: 'Top description',
+      default: 'foo',
+      examples: ['foo', 'bar'],
+      deprecated: true,
+      readOnly: false,
+      writeOnly: true,
+      'x-custom-meta': 'some value',
+      type: 'object',
+      properties: {
+        city: {
+          type: 'string',
+          title: 'City',
+          'x-internal-id': 123,
+          default: 'New York',
+        },
+      },
+    };
+
+    const normalized: unknown = normalizeSchema(schema);
+
+    expect(normalized).toEqual({
+      type: 'object',
+      properties: {
+        city: {
+          type: 'string',
+        },
+      },
+    });
+  });
+
+  test('throws an error if an external $ref is encountered', () => {
+    const schema = {
+      type: 'object',
+      properties: {
+        location: {
+          $ref: 'http://example.com/schema.json',
+        },
+      },
+    };
+
+    expect(() => normalizeSchema(schema)).toThrow(
+      'External $ref pointers must be resolved before computing common schema hash'
+    );
+  });
+
+  test('preserves local $ref pointers', () => {
+    const schema = {
+      type: 'object',
+      properties: {
+        location: {
+          $ref: '#/definitions/Location',
+        },
+      },
+    };
+
+    const normalized: unknown = normalizeSchema(schema);
+
+    expect(normalized).toEqual(schema);
+  });
 });
 
 describe('computeCommonSchemaHash', () => {
