@@ -19,8 +19,9 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 /**
  * Recursively removes documentation-only JSON Schema fields used by CEP-15.
  *
- * The normalization rule intentionally strips only `title` and `description`
- * while preserving all compatibility-relevant structure exactly as provided.
+ * The normalization rule explicitly strips non-functional fields such as `title`,
+ * `description`, `examples`, `default`, `deprecated`, `readOnly`, `writeOnly`,
+ * and any vendor extensions (`x-*`) while preserving compatibility-relevant structure.
  *
  * @param schema The JSON Schema value to normalize.
  * @returns A normalized copy of the schema.
@@ -80,7 +81,7 @@ export function computeCommonSchemaHash(
     inputSchema: normalizeSchema(definition.inputSchema),
   };
 
-  if (definition.outputSchema !== undefined) {
+  if (definition.outputSchema != null) {
     payload.outputSchema = normalizeSchema(definition.outputSchema);
   }
 

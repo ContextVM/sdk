@@ -2,8 +2,7 @@ import type { ListToolsResult, Tool } from '@modelcontextprotocol/sdk/types.js';
 import { computeCommonSchemaHash } from '../core/utils/common-schema.js';
 import type { NostrServerTransport } from './nostr-server-transport.js';
 
-export const COMMON_SCHEMA_META_NAMESPACE = 'io.contextvm/common-schema';
-
+import { COMMON_SCHEMA_META_NAMESPACE } from '../core/constants.js';
 export interface CommonSchemaToolConfig {
   name: Tool['name'];
 }

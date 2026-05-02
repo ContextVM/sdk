@@ -25,6 +25,7 @@ import {
   RESOURCETEMPLATES_LIST_KIND,
   SERVER_ANNOUNCEMENT_KIND,
   TOOLS_LIST_KIND,
+  COMMON_SCHEMA_META_NAMESPACE,
 } from '../core/constants.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { EncryptionMode, GiftWrapMode } from '../core/interfaces.js';
@@ -37,10 +38,8 @@ import {
   JSONRPCMessage,
 } from '@modelcontextprotocol/sdk/types.js';
 import { withServerPayments } from '../payments/server-transport-payments.js';
-import {
-  COMMON_SCHEMA_META_NAMESPACE,
-  withCommonToolSchemas,
-} from './server-transport-common-schemas.js';
+
+import { withCommonToolSchemas } from './server-transport-common-schemas.js';
 import { FakePaymentProcessor } from '../payments/fake-payment-processor.js';
 import {
   spawnMockRelay,

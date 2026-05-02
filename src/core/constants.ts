@@ -134,3 +134,9 @@ export const announcementMethods: AnnouncementMethods = {
 
 export const INITIALIZE_METHOD = 'initialize';
 export const NOTIFICATIONS_INITIALIZED_METHOD = 'notifications/initialized';
+
+/**
+ * Namespace for CEP-15 common schema metadata in tool definitions.
+ */
+export const COMMON_SCHEMA_META_NAMESPACE = 'io.contextvm/common-schema';
+
