@@ -63,10 +63,6 @@ import {
   sendAcceptFrame,
   sendOversizedServerResponse,
 } from './nostr-server/oversized-server-handler.js';
-import {
-  deleteNostrRequestContext,
-  setNostrRequestContext,
-} from './nostr-request-context.js';
 
 /**
  * Options for configuring the NostrServerTransport.
@@ -110,6 +106,13 @@ export interface NostrServerTransportOptions extends BaseNostrTransportOptions {
    * @default false
    */
   injectClientPubkey?: boolean;
+
+  /**
+   * Whether to inject the inbound request event ID into the `_meta` field of
+   * incoming request messages.
+   * @default false
+   */
+  injectRequestEventId?: boolean;
 
   /**
    * Optional callback invoked when a client session is evicted.
@@ -174,6 +177,7 @@ export class NostrServerTransport
   private readonly authorizationPolicy: AuthorizationPolicy;
   private readonly announcementManager: AnnouncementManager;
   private readonly injectClientPubkey: boolean;
+  private readonly shouldInjectRequestEventId: boolean;
   private readonly onClientSessionEvicted:
     | ((ctx: {
         clientPubkey: string;
@@ -200,6 +204,7 @@ export class NostrServerTransport
   constructor(options: NostrServerTransportOptions) {
     super('nostr-server-transport', options);
     this.injectClientPubkey = options.injectClientPubkey ?? false;
+    this.shouldInjectRequestEventId = options.injectRequestEventId ?? false;
     this.onClientSessionEvicted = options.onClientSessionEvicted;
     if (options.inboundMiddleware) {
       this.inboundMiddlewares.push(options.inboundMiddleware);
@@ -257,9 +262,6 @@ export class NostrServerTransport
     // Progress tokens use a Map (lifecycle-coupled to routes, no separate bound needed)
     this.correlationStore = new CorrelationStore({
       maxEventRoutes: 10000,
-      onEventRouteRemoved: (eventId) => {
-        deleteNostrRequestContext(eventId);
-      },
       onEventRouteEvicted: (eventId, route) => {
         this.logger.debug(`Evicted event route for ${eventId}`, {
           clientPubkey: route.clientPubkey,
@@ -430,6 +432,16 @@ export class NostrServerTransport
   }
 
   /**
+   * Gets the inbound Nostr request event for an active request, if available.
+   *
+   * @param requestEventId The inbound signed Nostr request event ID.
+   * @returns The signed Nostr request event or `undefined`.
+   */
+  public getNostrRequestEvent(requestEventId: string): NostrEvent | undefined {
+    return this.correlationStore.getRequestEvent(requestEventId);
+  }
+
+  /**
    * Gets or creates a client session with proper initialization.
    * @param clientPubkey The client's public key.
    * @param isEncrypted Whether the session uses encryption.
@@ -569,9 +581,19 @@ export class NostrServerTransport
       originalRequestId,
       progressToken ? String(progressToken) : undefined,
       wrapKind,
+      this.shouldInjectRequestEventId ? event : undefined,
     );
+  }
 
-    setNostrRequestContext(eventId, event);
+  /**
+   * Cleans up request correlation for a request that was dropped by middleware.
+   */
+  private cleanupDroppedRequest(message: JSONRPCMessage): void {
+    if (!isJSONRPCRequest(message)) {
+      return;
+    }
+
+    this.correlationStore.popEventRoute(String(message.id));
   }
 
   /**
@@ -1007,11 +1029,12 @@ export class NostrServerTransport
 
       const shouldSendAccept = !hadLearnedOversizedSupport;
 
-      const forward = async (msg: JSONRPCMessage): Promise<void> => {
+      const forward = async (msg: JSONRPCMessage): Promise<boolean> => {
         this.onmessage?.(msg);
         this.onmessageWithContext?.(msg, {
           clientPubkey: event.pubkey,
         });
+        return true;
       };
 
       const clientPmis = event.tags
@@ -1026,15 +1049,16 @@ export class NostrServerTransport
       const dispatch = async (
         index: number,
         msg: JSONRPCMessage,
-      ): Promise<void> => {
+      ): Promise<boolean> => {
         const mw = middlewares[index];
         if (!mw) {
-          await forward(msg);
-          return;
+          return await forward(msg);
         }
+        let forwarded = false;
         await mw(msg, ctx, async (nextMsg) => {
-          await dispatch(index + 1, nextMsg);
+          forwarded = await dispatch(index + 1, nextMsg);
         });
+        return forwarded;
       };
 
       if (isJSONRPCRequest(mcpMessage)) {
@@ -1046,7 +1070,9 @@ export class NostrServerTransport
           wrapKind,
         );
 
-        injectRequestEventId(mcpMessage, event.id);
+        if (this.shouldInjectRequestEventId) {
+          injectRequestEventId(mcpMessage, event.id);
+        }
 
         if (this.injectClientPubkey) {
           injectClientPubkey(mcpMessage, event.pubkey);
@@ -1095,7 +1121,9 @@ export class NostrServerTransport
                   wrapKind,
                 );
 
-                injectRequestEventId(synthetic, event.id);
+                if (this.shouldInjectRequestEventId) {
+                  injectRequestEventId(synthetic, event.id);
+                }
 
                 if (this.injectClientPubkey) {
                   injectClientPubkey(synthetic, event.pubkey);
@@ -1104,20 +1132,26 @@ export class NostrServerTransport
                 this.handleIncomingNotification(event.pubkey, synthetic);
               }
 
-              void dispatch(0, synthetic).catch((err: unknown) => {
-                this.logger.error(
-                  'Error dispatching reassembled oversized message',
-                  {
-                    error: err instanceof Error ? err.message : String(err),
-                    pubkey: event.pubkey,
-                  },
-                );
-                this.onerror?.(
-                  err instanceof Error
-                    ? err
-                    : new Error('oversized dispatch failed'),
-                );
-              });
+              void dispatch(0, synthetic)
+                .then((forwarded) => {
+                  if (!forwarded) {
+                    this.cleanupDroppedRequest(synthetic);
+                  }
+                })
+                .catch((err: unknown) => {
+                  this.logger.error(
+                    'Error dispatching reassembled oversized message',
+                    {
+                      error: err instanceof Error ? err.message : String(err),
+                      pubkey: event.pubkey,
+                    },
+                  );
+                  this.onerror?.(
+                    err instanceof Error
+                      ? err
+                      : new Error('oversized dispatch failed'),
+                  );
+                });
             })
             .catch((err: unknown) => {
               this.logger.error('Oversized transfer error (server)', {
@@ -1131,16 +1165,22 @@ export class NostrServerTransport
         }
       }
 
-      void dispatch(0, mcpMessage).catch((err: unknown) => {
-        this.logger.error('Error in inboundMiddleware chain', {
-          error: err instanceof Error ? err.message : String(err),
-          eventId: event.id,
-          pubkey: event.pubkey,
+      void dispatch(0, mcpMessage)
+        .then((forwarded) => {
+          if (!forwarded) {
+            this.cleanupDroppedRequest(mcpMessage);
+          }
+        })
+        .catch((err: unknown) => {
+          this.logger.error('Error in inboundMiddleware chain', {
+            error: err instanceof Error ? err.message : String(err),
+            eventId: event.id,
+            pubkey: event.pubkey,
+          });
+          this.onerror?.(
+            err instanceof Error ? err : new Error('inboundMiddleware failed'),
+          );
         });
-        this.onerror?.(
-          err instanceof Error ? err : new Error('inboundMiddleware failed'),
-        );
-      });
     } catch (error) {
       this.logger.error('Error in authorizeAndProcessEvent', {
         error: error instanceof Error ? error.message : String(error),

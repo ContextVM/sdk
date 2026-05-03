@@ -46,10 +46,6 @@ import {
   clearRelayCache,
 } from '../__mocks__/test-relay-helpers.js';
 import { waitFor } from '../core/utils/test.utils.js';
-import {
-  getNostrRequestContext,
-  getNostrRequestEvent,
-} from './nostr-request-context.js';
 
 describe.serial('NostrServerTransport', () => {
   let relay: MockRelayInstance;
@@ -880,7 +876,7 @@ describe.serial('NostrServerTransport', () => {
     expect(content.result.protocolVersion).toBeDefined();
     expect(content.result.capabilities).toBeDefined();
 
-    await client.close();
+    await clientNostrTransport.close();
     await server.close();
   }, 10000);
 
@@ -979,7 +975,7 @@ describe.serial('NostrServerTransport', () => {
   });
 
   test.serial(
-    'should expose inbound request event by requestEventId during inbound processing and clean it up after response',
+    'should expose inbound request event by requestEventId during inbound processing and clean it up after response when injection is enabled',
     async () => {
       const serverPrivateKey = bytesToHex(generateSecretKey());
       const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
@@ -1013,18 +1009,17 @@ describe.serial('NostrServerTransport', () => {
         signer: new PrivateKeySigner(serverPrivateKey),
         relayHandler: new ApplesauceRelayPool([relayUrl]),
         injectClientPubkey: true,
+        injectRequestEventId: true,
         inboundMiddleware: async (message, _ctx, forward) => {
           if (isJSONRPCRequest(message) && message.method === 'tools/call') {
             const requestEventId = message.params?._meta?.requestEventId;
             expect(typeof requestEventId).toBe('string');
 
-            const requestEvent = getNostrRequestEvent(String(requestEventId));
-            const requestContext = getNostrRequestContext(
+            const requestEvent = serverTransport.getNostrRequestEvent(
               String(requestEventId),
             );
 
             expect(requestEvent).toBeDefined();
-            expect(requestContext).toBeDefined();
 
             observedEventId = String(requestEventId);
             observedEventPubkey = requestEvent?.pubkey;
@@ -1053,14 +1048,155 @@ describe.serial('NostrServerTransport', () => {
       expect(observedEventId).toBeDefined();
       expect(observedEventPubkey).toBe(clientPublicKey);
       await waitFor({
-        produce: () => getNostrRequestEvent(observedEventId!) ?? undefined,
+        produce: () =>
+          serverTransport.getNostrRequestEvent(observedEventId!) ?? undefined,
         timeoutMs: 100,
         intervalMs: 10,
       }).catch(() => undefined);
-      expect(getNostrRequestEvent(observedEventId!)).toBeUndefined();
+      expect(
+        serverTransport.getNostrRequestEvent(observedEventId!),
+      ).toBeUndefined();
 
-      await client.close();
+      await clientNostrTransport.close();
       await server.close();
+    },
+    10000,
+  );
+
+  test.serial(
+    'should not inject request event id when request event injection is disabled',
+    async () => {
+      const serverPrivateKey = bytesToHex(generateSecretKey());
+      const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
+      const clientPrivateKey = bytesToHex(generateSecretKey());
+
+      let observedRequestEventId: unknown;
+      let observedStoredRequestEvent: NostrEvent | undefined;
+
+      const server = new McpServer({
+        name: 'Test Server',
+        version: '1.0.0',
+      });
+
+      server.registerTool(
+        'inspect-request-event',
+        {
+          title: 'Inspect Request Event',
+          description: 'Reads the inbound Nostr request event from context',
+          inputSchema: {},
+        },
+        async () => {
+          return {
+            content: [{ type: 'text', text: 'ok' }],
+          };
+        },
+      );
+
+      const serverTransport = new NostrServerTransport({
+        signer: new PrivateKeySigner(serverPrivateKey),
+        relayHandler: new ApplesauceRelayPool([relayUrl]),
+        inboundMiddleware: async (message, _ctx, forward) => {
+          if (isJSONRPCRequest(message) && message.method === 'tools/call') {
+            observedRequestEventId = message.params?._meta?.requestEventId;
+            observedStoredRequestEvent = serverTransport.getNostrRequestEvent(
+              String(message.id),
+            );
+          }
+
+          await forward(message);
+        },
+      });
+
+      await server.connect(serverTransport);
+
+      const { client, clientNostrTransport } = createClientAndTransport(
+        clientPrivateKey,
+        'Test Client',
+        serverPublicKey,
+      );
+
+      await client.connect(clientNostrTransport);
+      await client.callTool({
+        name: 'inspect-request-event',
+        arguments: {},
+      });
+
+      expect(observedRequestEventId).toBeUndefined();
+      expect(observedStoredRequestEvent).toBeUndefined();
+
+      await clientNostrTransport.close();
+      await server.close();
+    },
+    10000,
+  );
+
+  test.serial(
+    'should clean up dropped inbound request routes immediately when middleware does not forward',
+    async () => {
+      const serverPrivateKey = bytesToHex(generateSecretKey());
+      const clientPrivateKey = bytesToHex(generateSecretKey());
+      const clientPublicKey = getPublicKey(hexToBytes(clientPrivateKey));
+
+      let observedRequestEventId: string | undefined;
+
+      const serverTransport = new NostrServerTransport({
+        signer: new PrivateKeySigner(serverPrivateKey),
+        relayHandler: new ApplesauceRelayPool([relayUrl]),
+        injectRequestEventId: true,
+        inboundMiddleware: async (message) => {
+          if (isJSONRPCRequest(message) && message.method === 'tools/call') {
+            observedRequestEventId = String(
+              message.params?._meta?.requestEventId,
+            );
+          }
+        },
+      });
+
+      const requestEvent: NostrEvent = {
+        id: 'dropped-request-event',
+        pubkey: clientPublicKey,
+        created_at: Math.floor(Date.now() / 1000),
+        kind: CTXVM_MESSAGES_KIND,
+        tags: [],
+        content: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 'dropped-request',
+          method: 'tools/call',
+          params: {
+            name: 'inspect-request-event',
+            arguments: {},
+          },
+        }),
+        sig: 'sig',
+      };
+
+      await (
+        serverTransport as unknown as {
+          authorizeAndProcessEvent: (
+            event: NostrEvent,
+            isEncrypted: boolean,
+            wrapKind?: number,
+          ) => Promise<void>;
+        }
+      ).authorizeAndProcessEvent(requestEvent, false);
+
+      await sleep(100);
+      expect(observedRequestEventId).toBeDefined();
+      await waitFor({
+        produce: () =>
+          observedRequestEventId
+            ? serverTransport.getNostrRequestEvent(observedRequestEventId)
+            : undefined,
+        timeoutMs: 100,
+        intervalMs: 10,
+      }).catch(() => undefined);
+      expect(
+        observedRequestEventId
+          ? serverTransport.getNostrRequestEvent(observedRequestEventId)
+          : undefined,
+      ).toBeUndefined();
+
+      await serverTransport.close();
     },
     10000,
   );

@@ -1,5 +1,16 @@
 import { describe, it, expect } from 'bun:test';
+import type { NostrEvent } from 'nostr-tools';
 import { CorrelationStore } from './correlation-store.js';
+
+const createRequestEvent = (id: string): NostrEvent => ({
+  id,
+  pubkey: 'pubkey',
+  created_at: 1,
+  kind: 24133,
+  tags: [],
+  content: '{}',
+  sig: 'sig',
+});
 
 describe('CorrelationStore', () => {
   describe('registerEventRoute', () => {
@@ -45,6 +56,22 @@ describe('CorrelationStore', () => {
 
       expect(store.getEventIdByProgressToken('token1')).toBe('event1');
       expect(store.hasProgressToken('token1')).toBe(true);
+    });
+
+    it('registers the inbound request event when provided', () => {
+      const store = new CorrelationStore();
+      const requestEvent = createRequestEvent('event1');
+
+      store.registerEventRoute(
+        'event1',
+        'client1',
+        'req1',
+        'token1',
+        undefined,
+        requestEvent,
+      );
+
+      expect(store.getRequestEvent('event1')).toBe(requestEvent);
     });
   });
 
@@ -104,6 +131,47 @@ describe('CorrelationStore', () => {
 
       expect(store.getEventIdByProgressToken('token1')).toBe('event1');
       expect(store.getEventIdByProgressToken('token2')).toBe('event2');
+    });
+  });
+
+  describe('getRequestEvent', () => {
+    it('returns undefined for unknown event id', () => {
+      const store = new CorrelationStore();
+
+      expect(store.getRequestEvent('unknown')).toBeUndefined();
+    });
+
+    it('returns the stored request event for a known event id', () => {
+      const store = new CorrelationStore();
+      const requestEvent = createRequestEvent('event1');
+
+      store.registerEventRoute(
+        'event1',
+        'client1',
+        'req1',
+        undefined,
+        undefined,
+        requestEvent,
+      );
+
+      expect(store.getRequestEvent('event1')).toBe(requestEvent);
+    });
+
+    it('returns undefined after the route is removed', () => {
+      const store = new CorrelationStore();
+      const requestEvent = createRequestEvent('event1');
+
+      store.registerEventRoute(
+        'event1',
+        'client1',
+        'req1',
+        undefined,
+        undefined,
+        requestEvent,
+      );
+      store.popEventRoute('event1');
+
+      expect(store.getRequestEvent('event1')).toBeUndefined();
     });
   });
 

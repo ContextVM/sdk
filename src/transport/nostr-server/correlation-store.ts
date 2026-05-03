@@ -6,6 +6,7 @@
  */
 import { DEFAULT_LRU_SIZE } from '../../core/constants.js';
 import { LruCache } from '../../core/utils/lru-cache.js';
+import type { NostrEvent } from 'nostr-tools';
 
 /**
  * Represents a route for an in-flight request.
@@ -17,6 +18,8 @@ export interface EventRoute {
   originalRequestId: string | number;
   /** Optional progress token for this request */
   progressToken?: string;
+  /** The inbound Nostr event that originated this request */
+  requestEvent?: NostrEvent;
 
   /**
    * Optional gift wrap kind used for the correlated request.
@@ -121,12 +124,14 @@ export class CorrelationStore {
     originalRequestId: string | number,
     progressToken?: string,
     wrapKind?: number,
+    requestEvent?: NostrEvent,
   ): void {
     const route: EventRoute = {
       clientPubkey,
       originalRequestId,
       progressToken,
       wrapKind,
+      requestEvent,
     };
 
     this.eventRoutes.set(eventId, route);
@@ -152,6 +157,16 @@ export class CorrelationStore {
    */
   getEventRoute(eventId: string): EventRoute | undefined {
     return this.eventRoutes.get(eventId);
+  }
+
+  /**
+   * Gets the inbound Nostr request event for a given event ID.
+   *
+   * @param eventId The Nostr event ID
+   * @returns The inbound Nostr request event, or undefined if not found
+   */
+  getRequestEvent(eventId: string): NostrEvent | undefined {
+    return this.eventRoutes.get(eventId)?.requestEvent;
   }
 
   /**
