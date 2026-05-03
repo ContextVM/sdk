@@ -6,6 +6,7 @@
  */
 import { DEFAULT_LRU_SIZE } from '../../core/constants.js';
 import { LruCache } from '../../core/utils/lru-cache.js';
+import type { NostrEvent } from 'nostr-tools';
 
 /**
  * Represents a route for an in-flight request.
@@ -17,6 +18,8 @@ export interface EventRoute {
   originalRequestId: string | number;
   /** Optional progress token for this request */
   progressToken?: string;
+  /** The inbound Nostr event that originated this request */
+  requestEvent?: NostrEvent;
 
   /**
    * Optional gift wrap kind used for the correlated request.
@@ -34,6 +37,8 @@ export interface CorrelationStoreOptions {
   maxEventRoutes?: number;
   /** Callback invoked when an event route is evicted */
   onEventRouteEvicted?: (eventId: string, route: EventRoute) => void;
+  /** Callback invoked when an event route is removed by any lifecycle path */
+  onEventRouteRemoved?: (eventId: string, route: EventRoute) => void;
 }
 
 /**
@@ -51,12 +56,21 @@ export class CorrelationStore {
   private readonly eventRoutes: LruCache<EventRoute>;
   private readonly progressTokenToEventId: Map<string, string>;
   private readonly clientEventIds: Map<string, Set<string>>;
+  private readonly onEventRouteRemoved?: (
+    eventId: string,
+    route: EventRoute,
+  ) => void;
 
   constructor(options: CorrelationStoreOptions = {}) {
-    const { maxEventRoutes = DEFAULT_LRU_SIZE, onEventRouteEvicted } = options;
+    const {
+      maxEventRoutes = DEFAULT_LRU_SIZE,
+      onEventRouteEvicted,
+      onEventRouteRemoved,
+    } = options;
 
     this.progressTokenToEventId = new Map<string, string>();
     this.clientEventIds = new Map<string, Set<string>>();
+    this.onEventRouteRemoved = onEventRouteRemoved;
 
     this.eventRoutes = new LruCache<EventRoute>(
       maxEventRoutes,
@@ -73,9 +87,27 @@ export class CorrelationStore {
             this.clientEventIds.delete(route.clientPubkey);
           }
         }
+        this.onEventRouteRemoved?.(eventId, route);
         onEventRouteEvicted?.(eventId, route);
       },
     );
+  }
+
+  private removeRoute(eventId: string, route: EventRoute): void {
+    if (route.progressToken) {
+      this.progressTokenToEventId.delete(route.progressToken);
+    }
+
+    const clientSet = this.clientEventIds.get(route.clientPubkey);
+    if (clientSet) {
+      clientSet.delete(eventId);
+      if (clientSet.size === 0) {
+        this.clientEventIds.delete(route.clientPubkey);
+      }
+    }
+
+    this.eventRoutes.delete(eventId);
+    this.onEventRouteRemoved?.(eventId, route);
   }
 
   /**
@@ -92,12 +124,14 @@ export class CorrelationStore {
     originalRequestId: string | number,
     progressToken?: string,
     wrapKind?: number,
+    requestEvent?: NostrEvent,
   ): void {
     const route: EventRoute = {
       clientPubkey,
       originalRequestId,
       progressToken,
       wrapKind,
+      requestEvent,
     };
 
     this.eventRoutes.set(eventId, route);
@@ -126,6 +160,16 @@ export class CorrelationStore {
   }
 
   /**
+   * Gets the inbound Nostr request event for a given event ID.
+   *
+   * @param eventId The Nostr event ID
+   * @returns The inbound Nostr request event, or undefined if not found
+   */
+  getRequestEvent(eventId: string): NostrEvent | undefined {
+    return this.eventRoutes.get(eventId)?.requestEvent;
+  }
+
+  /**
    * Atomically gets and removes the route for a given event ID.
    *
    * This is used to ensure responses are only routed once, even if
@@ -137,22 +181,7 @@ export class CorrelationStore {
       return undefined;
     }
 
-    // Remove progress token mapping if it exists
-    if (route.progressToken) {
-      this.progressTokenToEventId.delete(route.progressToken);
-    }
-
-    // Remove from client index
-    const clientSet = this.clientEventIds.get(route.clientPubkey);
-    if (clientSet) {
-      clientSet.delete(eventId);
-      if (clientSet.size === 0) {
-        this.clientEventIds.delete(route.clientPubkey);
-      }
-    }
-
-    // Remove the event route
-    this.eventRoutes.delete(eventId);
+    this.removeRoute(eventId, route);
     return route;
   }
 
