@@ -1064,6 +1064,86 @@ describe.serial('NostrServerTransport', () => {
   );
 
   test.serial(
+    'should expose inbound request event to tool handler via _meta.requestEventId when injectRequestEventId is enabled',
+    async () => {
+      const serverPrivateKey = bytesToHex(generateSecretKey());
+      const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
+      const clientPrivateKey = bytesToHex(generateSecretKey());
+      const clientPublicKey = getPublicKey(hexToBytes(clientPrivateKey));
+
+      let toolReceivedEventId: string | undefined;
+      let toolReceivedPubkey: string | undefined;
+
+      const transport = new NostrServerTransport({
+        signer: new PrivateKeySigner(serverPrivateKey),
+        relayHandler: new ApplesauceRelayPool([relayUrl]),
+        injectRequestEventId: true,
+      });
+
+      const server = new McpServer({
+        name: 'Test Server',
+        version: '1.0.0',
+      });
+
+      server.registerTool(
+        'whoami',
+        {
+          title: 'Who Am I',
+          description:
+            'Returns the public key of the client that invoked this tool.',
+          inputSchema: {},
+        },
+        async (_args, extra) => {
+          const requestEventId = extra._meta?.requestEventId;
+          if (requestEventId) {
+            const requestEvent = transport.getNostrRequestEvent(
+              String(requestEventId),
+            );
+            toolReceivedEventId = String(requestEventId);
+            toolReceivedPubkey = requestEvent?.pubkey;
+          }
+          return {
+            content: [{ type: 'text', text: toolReceivedPubkey ?? 'unknown' }],
+          };
+        },
+      );
+
+      await server.connect(transport);
+
+      const { client, clientNostrTransport } = createClientAndTransport(
+        clientPrivateKey,
+        'Test Client',
+        serverPublicKey,
+      );
+
+      await client.connect(clientNostrTransport);
+      await client.callTool({
+        name: 'whoami',
+        arguments: {},
+      });
+
+      expect(toolReceivedEventId).toBeDefined();
+      expect(typeof toolReceivedEventId).toBe('string');
+      expect(toolReceivedPubkey).toBe(clientPublicKey);
+
+      // Verify cleanup after response
+      await waitFor({
+        produce: () =>
+          transport.getNostrRequestEvent(toolReceivedEventId!) ?? undefined,
+        timeoutMs: 100,
+        intervalMs: 10,
+      }).catch(() => undefined);
+      expect(
+        transport.getNostrRequestEvent(toolReceivedEventId!),
+      ).toBeUndefined();
+
+      await clientNostrTransport.close();
+      await server.close();
+    },
+    10000,
+  );
+
+  test.serial(
     'should not inject request event id when request event injection is disabled',
     async () => {
       const serverPrivateKey = bytesToHex(generateSecretKey());

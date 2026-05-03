@@ -1,5 +1,26 @@
 # @contextvm/sdk
 
+## 0.9.1
+
+### Patch Changes
+
+- 1737128: refactor(relay): make getRelayUrls required in RelayHandler interface
+
+  Changed getRelayUrls from optional to required method in RelayHandler interface.
+  Updated mock implementation and removed optional chaining in transport layer.
+
+- 8137fd4: fix(transport): deduplicate decrypted inner events before processing
+- 570de79: Fix stale timestamp in queued NWC requests by capturing `nowSeconds()` inside the `run()` closure so the `created_at` field reflects when the event is actually built and signed, not when it was enqueued.
+- 9e3667d: Fix NWC relay subscriptions not being cleaned up when a request times out by moving the `.finally()` cleanup onto the `withTimeout()` promise instead of the inner promise, so the subscription is closed regardless of whether the timeout or the relay response wins the race.
+- c8f44dd: fix(payments): drop uncorrelated payment_required notifications on Nostr transports
+- 22c311a: fix(transport): drop correlated notifications with unknown e-tag
+- b408930: feat(transport): expose inbound Nostr request event id in MCP requests
+
+  Add support for injecting and accessing the inbound Nostr request event ID in MCP request messages via the \_meta field. This enables middleware and tools to access the original Nostr event that triggered the request, including the event's pubkey and full event data through a request-scoped context store.
+
+- 5f773a2: fix(transport): recover response route after publish failure
+- 523a474: refactor(transport): stop merging later response tags into learned server discovery baseline
+
 ## 0.9.0
 
 ### Minor Changes
