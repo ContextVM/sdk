@@ -935,6 +935,13 @@ export class NostrServerTransport
       );
       return;
     }
+    if (!verifyEvent(event)) {
+      this.logger.error('Rejecting unencrypted event with invalid signature', {
+        eventId: event.id,
+        pubkey: event.pubkey,
+      });
+      return;
+    }
     await this.authorizeAndProcessEvent(event, false);
   }
 

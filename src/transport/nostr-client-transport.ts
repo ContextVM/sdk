@@ -647,6 +647,22 @@ export class NostrClientTransport
         return;
       }
 
+      if (
+        event.kind !== GIFT_WRAP_KIND &&
+        event.kind !== EPHEMERAL_GIFT_WRAP_KIND
+      ) {
+        if (!verifyEvent(nostrEvent)) {
+          this.logger.error(
+            'Rejecting unencrypted event with invalid signature',
+            {
+              eventId: nostrEvent.id,
+              pubkey: nostrEvent.pubkey,
+            },
+          );
+          return;
+        }
+      }
+
       this.learnServerDiscovery(nostrEvent);
 
       const eTag = getNostrEventTag(nostrEvent.tags, 'e');

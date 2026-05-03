@@ -2,4 +2,4 @@
 "@contextvm/sdk": patch
 ---
 
-fix(nostr): verify decrypted inner event signatures, dedupe inner event ids, and drop uncorrelated payment_required notifications
+fix(nostr): verify signatures for decrypted and unencrypted events and dedupe inner event ids

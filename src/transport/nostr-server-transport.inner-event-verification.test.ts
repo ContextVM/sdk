@@ -38,20 +38,16 @@ function createValidInnerEvent(
 }
 
 /**
- * Helper: creates a forged inner event with a spoofed pubkey and garbage sig.
+ * Helper: creates a forged inner event with a valid id but garbage signature.
  */
 function createForgedInnerEvent(
-  spoofedPubkey: string,
+  secretKey: Uint8Array,
   content: string,
   serverPubkey: string,
 ): NostrEvent {
+  const valid = createValidInnerEvent(secretKey, content, serverPubkey);
   return {
-    id: 'forged-id-' + Math.random().toString(36).slice(2),
-    kind: 25910,
-    pubkey: spoofedPubkey,
-    created_at: Math.floor(Date.now() / 1000),
-    tags: [['p', serverPubkey]],
-    content,
+    ...valid,
     sig: '0'.repeat(128),
   };
 }
@@ -61,10 +57,14 @@ describe.serial('Inner event signature verification (fixes #64)', () => {
     const serverSk = generateSecretKey();
     const serverPubkey = getPublicKey(serverSk);
 
+    const whitelistedSk = generateSecretKey();
+    const whitelistedPubkey = getPublicKey(whitelistedSk);
+
     const transport = new NostrServerTransport({
       signer: new PrivateKeySigner(Buffer.from(serverSk).toString('hex')),
       relayHandler: makeNoopRelayHandler(),
       encryptionMode: EncryptionMode.REQUIRED,
+      allowedPublicKeys: [whitelistedPubkey],
     });
 
     // Track onmessage calls — should never fire for a forged event.
@@ -72,9 +72,8 @@ describe.serial('Inner event signature verification (fixes #64)', () => {
     transport.onmessage = onmessageSpy;
 
     // Forge an inner event with a whitelisted pubkey but garbage signature.
-    const whitelistedPubkey = 'c'.repeat(64);
     const forgedInner = createForgedInnerEvent(
-      whitelistedPubkey,
+      whitelistedSk,
       JSON.stringify({
         jsonrpc: '2.0',
         id: 1,
