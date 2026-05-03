@@ -209,11 +209,34 @@ export function withClientPayments(
       return;
     }
 
+    const handler = handlersByPmi.get(message.params.pmi);
+    if (!handler) {
+      logger.debug('no handler for PMI, ignoring payment_required', {
+        pmi: message.params.pmi,
+        requestEventId,
+      });
+      return;
+    }
+
+    const isNostrTransport = transport instanceof NostrClientTransport;
+
+    const pending = isNostrTransport
+      ? transport.getPendingRequestForEventId(requestEventId)
+      : undefined;
+
+    if (isNostrTransport && !pending) {
+      logger.warn('dropping uncorrelated payment_required notification', {
+        requestEventId,
+        pmi: message.params.pmi,
+        amount: message.params.amount,
+      });
+      return;
+    }
+
     // If the transport can provide the original request's progressToken, emit synthetic
     // progress notifications locally to keep the upstream MCP request alive while the
     // payment settles (CEP-8 TTL can exceed the default MCP timeout).
-    if (transport instanceof NostrClientTransport) {
-      const pending = transport.getPendingRequestForEventId(requestEventId);
+    if (isNostrTransport) {
       const token = pending?.progressToken;
       // Fall back to defaultPaymentTtlMs when the server omits ttl so the client
       // keeps the MCP request alive for the same duration the server will wait.
@@ -256,15 +279,6 @@ export function withClientPayments(
       }
     }
 
-    const handler = handlersByPmi.get(message.params.pmi);
-    if (!handler) {
-      logger.debug('no handler for PMI, ignoring payment_required', {
-        pmi: message.params.pmi,
-        requestEventId,
-      });
-      return;
-    }
-
     // Best-effort client-side dedupe keyed by pay_req.
     // IMPORTANT: claim synchronously before any await to avoid double-pay races.
     if (inFlightPayReqs.has(message.params.pay_req)) {
@@ -286,11 +300,6 @@ export function withClientPayments(
         _meta: message.params._meta,
         requestEventId,
       };
-
-      const pending =
-        transport instanceof NostrClientTransport
-          ? transport.getPendingRequestForEventId(requestEventId)
-          : undefined;
 
       const synthesizeClientDeclineError = (params: {
         message: string;

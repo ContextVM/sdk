@@ -69,7 +69,7 @@ export interface RelayHandler {
     onEose?: () => void,
   ): Promise<() => void>;
   unsubscribe(): void;
-  getRelayUrls?(): string[];
+  getRelayUrls(): string[];
 }
 
 export interface AnnouncementMethods {

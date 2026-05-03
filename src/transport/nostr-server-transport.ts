@@ -517,8 +517,8 @@ export class NostrServerTransport
     return fallbackWrapKind;
   }
 
-  private getRelayUrls(relayHandler: RelayHandler): string[] | undefined {
-    return relayHandler.getRelayUrls?.();
+  private getRelayUrls(relayHandler: RelayHandler): string[] {
+    return relayHandler.getRelayUrls();
   }
 
   private async publishEventToRelayUrls(
@@ -723,15 +723,26 @@ export class NostrServerTransport
       }
     }
 
-    await this.sendMcpMessage(
-      response,
-      route.clientPubkey,
-      CTXVM_MESSAGES_KIND,
-      tags,
-      session.isEncrypted,
-      undefined,
-      giftWrapKind,
-    );
+    try {
+      await this.sendMcpMessage(
+        response,
+        route.clientPubkey,
+        CTXVM_MESSAGES_KIND,
+        tags,
+        session.isEncrypted,
+        undefined,
+        giftWrapKind,
+      );
+    } catch (error) {
+      this.correlationStore.registerEventRoute(
+        nostrEventId,
+        route.clientPubkey,
+        route.originalRequestId,
+        route.progressToken,
+        route.wrapKind,
+      );
+      throw error;
+    }
   }
 
   /**
@@ -906,6 +917,16 @@ export class NostrServerTransport
         'Decrypt message timed out',
       );
       const currentEvent = JSON.parse(decryptedJson) as NostrEvent;
+
+      // Deduplicate decrypted inner events before authorization and dispatch.
+      if (this.seenEventIds.has(currentEvent.id)) {
+        this.logger.debug('Skipping duplicate decrypted inner event', {
+          outerEventId: event.id,
+          innerEventId: currentEvent.id,
+        });
+        return;
+      }
+      this.seenEventIds.set(currentEvent.id, true);
 
       await this.authorizeAndProcessEvent(currentEvent, true, event.kind);
     } catch (error) {

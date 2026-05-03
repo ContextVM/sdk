@@ -93,25 +93,3 @@ export function learnPeerCapabilities(
     ),
   };
 }
-
-/**
- * Merges incoming discovery tags into current tags while preserving order and uniqueness.
- */
-export function mergeDiscoveryTags(
-  currentTags: readonly string[][],
-  incomingTags: readonly string[][],
-): string[][] {
-  const mergedTags: string[][] = currentTags.map((tag) => cloneTag(tag));
-  const seen = new Set<string>(mergedTags.map((tag) => JSON.stringify(tag)));
-
-  for (const tag of incomingTags) {
-    const key = JSON.stringify(tag);
-    if (seen.has(key)) {
-      continue;
-    }
-    mergedTags.push(cloneTag(tag));
-    seen.add(key);
-  }
-
-  return mergedTags;
-}

@@ -47,10 +47,7 @@ import {
   OversizedTransferReceiver,
   type TransferPolicy,
 } from './oversized-transfer/index.js';
-import {
-  mergeDiscoveryTags,
-  parseDiscoveredPeerCapabilities,
-} from './discovery-tags.js';
+import { parseDiscoveredPeerCapabilities } from './discovery-tags.js';
 import {
   DEFAULT_CHUNK_SIZE,
   DEFAULT_OVERSIZED_THRESHOLD,
@@ -873,10 +870,6 @@ export class NostrClientTransport
       return;
     }
 
-    const mergedTags = mergeDiscoveryTags(
-      this.serverInitializeEvent.tags,
-      discovered.discoveryTags,
-    );
     const currentHasInitializeResult = InitializeResultSchema.safeParse(
       this.getInitializeResultCandidate(event),
     ).success;
@@ -884,12 +877,8 @@ export class NostrClientTransport
       this.getInitializeResultCandidate(this.serverInitializeEvent),
     ).success;
 
-    this.serverInitializeEvent = {
-      ...(currentHasInitializeResult ? event : this.serverInitializeEvent),
-      tags: mergedTags,
-    };
-
     if (!existingHasInitializeResult && currentHasInitializeResult) {
+      this.serverInitializeEvent = event;
       this.logger.info(
         'Upgraded learned server discovery event to initialize response',
         {
@@ -971,6 +960,19 @@ export class NostrClientTransport
         this.logger.warn('Invalid notification schema', {
           issues: result.error.issues,
           message: mcpMessage,
+        });
+        return;
+      }
+
+      if (
+        correlatedEventId &&
+        !this.correlationStore.hasPendingRequest(correlatedEventId)
+      ) {
+        this.logger.warn('Received notification for unknown/expired request', {
+          eventId,
+          correlatedEventId,
+          reason:
+            'Notification carried correlation `e` tag that does not map to a pending request',
         });
         return;
       }

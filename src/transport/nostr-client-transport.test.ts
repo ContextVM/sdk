@@ -337,7 +337,7 @@ describe.serial('NostrClientTransport', () => {
     15000,
   );
 
-  test('should route correlated notifications (with e tag) as notifications even when e is unknown', async () => {
+  test('should drop correlated notifications (with e tag) when e is unknown', async () => {
     const clientPrivateKey = bytesToHex(generateSecretKey());
     const clientPublicKey = getPublicKey(hexToBytes(clientPrivateKey));
 
@@ -355,8 +355,8 @@ describe.serial('NostrClientTransport', () => {
 
     await clientTransport.start();
 
-    // Publish a notification event from the server, but include an `e` tag that does not
-    // correspond to any pending request. This must still be delivered as a notification.
+    // Publish a notification event from the server with an `e` tag that does not
+    // correspond to any pending request. It must be dropped.
     const notification = {
       jsonrpc: '2.0',
       method: 'notifications/payment_required',
@@ -379,6 +379,65 @@ describe.serial('NostrClientTransport', () => {
     };
 
     // Sign with the server private key so it matches serverPubkey filter.
+    const signedEvent = await new PrivateKeySigner(serverPrivateKey).signEvent(
+      unsignedEvent,
+    );
+    await clientTransport['relayHandler'].publish(signedEvent);
+
+    await sleep(150);
+
+    expect(received.length).toBe(0);
+
+    await clientTransport.close();
+  }, 10000);
+
+  test('should route correlated notifications (with e tag) when e matches a pending request', async () => {
+    const clientPrivateKey = bytesToHex(generateSecretKey());
+    const clientPublicKey = getPublicKey(hexToBytes(clientPrivateKey));
+
+    const clientTransport = new NostrClientTransport({
+      signer: new PrivateKeySigner(clientPrivateKey),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      serverPubkey: serverPublicKey,
+      encryptionMode: EncryptionMode.DISABLED,
+    });
+
+    const received: unknown[] = [];
+    clientTransport.onmessage = (msg) => {
+      received.push(msg);
+    };
+
+    await clientTransport.start();
+
+    const knownEventId = '1'.repeat(64);
+    clientTransport
+      .getInternalStateForTesting()
+      .correlationStore.registerRequest(knownEventId, {
+        originalRequestId: 'req-1',
+        isInitialize: false,
+      });
+
+    const notification = {
+      jsonrpc: '2.0',
+      method: 'notifications/payment_required',
+      params: {
+        amount: 1,
+        pay_req: 'test-pay-req',
+        pmi: 'test-pmi',
+      },
+    } as const;
+
+    const unsignedEvent = {
+      kind: CTXVM_MESSAGES_KIND,
+      content: JSON.stringify(notification),
+      created_at: Math.floor(Date.now() / 1000),
+      pubkey: serverPublicKey,
+      tags: [
+        ['p', clientPublicKey],
+        ['e', knownEventId],
+      ],
+    };
+
     const signedEvent = await new PrivateKeySigner(serverPrivateKey).signEvent(
       unsignedEvent,
     );
@@ -505,6 +564,192 @@ describe.serial('NostrClientTransport', () => {
     const capTags = toolsListEvent.tags.filter((t) => t[0] === 'cap');
     expect(capTags).toEqual(
       expect.arrayContaining([['cap', 'tool:add', '123', 'sats']]),
+    );
+    expect(
+      clientTransport
+        .getServerInitializeEvent()
+        ?.tags.some((t) => t[0] === 'cap'),
+    ).toBe(false);
+
+    await client.close();
+    await paidServer.close();
+    relayHub.clear();
+  }, 20000);
+
+  test('keeps later tools/list cap tags out of the learned baseline event', async () => {
+    const paidServer = new McpServer({ name: 'Paid-Server', version: '1.0.0' });
+    const relayHub = new MockRelayHub();
+    const paidServerPrivateKey = bytesToHex(generateSecretKey());
+    const paidServerPublicKey = getPublicKey(hexToBytes(paidServerPrivateKey));
+
+    paidServer.registerTool(
+      'add',
+      {
+        title: 'Addition Tool',
+        description: 'Add two numbers',
+        inputSchema: { a: z.number(), b: z.number() },
+      },
+      async ({ a, b }) => ({
+        content: [{ type: 'text', text: String(a + b) }],
+      }),
+    );
+
+    const paidServerTransport = new NostrServerTransport({
+      signer: new PrivateKeySigner(paidServerPrivateKey),
+      relayHandler: relayHub.createRelayHandler(),
+      serverInfo: {
+        name: 'Paid-Server',
+        about: 'Baseline metadata',
+      },
+      encryptionMode: EncryptionMode.OPTIONAL,
+    });
+
+    withServerPayments(paidServerTransport, {
+      processors: [
+        new FakePaymentProcessor({ pmi: 'pmi:test', verifyDelayMs: 1 }),
+      ],
+      pricedCapabilities: [
+        {
+          method: 'tools/call',
+          name: 'add',
+          amount: 123,
+          currencyUnit: 'sats',
+        },
+      ],
+    });
+
+    await paidServer.connect(paidServerTransport);
+
+    const client = new Client({ name: 'Client', version: '1.0.0' });
+    const clientPrivateKey = bytesToHex(generateSecretKey());
+    const clientTransport = new NostrClientTransport({
+      signer: new PrivateKeySigner(clientPrivateKey),
+      relayHandler: relayHub.createRelayHandler(),
+      serverPubkey: paidServerPublicKey,
+      encryptionMode: EncryptionMode.DISABLED,
+    });
+
+    await client.connect(clientTransport);
+    const baselineBeforeList = clientTransport.getServerInitializeEvent();
+    expect(baselineBeforeList).toBeDefined();
+    expect(clientTransport.getServerInitializeResult()).toBeDefined();
+
+    await client.listTools();
+
+    const toolsListEvent = await waitFor({
+      produce: () => clientTransport.getServerToolsListEvent(),
+      predicate: (event) => event.tags.some((t) => t[0] === 'cap'),
+      timeoutMs: 5_000,
+    });
+
+    const baselineEvent = clientTransport.getServerInitializeEvent();
+    expect(baselineEvent).toBeDefined();
+    expect(toolsListEvent.tags).toEqual(
+      expect.arrayContaining([['cap', 'tool:add', '123', 'sats']]),
+    );
+    expect(baselineEvent!.tags).not.toEqual(
+      expect.arrayContaining([['cap', 'tool:add', '123', 'sats']]),
+    );
+    expect(baselineEvent).toEqual(baselineBeforeList);
+    expect(clientTransport.getServerInitializeName()).toBe('Paid-Server');
+    expect(clientTransport.getServerInitializeAbout()).toBe(
+      'Baseline metadata',
+    );
+
+    await client.close();
+    await paidServer.close();
+    relayHub.clear();
+  }, 20000);
+
+  test('preserves initialize baseline metadata after later tools/list responses', async () => {
+    const paidServer = new McpServer({
+      name: 'Preserved Baseline Server',
+      version: '1.0.0',
+    });
+    const relayHub = new MockRelayHub();
+    const paidServerPrivateKey = bytesToHex(generateSecretKey());
+    const paidServerPublicKey = getPublicKey(hexToBytes(paidServerPrivateKey));
+
+    paidServer.registerTool(
+      'add',
+      {
+        title: 'Addition Tool',
+        description: 'Add two numbers',
+        inputSchema: { a: z.number(), b: z.number() },
+      },
+      async ({ a, b }) => ({
+        content: [{ type: 'text', text: String(a + b) }],
+      }),
+    );
+
+    const paidServerTransport = new NostrServerTransport({
+      signer: new PrivateKeySigner(paidServerPrivateKey),
+      relayHandler: relayHub.createRelayHandler(),
+      serverInfo: {
+        name: 'Preserved Baseline Server',
+        about: 'Initialize baseline metadata',
+        website: 'https://example.com/preserved',
+      },
+      encryptionMode: EncryptionMode.OPTIONAL,
+    });
+
+    withServerPayments(paidServerTransport, {
+      processors: [
+        new FakePaymentProcessor({ pmi: 'pmi:test', verifyDelayMs: 1 }),
+      ],
+      pricedCapabilities: [
+        {
+          method: 'tools/call',
+          name: 'add',
+          amount: 123,
+          currencyUnit: 'sats',
+        },
+      ],
+    });
+
+    await paidServer.connect(paidServerTransport);
+
+    const client = new Client({ name: 'Client', version: '1.0.0' });
+    const clientPrivateKey = bytesToHex(generateSecretKey());
+    const clientTransport = new NostrClientTransport({
+      signer: new PrivateKeySigner(clientPrivateKey),
+      relayHandler: relayHub.createRelayHandler(),
+      serverPubkey: paidServerPublicKey,
+      encryptionMode: EncryptionMode.DISABLED,
+    });
+
+    await client.connect(clientTransport);
+
+    const baselineBeforeList = clientTransport.getServerInitializeEvent();
+    expect(baselineBeforeList).toBeDefined();
+    expect(clientTransport.getServerInitializeName()).toBe(
+      'Preserved Baseline Server',
+    );
+    expect(clientTransport.getServerInitializeAbout()).toBe(
+      'Initialize baseline metadata',
+    );
+    expect(clientTransport.getServerInitializeWebsite()).toBe(
+      'https://example.com/preserved',
+    );
+
+    await client.listTools();
+
+    await waitFor({
+      produce: () => clientTransport.getServerToolsListEvent(),
+      predicate: (event) => event.tags.some((t) => t[0] === 'cap'),
+      timeoutMs: 5_000,
+    });
+
+    const baselineAfterList = clientTransport.getServerInitializeEvent();
+    expect(baselineAfterList).toEqual(baselineBeforeList);
+    expect(clientTransport.getServerInitializeName()).toBe(
+      'Preserved Baseline Server',
+    );
+    expect(clientTransport.getServerInitializeAbout()).toBe(
+      'Initialize baseline metadata',
+    );
+    expect(clientTransport.getServerInitializeWebsite()).toBe(
+      'https://example.com/preserved',
     );
 
     await client.close();
