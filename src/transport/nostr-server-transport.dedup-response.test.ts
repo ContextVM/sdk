@@ -1,6 +1,7 @@
 import { describe, it, expect, mock } from 'bun:test';
 import type { RelayHandler } from '../core/interfaces.js';
 import type { NostrEvent } from 'nostr-tools';
+import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import type { JSONRPCResponse } from '@modelcontextprotocol/sdk/types.js';
 import { NostrServerTransport } from './nostr-server-transport.js';
 import { PrivateKeySigner } from '../signer/private-key-signer.js';
@@ -154,7 +155,27 @@ describe.serial('NostrServerTransport duplicate response prevention', () => {
     const onmessage = mock(() => {});
     transport.onmessage = onmessage;
 
-    // Make decryptMessage deterministically return the same inner event id for both envelopes.
+    // Create a cryptographically valid inner event so verifyEvent passes.
+    const clientSk = generateSecretKey();
+    const serverPubkey = getPublicKey(
+      Uint8Array.from(Buffer.from('1'.repeat(64), 'hex')),
+    );
+    const validInner = finalizeEvent(
+      {
+        kind: 25910,
+        created_at: 1,
+        tags: [['p', serverPubkey]],
+        content: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools/list',
+          params: {},
+        }),
+      },
+      clientSk,
+    );
+
+    // Make decryptMessage deterministically return the same valid inner event for both envelopes.
     const signer = transport['signer'];
     let decryptCalls = 0;
     signer.nip44 = {
@@ -163,20 +184,7 @@ describe.serial('NostrServerTransport duplicate response prevention', () => {
       },
       decrypt: async () => {
         decryptCalls += 1;
-        return JSON.stringify({
-          id: 'inner-request-id',
-          kind: 25910,
-          pubkey: 'c'.repeat(64),
-          created_at: 1,
-          tags: [['p', 's'.repeat(64)]],
-          content: JSON.stringify({
-            jsonrpc: '2.0',
-            id: 1,
-            method: 'tools/list',
-            params: {},
-          }),
-          sig: '0'.repeat(128),
-        } satisfies NostrEvent);
+        return JSON.stringify(validInner);
       },
     };
 
@@ -186,7 +194,7 @@ describe.serial('NostrServerTransport duplicate response prevention', () => {
       kind: GIFT_WRAP_KIND,
       pubkey: 'a'.repeat(64),
       created_at: 1,
-      tags: [['p', 's'.repeat(64)]],
+      tags: [['p', serverPubkey]],
       content: 'ciphertext-1',
       sig: '0'.repeat(128),
     };
@@ -195,7 +203,7 @@ describe.serial('NostrServerTransport duplicate response prevention', () => {
       kind: GIFT_WRAP_KIND,
       pubkey: 'b'.repeat(64),
       created_at: 1,
-      tags: [['p', 's'.repeat(64)]],
+      tags: [['p', serverPubkey]],
       content: 'ciphertext-2',
       sig: '0'.repeat(128),
     };
@@ -209,7 +217,7 @@ describe.serial('NostrServerTransport duplicate response prevention', () => {
     expect(onmessage).toHaveBeenCalledTimes(1);
     expect(onmessage).toHaveBeenCalledWith({
       jsonrpc: '2.0',
-      id: 'inner-request-id',
+      id: validInner.id,
       method: 'tools/list',
       params: {},
     });
@@ -227,27 +235,33 @@ describe.serial('NostrServerTransport duplicate response prevention', () => {
       encryptionMode: EncryptionMode.REQUIRED,
     });
 
+    // Create a cryptographically valid inner event so verifyEvent passes.
+    const clientSk = generateSecretKey();
+    const serverPubkey = getPublicKey(
+      Uint8Array.from(Buffer.from('1'.repeat(64), 'hex')),
+    );
+    const validInner = finalizeEvent(
+      {
+        kind: 25910,
+        created_at: 1,
+        tags: [['p', serverPubkey]],
+        content: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools/list',
+          params: {},
+        }),
+      },
+      clientSk,
+    );
+
     // Deterministic decrypt.
     const signer = transport['signer'];
     signer.nip44 = {
       encrypt: async () => {
         throw new Error('encrypt not used in this test');
       },
-      decrypt: async () =>
-        JSON.stringify({
-          id: 'inner-request-id-2',
-          kind: 25910,
-          pubkey: 'c'.repeat(64),
-          created_at: 1,
-          tags: [['p', 's'.repeat(64)]],
-          content: JSON.stringify({
-            jsonrpc: '2.0',
-            id: 1,
-            method: 'tools/list',
-            params: {},
-          }),
-          sig: '0'.repeat(128),
-        } satisfies NostrEvent),
+      decrypt: async () => JSON.stringify(validInner),
     };
 
     const gw: NostrEvent = {
@@ -255,7 +269,7 @@ describe.serial('NostrServerTransport duplicate response prevention', () => {
       kind: EPHEMERAL_GIFT_WRAP_KIND,
       pubkey: 'a'.repeat(64),
       created_at: 1,
-      tags: [['p', 's'.repeat(64)]],
+      tags: [['p', serverPubkey]],
       content: 'ciphertext',
       sig: '0'.repeat(128),
     };

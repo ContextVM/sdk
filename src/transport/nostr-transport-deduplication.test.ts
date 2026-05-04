@@ -1,6 +1,7 @@
 import { describe, test, expect } from 'bun:test';
 import { EncryptionMode, type RelayHandler } from '../core/interfaces.js';
 import type { NostrEvent } from 'nostr-tools';
+import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { NostrClientTransport } from './nostr-client-transport.js';
 import { PrivateKeySigner } from '../signer/private-key-signer.js';
 import { EPHEMERAL_GIFT_WRAP_KIND, GIFT_WRAP_KIND } from '../core/constants.js';
@@ -8,32 +9,48 @@ import { NostrServerTransport } from './nostr-server-transport.js';
 
 let decryptCallCount = 0;
 
-function installDeterministicDecrypt(transport: {
-  signer: {
-    nip44: {
-      encrypt: (plaintext: string, pubkey: string) => Promise<string>;
-      decrypt: (ciphertext: string, pubkey: string) => Promise<string>;
+/**
+ * Creates a cryptographically valid inner event so verifyEvent passes.
+ * When signerSk is provided, the event is signed by that key (useful for
+ * client tests where the inner event must come from the server keypair).
+ */
+function createValidInnerEvent(
+  serverPubkey: string,
+  signerSk?: Uint8Array,
+): NostrEvent {
+  const sk = signerSk ?? generateSecretKey();
+  return finalizeEvent(
+    {
+      kind: 25910,
+      created_at: 1,
+      tags: [['p', serverPubkey]],
+      content: JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'notifications/test',
+      }),
+    },
+    sk,
+  );
+}
+
+function installDeterministicDecrypt(
+  transport: {
+    signer: {
+      nip44: {
+        encrypt: (plaintext: string, pubkey: string) => Promise<string>;
+        decrypt: (ciphertext: string, pubkey: string) => Promise<string>;
+      };
     };
-  };
-}): void {
+  },
+  innerEvent: NostrEvent,
+): void {
   transport.signer.nip44 = {
     encrypt: async () => {
       throw new Error('encrypt not used in this test');
     },
     decrypt: async () => {
       decryptCallCount += 1;
-      return JSON.stringify({
-        id: 'inner-event-id',
-        kind: 25910,
-        pubkey: '0'.repeat(64),
-        created_at: 1,
-        tags: [],
-        content: JSON.stringify({
-          jsonrpc: '2.0',
-          method: 'notifications/test',
-        }),
-        sig: '0'.repeat(128),
-      } satisfies NostrEvent);
+      return JSON.stringify(innerEvent);
     },
   };
 }
@@ -53,7 +70,9 @@ describe('gift-wrap pre-decrypt deduplication', () => {
   test('client: decrypts only once for duplicate gift-wrap deliveries', async () => {
     decryptCallCount = 0;
 
-    const serverPubkey = '0'.repeat(64);
+    // Use a real server keypair so the inner event pubkey matches serverPubkey.
+    const serverSk = generateSecretKey();
+    const serverPubkey = getPublicKey(serverSk);
     const clientPriv = '1'.repeat(64);
 
     const transport = new NostrClientTransport({
@@ -62,6 +81,9 @@ describe('gift-wrap pre-decrypt deduplication', () => {
       serverPubkey,
       encryptionMode: EncryptionMode.REQUIRED,
     });
+
+    // Sign the inner event with the server's key so pubkey matches.
+    const innerEvent = createValidInnerEvent(serverPubkey, serverSk);
     installDeterministicDecrypt(
       transport as unknown as {
         signer: {
@@ -71,6 +93,7 @@ describe('gift-wrap pre-decrypt deduplication', () => {
           };
         };
       },
+      innerEvent,
     );
 
     const received: unknown[] = [];
@@ -81,7 +104,7 @@ describe('gift-wrap pre-decrypt deduplication', () => {
       kind: GIFT_WRAP_KIND,
       pubkey: 'f'.repeat(64),
       created_at: 1,
-      tags: [['p', '0'.repeat(64)]],
+      tags: [['p', serverPubkey]],
       content: 'ciphertext',
       sig: 'f'.repeat(128),
     };
@@ -96,7 +119,9 @@ describe('gift-wrap pre-decrypt deduplication', () => {
   test('client: decrypts ephemeral gift wrap kind as well', async () => {
     decryptCallCount = 0;
 
-    const serverPubkey = '0'.repeat(64);
+    // Use a real server keypair so the inner event pubkey matches serverPubkey.
+    const serverSk = generateSecretKey();
+    const serverPubkey = getPublicKey(serverSk);
     const clientPriv = '1'.repeat(64);
 
     const transport = new NostrClientTransport({
@@ -105,6 +130,9 @@ describe('gift-wrap pre-decrypt deduplication', () => {
       serverPubkey,
       encryptionMode: EncryptionMode.REQUIRED,
     });
+
+    // Sign the inner event with the server's key so pubkey matches.
+    const innerEvent = createValidInnerEvent(serverPubkey, serverSk);
     installDeterministicDecrypt(
       transport as unknown as {
         signer: {
@@ -114,6 +142,7 @@ describe('gift-wrap pre-decrypt deduplication', () => {
           };
         };
       },
+      innerEvent,
     );
 
     const received: unknown[] = [];
@@ -124,7 +153,7 @@ describe('gift-wrap pre-decrypt deduplication', () => {
       kind: EPHEMERAL_GIFT_WRAP_KIND,
       pubkey: 'f'.repeat(64),
       created_at: 1,
-      tags: [['p', '0'.repeat(64)]],
+      tags: [['p', serverPubkey]],
       content: 'ciphertext',
       sig: 'f'.repeat(128),
     };
@@ -139,11 +168,16 @@ describe('gift-wrap pre-decrypt deduplication', () => {
     decryptCallCount = 0;
 
     const serverPriv = '2'.repeat(64);
+    const serverPubkey = getPublicKey(
+      Uint8Array.from(Buffer.from(serverPriv, 'hex')),
+    );
     const transport = new NostrServerTransport({
       signer: new PrivateKeySigner(serverPriv),
       relayHandler: makeNoopRelayHandler(),
       encryptionMode: EncryptionMode.REQUIRED,
     });
+
+    const innerEvent = createValidInnerEvent(serverPubkey);
     installDeterministicDecrypt(
       transport as unknown as {
         signer: {
@@ -153,6 +187,7 @@ describe('gift-wrap pre-decrypt deduplication', () => {
           };
         };
       },
+      innerEvent,
     );
 
     const received: unknown[] = [];
@@ -163,7 +198,7 @@ describe('gift-wrap pre-decrypt deduplication', () => {
       kind: GIFT_WRAP_KIND,
       pubkey: 'e'.repeat(64),
       created_at: 1,
-      tags: [['p', '0'.repeat(64)]],
+      tags: [['p', serverPubkey]],
       content: 'ciphertext',
       sig: 'e'.repeat(128),
     };
@@ -180,11 +215,16 @@ describe('gift-wrap pre-decrypt deduplication', () => {
     decryptCallCount = 0;
 
     const serverPriv = '2'.repeat(64);
+    const serverPubkey = getPublicKey(
+      Uint8Array.from(Buffer.from(serverPriv, 'hex')),
+    );
     const transport = new NostrServerTransport({
       signer: new PrivateKeySigner(serverPriv),
       relayHandler: makeNoopRelayHandler(),
       encryptionMode: EncryptionMode.REQUIRED,
     });
+
+    const innerEvent = createValidInnerEvent(serverPubkey);
     installDeterministicDecrypt(
       transport as unknown as {
         signer: {
@@ -194,6 +234,7 @@ describe('gift-wrap pre-decrypt deduplication', () => {
           };
         };
       },
+      innerEvent,
     );
 
     const received: unknown[] = [];
@@ -204,7 +245,7 @@ describe('gift-wrap pre-decrypt deduplication', () => {
       kind: EPHEMERAL_GIFT_WRAP_KIND,
       pubkey: 'e'.repeat(64),
       created_at: 1,
-      tags: [['p', '0'.repeat(64)]],
+      tags: [['p', serverPubkey]],
       content: 'ciphertext',
       sig: 'e'.repeat(128),
     };

@@ -30,6 +30,7 @@ import {
 } from '../core/index.js';
 import { EncryptionMode, GiftWrapMode } from '../core/interfaces.js';
 import { NostrEvent } from 'nostr-tools';
+import { verifyEvent } from 'nostr-tools/pure';
 import { LogLevel } from '../core/utils/logger.js';
 import {
   injectClientPubkey,
@@ -918,6 +919,21 @@ export class NostrServerTransport
       );
       const currentEvent = JSON.parse(decryptedJson) as NostrEvent;
 
+      // Verify the inner event's cryptographic signature to prevent identity
+      // forgery. Without this check an attacker can place any pubkey inside
+      // the plaintext and bypass allowlists. (Fixes #64)
+      if (!verifyEvent(currentEvent)) {
+        this.logger.error(
+          'Rejecting decrypted inner event with invalid signature',
+          {
+            innerEventId: currentEvent.id,
+            innerPubkey: currentEvent.pubkey,
+            outerEventId: event.id,
+          },
+        );
+        return;
+      }
+
       // Deduplicate decrypted inner events before authorization and dispatch.
       if (this.seenEventIds.has(currentEvent.id)) {
         this.logger.debug('Skipping duplicate decrypted inner event', {
@@ -953,6 +969,13 @@ export class NostrServerTransport
       this.logger.error(
         `Received unencrypted message from ${event.pubkey} but encryption is required. Ignoring.`,
       );
+      return;
+    }
+    if (!verifyEvent(event)) {
+      this.logger.error('Rejecting unencrypted event with invalid signature', {
+        eventId: event.id,
+        pubkey: event.pubkey,
+      });
       return;
     }
     await this.authorizeAndProcessEvent(event, false);
