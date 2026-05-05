@@ -1,5 +1,15 @@
 # @contextvm/sdk
 
+## 0.10.0
+
+### Minor Changes
+
+- 864257f: Add CEP-15 common schema support for `tools/list`, including schema hash metadata for compatible tools and `i`/`k` discovery tags in public announcement events.
+
+### Patch Changes
+
+- 762bab0: fix(nostr): verify signatures for decrypted and unencrypted events and dedupe inner event ids
+
 ## 0.9.1
 
 ### Patch Changes
