@@ -29,7 +29,7 @@ describe('callToolStream', () => {
     const call = await callToolStream({
       client,
       transport: {
-        getOrCreateOpenStreamSession: (progressToken: string) => {
+        createOutboundOpenStreamSession: (progressToken: string) => {
           expect(progressToken).toBe('token-fixed');
           return stream;
         },
