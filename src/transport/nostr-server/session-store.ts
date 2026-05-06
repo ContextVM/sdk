@@ -24,6 +24,8 @@ export interface ClientSession {
   supportsEphemeralEncryption: boolean;
   /** Whether the client has advertised CEP-22 oversized transfer support. */
   supportsOversizedTransfer: boolean;
+  /** Whether the client has advertised CEP-41 open stream support. */
+  supportsOpenStream: boolean;
 }
 
 /**
@@ -84,6 +86,7 @@ export class SessionStore {
       supportsEncryption: false,
       supportsEphemeralEncryption: false,
       supportsOversizedTransfer: false,
+      supportsOpenStream: false,
     };
 
     this.sessions.set(clientPubkey, newSession);

@@ -70,8 +70,6 @@ describe('createCommonSchemaToolsResultTransformer', () => {
     expect(bespokeTool?._meta?.[COMMON_SCHEMA_META_NAMESPACE]).toBeUndefined();
   });
 
-
-
   test('returns the original result when opted-in tools already carry the matching schema hash', () => {
     const schemaHash = computeCommonSchemaHash({
       name: 'translate_text',
@@ -184,8 +182,6 @@ describe('createCommonSchemaAnnouncementTagsProducer', () => {
       ['k', COMMON_SCHEMA_META_NAMESPACE],
     ]);
   });
-
-
 
   test('reuses existing schemaHash metadata when producing announcement tags', () => {
     const result: ListToolsResult = {

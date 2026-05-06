@@ -1605,7 +1605,7 @@ describe.serial('NostrServerTransport', () => {
       const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
       const clientPrivateKey = bytesToHex(generateSecretKey());
       const uniqueSuffix = Math.random().toString(36).substring(2, 8);
-      const commonToolName =         `translate_text_${uniqueSuffix}`;
+      const commonToolName = `translate_text_${uniqueSuffix}`;
       const bespokeToolName = `bespoke_tool_${uniqueSuffix}`;
 
       const server = new McpServer({
@@ -1720,9 +1720,9 @@ describe.serial('NostrServerTransport', () => {
         },
       });
       expect(
-        (announcedBespokeTool?.['_meta'] as Record<string, unknown> | undefined)?.[
-          COMMON_SCHEMA_META_NAMESPACE
-        ],
+        (
+          announcedBespokeTool?.['_meta'] as Record<string, unknown> | undefined
+        )?.[COMMON_SCHEMA_META_NAMESPACE],
       ).toBeUndefined();
 
       expect(iTags).toEqual(

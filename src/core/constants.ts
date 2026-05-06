@@ -116,6 +116,11 @@ export const NOSTR_TAGS = {
    * Support CEP-22 oversized payload transfer via notifications/progress framing.
    */
   SUPPORT_OVERSIZED_TRANSFER: 'support_oversized_transfer',
+
+  /**
+   * Support CEP-41 open-ended stream transfer via notifications/progress framing.
+   */
+  SUPPORT_OPEN_STREAM: 'support_open_stream',
 } as const;
 
 export const DEFAULT_LRU_SIZE = 5000;
@@ -139,4 +144,3 @@ export const NOTIFICATIONS_INITIALIZED_METHOD = 'notifications/initialized';
  * Namespace for CEP-15 common schema metadata in tool definitions.
  */
 export const COMMON_SCHEMA_META_NAMESPACE = 'io.contextvm/common-schema';
-

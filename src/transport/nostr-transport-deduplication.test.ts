@@ -1,7 +1,11 @@
 import { describe, test, expect } from 'bun:test';
 import { EncryptionMode, type RelayHandler } from '../core/interfaces.js';
 import type { NostrEvent } from 'nostr-tools';
-import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
+import {
+  finalizeEvent,
+  generateSecretKey,
+  getPublicKey,
+} from 'nostr-tools/pure';
 import { NostrClientTransport } from './nostr-client-transport.js';
 import { PrivateKeySigner } from '../signer/private-key-signer.js';
 import { EPHEMERAL_GIFT_WRAP_KIND, GIFT_WRAP_KIND } from '../core/constants.js';

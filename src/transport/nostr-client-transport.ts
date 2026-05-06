@@ -48,12 +48,15 @@ import {
   OversizedTransferReceiver,
   type TransferPolicy,
 } from './oversized-transfer/index.js';
+import { OpenStreamReceiver } from './open-stream/index.js';
+import type { OpenStreamSession } from './open-stream/index.js';
 import { parseDiscoveredPeerCapabilities } from './discovery-tags.js';
 import {
   DEFAULT_CHUNK_SIZE,
   DEFAULT_OVERSIZED_THRESHOLD,
 } from './oversized-transfer/constants.js';
 import { sendOversizedClientRequest } from './nostr-client/oversized-client-sender.js';
+import type { OpenStreamTransportPolicy } from './open-stream-policy.js';
 
 /**
  * Options for configuring the NostrClientTransport.
@@ -98,6 +101,13 @@ export interface NostrTransportOptions extends Omit<
     acceptTimeoutMs?: number;
     /** Receiver-side admission policy. */
     policy?: TransferPolicy;
+  };
+  /** Options controlling CEP-41 open-ended stream transfer. */
+  openStream?: {
+    /** Whether open stream transfer is enabled. @default false */
+    enabled?: boolean;
+    /** Receiver/session policy reserved for CEP-41 stream lifecycle limits. */
+    policy?: OpenStreamTransportPolicy;
   };
 }
 
@@ -155,6 +165,9 @@ export class NostrClientTransport
   /** Whether the server has advertised CEP-22 oversized transfer support. */
   private serverSupportsOversizedTransfer: boolean = false;
 
+  /** Whether the server has advertised CEP-41 open stream support. */
+  private serverSupportsOpenStream: boolean = false;
+
   /** Whether this client has already sent its discovery tags to the server. */
   private hasSentDiscoveryTags: boolean = false;
 
@@ -163,9 +176,13 @@ export class NostrClientTransport
   private readonly oversizedThreshold: number;
   private readonly oversizedChunkSize: number;
   private readonly oversizedAcceptTimeoutMs: number;
+  private readonly openStreamEnabled: boolean;
 
   /** Receives inbound oversized-transfer frames from the server (server→client responses). */
   private readonly oversizedReceiver: OversizedTransferReceiver;
+
+  /** Receives inbound open-stream frames from the server (server→client notifications). */
+  private readonly openStreamReceiver: OpenStreamReceiver;
 
   /**
    * Deduplicate inbound events to avoid redundant work.
@@ -211,6 +228,15 @@ export class NostrClientTransport
       ot?.policy ?? {},
       this.logger,
     );
+    this.openStreamEnabled = options.openStream?.enabled ?? false;
+    this.openStreamReceiver = new OpenStreamReceiver({
+      maxConcurrentStreams: options.openStream?.policy?.maxConcurrentStreams,
+      maxBufferedChunksPerStream:
+        options.openStream?.policy?.maxBufferedChunksPerStream,
+      maxBufferedBytesPerStream:
+        options.openStream?.policy?.maxBufferedBytesPerStream,
+      logger: this.logger,
+    });
   }
 
   /**
@@ -238,6 +264,10 @@ export class NostrClientTransport
 
     if (this.oversizedEnabled) {
       tags.push([NOSTR_TAGS.SUPPORT_OVERSIZED_TRANSFER]);
+    }
+
+    if (this.openStreamEnabled) {
+      tags.push([NOSTR_TAGS.SUPPORT_OPEN_STREAM]);
     }
 
     return tags;
@@ -324,6 +354,7 @@ export class NostrClientTransport
       this.correlationStore.clear();
       this.seenEventIds.clear();
       this.oversizedReceiver.clear();
+      this.openStreamReceiver.clear();
       this.onclose?.();
     } catch (error) {
       this.onerror?.(error instanceof Error ? error : new Error(String(error)));
@@ -542,6 +573,24 @@ export class NostrClientTransport
     eventId: string,
   ): PendingRequest | undefined {
     return this.correlationStore.getPendingRequest(eventId);
+  }
+
+  /**
+   * Returns the CEP-41 stream session for a progress token, creating it lazily if needed.
+   */
+  public getOrCreateOpenStreamSession(
+    progressToken: string,
+  ): OpenStreamSession {
+    return this.openStreamReceiver.getOrCreateSession(progressToken);
+  }
+
+  /**
+   * Returns the CEP-41 stream session for a progress token when it already exists.
+   */
+  public getOpenStreamSession(
+    progressToken: string,
+  ): OpenStreamSession | undefined {
+    return this.openStreamReceiver.getSession(progressToken);
   }
 
   /**
@@ -893,6 +942,7 @@ export class NostrClientTransport
       discovered.supportsEphemeralEncryption;
     this.serverSupportsOversizedTransfer ||=
       discovered.supportsOversizedTransfer;
+    this.serverSupportsOpenStream ||= discovered.supportsOpenStream;
 
     if (!this.serverInitializeEvent) {
       this.serverInitializeEvent = event;
@@ -1013,6 +1063,22 @@ export class NostrClientTransport
       if (
         isJSONRPCNotification(mcpMessage) &&
         mcpMessage.method === 'notifications/progress' &&
+        OpenStreamReceiver.isOpenStreamFrame(mcpMessage)
+      ) {
+        this.openStreamReceiver
+          .processFrame(mcpMessage)
+          .catch((err: unknown) => {
+            this.logger.error('Open stream error (client)', {
+              error: err instanceof Error ? err.message : String(err),
+            });
+            this.onerror?.(err instanceof Error ? err : new Error(String(err)));
+          });
+        return;
+      }
+
+      if (
+        isJSONRPCNotification(mcpMessage) &&
+        mcpMessage.method === 'notifications/progress' &&
         OversizedTransferReceiver.isOversizedFrame(mcpMessage)
       ) {
         this.oversizedReceiver
@@ -1083,6 +1149,8 @@ export class NostrClientTransport
       serverResourcesListEvent: this.serverResourcesListEvent,
       serverResourceTemplatesListEvent: this.serverResourceTemplatesListEvent,
       serverPromptsListEvent: this.serverPromptsListEvent,
+      oversizedReceiver: this.oversizedReceiver,
+      openStreamReceiver: this.openStreamReceiver,
     };
   }
 }
