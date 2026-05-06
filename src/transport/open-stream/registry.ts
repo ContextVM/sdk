@@ -3,6 +3,9 @@ import {
   DEFAULT_MAX_BUFFERED_BYTES_PER_STREAM,
   DEFAULT_MAX_BUFFERED_CHUNKS_PER_STREAM,
   DEFAULT_MAX_CONCURRENT_OPEN_STREAMS,
+  DEFAULT_OPEN_STREAM_CLOSE_GRACE_PERIOD_MS,
+  DEFAULT_OPEN_STREAM_IDLE_TIMEOUT_MS,
+  DEFAULT_OPEN_STREAM_PROBE_TIMEOUT_MS,
 } from './constants.js';
 import { OpenStreamPolicyError, OpenStreamSequenceError } from './errors.js';
 import { OpenStreamSession, type OpenStreamSessionOptions } from './session.js';
@@ -12,6 +15,12 @@ export interface OpenStreamRegistryOptions {
   maxConcurrentStreams?: number;
   maxBufferedChunksPerStream?: number;
   maxBufferedBytesPerStream?: number;
+  idleTimeoutMs?: number;
+  probeTimeoutMs?: number;
+  closeGracePeriodMs?: number;
+  getSessionOptions?: (
+    progressToken: string,
+  ) => Partial<Omit<OpenStreamSessionOptions, 'progressToken'>>;
   logger: Logger;
 }
 
@@ -32,6 +41,14 @@ export class OpenStreamRegistry {
   private readonly maxConcurrentStreams: number;
   private readonly maxBufferedChunksPerStream: number;
   private readonly maxBufferedBytesPerStream: number;
+  private readonly idleTimeoutMs: number;
+  private readonly probeTimeoutMs: number;
+  private readonly closeGracePeriodMs: number;
+  private readonly getSessionOptions:
+    | ((
+        progressToken: string,
+      ) => Partial<Omit<OpenStreamSessionOptions, 'progressToken'>>)
+    | undefined;
   private readonly sessions = new Map<string, OpenStreamSession>();
 
   constructor(options: OpenStreamRegistryOptions) {
@@ -44,6 +61,13 @@ export class OpenStreamRegistry {
     this.maxBufferedBytesPerStream =
       options.maxBufferedBytesPerStream ??
       DEFAULT_MAX_BUFFERED_BYTES_PER_STREAM;
+    this.idleTimeoutMs =
+      options.idleTimeoutMs ?? DEFAULT_OPEN_STREAM_IDLE_TIMEOUT_MS;
+    this.probeTimeoutMs =
+      options.probeTimeoutMs ?? DEFAULT_OPEN_STREAM_PROBE_TIMEOUT_MS;
+    this.closeGracePeriodMs =
+      options.closeGracePeriodMs ?? DEFAULT_OPEN_STREAM_CLOSE_GRACE_PERIOD_MS;
+    this.getSessionOptions = options.getSessionOptions;
   }
 
   public static isOpenStreamProgress(
@@ -69,6 +93,7 @@ export class OpenStreamRegistry {
     const sessionOptions =
       typeof options === 'string' ? { progressToken: options } : options;
     const { progressToken } = sessionOptions;
+    const derivedSessionOptions = this.getSessionOptions?.(progressToken) ?? {};
 
     if (this.sessions.has(progressToken)) {
       throw new OpenStreamSequenceError(
@@ -85,9 +110,28 @@ export class OpenStreamRegistry {
     const session = new OpenStreamSession({
       progressToken,
       maxBufferedChunks:
-        sessionOptions.maxBufferedChunks ?? this.maxBufferedChunksPerStream,
+        sessionOptions.maxBufferedChunks ??
+        derivedSessionOptions.maxBufferedChunks ??
+        this.maxBufferedChunksPerStream,
       maxBufferedBytes:
-        sessionOptions.maxBufferedBytes ?? this.maxBufferedBytesPerStream,
+        sessionOptions.maxBufferedBytes ??
+        derivedSessionOptions.maxBufferedBytes ??
+        this.maxBufferedBytesPerStream,
+      idleTimeoutMs:
+        sessionOptions.idleTimeoutMs ??
+        derivedSessionOptions.idleTimeoutMs ??
+        this.idleTimeoutMs,
+      probeTimeoutMs:
+        sessionOptions.probeTimeoutMs ??
+        derivedSessionOptions.probeTimeoutMs ??
+        this.probeTimeoutMs,
+      closeGracePeriodMs:
+        sessionOptions.closeGracePeriodMs ??
+        derivedSessionOptions.closeGracePeriodMs ??
+        this.closeGracePeriodMs,
+      sendPing: sessionOptions.sendPing ?? derivedSessionOptions.sendPing,
+      sendPong: sessionOptions.sendPong ?? derivedSessionOptions.sendPong,
+      sendAbort: sessionOptions.sendAbort ?? derivedSessionOptions.sendAbort,
       onClose: async () => {
         await sessionOptions.onClose?.();
         this.sessions.delete(progressToken);

@@ -60,6 +60,9 @@ import {
   OpenStreamReceiver,
   OpenStreamWriter,
   buildOpenStreamAcceptFrame,
+  buildOpenStreamAbortFrame,
+  buildOpenStreamPingFrame,
+  buildOpenStreamPongFrame,
 } from './open-stream/index.js';
 import {
   DEFAULT_CHUNK_SIZE,
@@ -351,6 +354,51 @@ export class NostrServerTransport
         options.openStream?.policy?.maxBufferedChunksPerStream,
       maxBufferedBytesPerStream:
         options.openStream?.policy?.maxBufferedBytesPerStream,
+      idleTimeoutMs: options.openStream?.policy?.idleTimeoutMs,
+      probeTimeoutMs: options.openStream?.policy?.probeTimeoutMs,
+      closeGracePeriodMs: options.openStream?.policy?.closeGracePeriodMs,
+      getSessionOptions: (progressToken) => {
+        let progress = 0;
+
+        return {
+          sendPing: async (nonce: string): Promise<void> => {
+            progress += 1;
+            await this.sendNotification(progressToken, {
+              jsonrpc: '2.0',
+              method: 'notifications/progress',
+              params: buildOpenStreamPingFrame({
+                progressToken,
+                progress,
+                nonce,
+              }),
+            });
+          },
+          sendPong: async (nonce: string): Promise<void> => {
+            progress += 1;
+            await this.sendNotification(progressToken, {
+              jsonrpc: '2.0',
+              method: 'notifications/progress',
+              params: buildOpenStreamPongFrame({
+                progressToken,
+                progress,
+                nonce,
+              }),
+            });
+          },
+          sendAbort: async (reason?: string): Promise<void> => {
+            progress += 1;
+            await this.sendNotification(progressToken, {
+              jsonrpc: '2.0',
+              method: 'notifications/progress',
+              params: buildOpenStreamAbortFrame({
+                progressToken,
+                progress,
+                reason,
+              }),
+            });
+          },
+        };
+      },
       logger: this.logger,
     });
 
@@ -677,19 +725,13 @@ export class NostrServerTransport
           });
           return undefined;
         },
+        onClose: async (): Promise<void> => {
+          await this.flushPendingOpenStreamResponse(eventId);
+        },
+        onAbort: async (): Promise<void> => {
+          await this.flushPendingOpenStreamResponse(eventId);
+        },
       });
-
-      const originalClose = writer.close.bind(writer);
-      writer.close = async (): Promise<void> => {
-        await originalClose();
-        await this.flushPendingOpenStreamResponse(eventId);
-      };
-
-      const originalAbort = writer.abort.bind(writer);
-      writer.abort = async (reason?: string): Promise<void> => {
-        await originalAbort(reason);
-        await this.flushPendingOpenStreamResponse(eventId);
-      };
 
       this.openStreamWriters.set(eventId, writer);
     }

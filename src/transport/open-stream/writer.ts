@@ -16,6 +16,8 @@ export interface OpenStreamWriterOptions {
   progressToken: string;
   publishFrame: OpenStreamFramePublisher;
   contentType?: string;
+  onClose?: () => Promise<void>;
+  onAbort?: (reason?: string) => Promise<void>;
 }
 
 /**
@@ -26,6 +28,8 @@ export class OpenStreamWriter {
 
   private readonly publishFrame: OpenStreamFramePublisher;
   private readonly contentType: string | undefined;
+  private readonly onClose?: () => Promise<void>;
+  private readonly onAbort?: (reason?: string) => Promise<void>;
   private progress = 0;
   private chunkIndex = 0;
   private started = false;
@@ -35,6 +39,8 @@ export class OpenStreamWriter {
     this.progressToken = options.progressToken;
     this.publishFrame = options.publishFrame;
     this.contentType = options.contentType;
+    this.onClose = options.onClose;
+    this.onAbort = options.onAbort;
   }
 
   public get isActive(): boolean {
@@ -78,12 +84,12 @@ export class OpenStreamWriter {
       return;
     }
 
-    const nonce = String(this.nextProgress());
+    const progress = this.nextProgress();
     await this.publishFrame(
       buildOpenStreamPingFrame({
         progressToken: this.progressToken,
-        progress: this.nextProgress(),
-        nonce,
+        progress,
+        nonce: String(progress),
       }),
     );
   }
@@ -116,6 +122,7 @@ export class OpenStreamWriter {
         lastChunkIndex: this.chunkIndex > 0 ? this.chunkIndex - 1 : undefined,
       }),
     );
+    await this.onClose?.();
   }
 
   public async abort(reason?: string): Promise<void> {
@@ -131,6 +138,7 @@ export class OpenStreamWriter {
         reason,
       }),
     );
+    await this.onAbort?.(reason);
   }
 
   private nextProgress(): number {

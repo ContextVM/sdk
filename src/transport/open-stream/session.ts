@@ -1,7 +1,13 @@
+import {
+  DEFAULT_OPEN_STREAM_CLOSE_GRACE_PERIOD_MS,
+  DEFAULT_OPEN_STREAM_IDLE_TIMEOUT_MS,
+  DEFAULT_OPEN_STREAM_PROBE_TIMEOUT_MS,
+} from './constants.js';
 import { OpenStreamAbortError, OpenStreamSequenceError } from './errors.js';
 import type {
   OpenStreamChunkFrame,
   OpenStreamFrame,
+  OpenStreamPingFrame,
   OpenStreamReadResult,
   OpenStreamSessionLike,
 } from './types.js';
@@ -29,9 +35,19 @@ export interface OpenStreamSessionOptions {
   progressToken: string;
   maxBufferedChunks: number;
   maxBufferedBytes: number;
+  idleTimeoutMs?: number;
+  probeTimeoutMs?: number;
+  closeGracePeriodMs?: number;
+  sendPing?: (nonce: string) => Promise<void>;
+  sendPong?: (nonce: string) => Promise<void>;
+  sendAbort?: (reason?: string) => Promise<void>;
   onAbort?: (reason?: string) => Promise<void>;
   onClose?: () => Promise<void>;
 }
+
+type CloseState = {
+  expectedLastChunkIndex?: number;
+};
 
 /**
  * Readable client-side/session-side view of a CEP-41 stream.
@@ -48,18 +64,39 @@ export class OpenStreamSession implements OpenStreamSessionLike<string> {
   private readonly bufferedChunks = new Map<number, string>();
   private readonly maxBufferedChunks: number;
   private readonly maxBufferedBytes: number;
+  private readonly idleTimeoutMs: number;
+  private readonly probeTimeoutMs: number;
+  private readonly closeGracePeriodMs: number;
+  private readonly sendPing?: (nonce: string) => Promise<void>;
+  private readonly sendPong?: (nonce: string) => Promise<void>;
+  private readonly sendAbort?: (reason?: string) => Promise<void>;
   private bufferedBytes = 0;
   private active = true;
   private started = false;
   private closedRemotely = false;
+  private closeState: CloseState | undefined;
   private nextExpectedChunkIndex = 0;
   private lastProgress = -1;
   private terminalError: Error | undefined;
+  private controlNonce = 0;
+  private pendingProbeNonce: string | undefined;
+  private idleTimer: ReturnType<typeof setTimeout> | undefined;
+  private probeTimer: ReturnType<typeof setTimeout> | undefined;
+  private closeGraceTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(options: OpenStreamSessionOptions) {
     this.progressToken = options.progressToken;
     this.maxBufferedChunks = options.maxBufferedChunks;
     this.maxBufferedBytes = options.maxBufferedBytes;
+    this.idleTimeoutMs =
+      options.idleTimeoutMs ?? DEFAULT_OPEN_STREAM_IDLE_TIMEOUT_MS;
+    this.probeTimeoutMs =
+      options.probeTimeoutMs ?? DEFAULT_OPEN_STREAM_PROBE_TIMEOUT_MS;
+    this.closeGracePeriodMs =
+      options.closeGracePeriodMs ?? DEFAULT_OPEN_STREAM_CLOSE_GRACE_PERIOD_MS;
+    this.sendPing = options.sendPing;
+    this.sendPong = options.sendPong;
+    this.sendAbort = options.sendAbort;
     this.onAbort = options.onAbort;
     this.onClose = options.onClose;
     this.closed = this.closeDeferred.promise;
@@ -75,8 +112,7 @@ export class OpenStreamSession implements OpenStreamSessionLike<string> {
     }
 
     const error = new OpenStreamAbortError(this.progressToken, reason);
-    this.finish(error);
-    await this.onAbort?.(reason);
+    await this.finishAborted(error, reason, true);
   }
 
   public async processFrame(
@@ -94,24 +130,45 @@ export class OpenStreamSession implements OpenStreamSessionLike<string> {
           );
         }
         this.started = true;
+        this.refreshIdleTimer();
         return;
       case 'accept':
+        this.refreshIdleTimer();
+        return;
       case 'ping':
+        this.assertStarted();
+        this.refreshIdleTimer();
+        await this.handlePing(frame);
+        return;
       case 'pong':
+        this.assertStarted();
+        this.refreshIdleTimer();
+        this.handlePong(frame.nonce);
         return;
       case 'chunk':
         this.assertStarted();
         this.bufferChunk(frame);
         this.flushContiguousChunks();
+        this.refreshIdleTimer();
         return;
       case 'close':
         this.assertStarted();
         this.closedRemotely = true;
+        this.closeState = {
+          expectedLastChunkIndex: frame.lastChunkIndex,
+        };
         this.flushContiguousChunks();
+        this.refreshIdleTimer();
         this.maybeFinishGracefully();
+        this.armCloseGraceTimer();
         return;
       case 'abort':
-        this.finish(new OpenStreamAbortError(this.progressToken, frame.reason));
+        this.refreshIdleTimer();
+        await this.finishAborted(
+          new OpenStreamAbortError(this.progressToken, frame.reason),
+          frame.reason,
+          false,
+        );
         return;
       default:
         return;
@@ -178,6 +235,12 @@ export class OpenStreamSession implements OpenStreamSessionLike<string> {
       );
     }
 
+    if (frame.chunkIndex < this.nextExpectedChunkIndex) {
+      throw new OpenStreamSequenceError(
+        `Stale chunkIndex ${frame.chunkIndex} for ${this.progressToken}`,
+      );
+    }
+
     if (this.bufferedChunks.has(frame.chunkIndex)) {
       throw new OpenStreamSequenceError(
         `Duplicate chunkIndex ${frame.chunkIndex} for ${this.progressToken}`,
@@ -216,6 +279,10 @@ export class OpenStreamSession implements OpenStreamSessionLike<string> {
       this.emit({ value: data, chunkIndex: this.nextExpectedChunkIndex });
       this.nextExpectedChunkIndex += 1;
     }
+
+    if (this.closedRemotely) {
+      this.maybeFinishGracefully();
+    }
   }
 
   private emit(value: PendingChunk): void {
@@ -233,14 +300,161 @@ export class OpenStreamSession implements OpenStreamSessionLike<string> {
       return;
     }
 
-    this.finish();
+    const expectedLastChunkIndex = this.closeState?.expectedLastChunkIndex;
+    if (expectedLastChunkIndex !== undefined) {
+      if (
+        !Number.isInteger(expectedLastChunkIndex) ||
+        expectedLastChunkIndex < 0
+      ) {
+        throw new OpenStreamSequenceError(
+          `Invalid lastChunkIndex for stream ${this.progressToken}`,
+        );
+      }
+
+      if (this.nextExpectedChunkIndex !== expectedLastChunkIndex + 1) {
+        throw new OpenStreamSequenceError(
+          `Incomplete stream for ${this.progressToken}: expected chunks through ${expectedLastChunkIndex}`,
+        );
+      }
+    }
+
+    void this.finishClosed();
   }
 
-  private finish(error?: Error): void {
+  private async handlePing(frame: OpenStreamPingFrame): Promise<void> {
+    await this.sendPong?.(frame.nonce);
+  }
+
+  private handlePong(nonce: string): void {
+    if (this.pendingProbeNonce !== nonce) {
+      return;
+    }
+
+    this.pendingProbeNonce = undefined;
+    this.clearProbeTimer();
+  }
+
+  private refreshIdleTimer(): void {
+    if (!this.active || this.closedRemotely) {
+      return;
+    }
+
+    this.clearIdleTimer();
+    this.idleTimer = setTimeout(() => {
+      this.handleIdleTimeout().catch(() => undefined);
+    }, this.idleTimeoutMs);
+  }
+
+  private async handleIdleTimeout(): Promise<void> {
+    if (!this.active || this.closedRemotely || this.pendingProbeNonce) {
+      return;
+    }
+
+    const nonce = this.nextControlNonce();
+    this.pendingProbeNonce = nonce;
+
+    try {
+      await this.sendPing?.(nonce);
+    } catch (error) {
+      await this.finishAborted(
+        error instanceof Error ? error : new Error(String(error)),
+        'Failed to send keepalive ping',
+        false,
+      );
+      return;
+    }
+
+    this.clearProbeTimer();
+    this.probeTimer = setTimeout(() => {
+      this.handleProbeTimeout(nonce).catch(() => undefined);
+    }, this.probeTimeoutMs);
+  }
+
+  private async handleProbeTimeout(nonce: string): Promise<void> {
+    if (!this.active || this.pendingProbeNonce !== nonce) {
+      return;
+    }
+
+    await this.finishAborted(
+      new OpenStreamAbortError(this.progressToken, 'Probe timeout'),
+      'Probe timeout',
+      true,
+    );
+  }
+
+  private armCloseGraceTimer(): void {
+    if (
+      !this.active ||
+      !this.closedRemotely ||
+      this.bufferedChunks.size === 0
+    ) {
+      return;
+    }
+
+    this.clearCloseGraceTimer();
+    this.closeGraceTimer = setTimeout(() => {
+      this.handleCloseGraceTimeout().catch(() => undefined);
+    }, this.closeGracePeriodMs);
+  }
+
+  private async handleCloseGraceTimeout(): Promise<void> {
+    if (
+      !this.active ||
+      !this.closedRemotely ||
+      this.bufferedChunks.size === 0
+    ) {
+      return;
+    }
+
+    await this.finishAborted(
+      new OpenStreamAbortError(
+        this.progressToken,
+        'Close grace period expired',
+      ),
+      'Close grace period expired',
+      true,
+    );
+  }
+
+  private nextControlNonce(): string {
+    this.controlNonce += 1;
+    return `${this.progressToken}:${this.controlNonce}`;
+  }
+
+  private clearIdleTimer(): void {
+    if (this.idleTimer) {
+      clearTimeout(this.idleTimer);
+      this.idleTimer = undefined;
+    }
+  }
+
+  private clearProbeTimer(): void {
+    if (this.probeTimer) {
+      clearTimeout(this.probeTimer);
+      this.probeTimer = undefined;
+    }
+  }
+
+  private clearCloseGraceTimer(): void {
+    if (this.closeGraceTimer) {
+      clearTimeout(this.closeGraceTimer);
+      this.closeGraceTimer = undefined;
+    }
+  }
+
+  private clearTimers(): void {
+    this.clearIdleTimer();
+    this.clearProbeTimer();
+    this.clearCloseGraceTimer();
+    this.pendingProbeNonce = undefined;
+  }
+
+  private finalize(error?: Error): void {
     if (!this.active) {
       return;
     }
 
+    this.clearTimers();
     this.active = false;
     this.terminalError = error;
 
@@ -262,7 +476,22 @@ export class OpenStreamSession implements OpenStreamSessionLike<string> {
     } else {
       this.closeDeferred.resolve(undefined);
     }
+  }
 
-    void this.onClose?.();
+  private async finishClosed(): Promise<void> {
+    this.finalize();
+    await this.onClose?.();
+  }
+
+  private async finishAborted(
+    error: Error,
+    reason?: string,
+    publishAbort: boolean = false,
+  ): Promise<void> {
+    this.finalize(error);
+    if (publishAbort) {
+      await this.sendAbort?.(reason);
+    }
+    await this.onAbort?.(reason);
   }
 }

@@ -52,7 +52,16 @@ import {
   OpenStreamReceiver,
   OpenStreamSession,
   buildOpenStreamAbortFrame,
+  buildOpenStreamPingFrame,
+  buildOpenStreamPongFrame,
 } from './open-stream/index.js';
+import {
+  DEFAULT_OPEN_STREAM_CLOSE_GRACE_PERIOD_MS,
+  DEFAULT_OPEN_STREAM_IDLE_TIMEOUT_MS,
+  DEFAULT_OPEN_STREAM_PROBE_TIMEOUT_MS,
+  DEFAULT_MAX_BUFFERED_BYTES_PER_STREAM,
+  DEFAULT_MAX_BUFFERED_CHUNKS_PER_STREAM,
+} from './open-stream/constants.js';
 import { parseDiscoveredPeerCapabilities } from './discovery-tags.js';
 import {
   DEFAULT_CHUNK_SIZE,
@@ -180,6 +189,7 @@ export class NostrClientTransport
   private readonly oversizedChunkSize: number;
   private readonly oversizedAcceptTimeoutMs: number;
   private readonly openStreamEnabled: boolean;
+  private readonly openStreamPolicy: OpenStreamTransportPolicy | undefined;
 
   /** Receives inbound oversized-transfer frames from the server (server→client responses). */
   private readonly oversizedReceiver: OversizedTransferReceiver;
@@ -232,12 +242,58 @@ export class NostrClientTransport
       this.logger,
     );
     this.openStreamEnabled = options.openStream?.enabled ?? false;
+    this.openStreamPolicy = options.openStream?.policy;
     this.openStreamReceiver = new OpenStreamReceiver({
       maxConcurrentStreams: options.openStream?.policy?.maxConcurrentStreams,
       maxBufferedChunksPerStream:
         options.openStream?.policy?.maxBufferedChunksPerStream,
       maxBufferedBytesPerStream:
         options.openStream?.policy?.maxBufferedBytesPerStream,
+      idleTimeoutMs: options.openStream?.policy?.idleTimeoutMs,
+      probeTimeoutMs: options.openStream?.policy?.probeTimeoutMs,
+      closeGracePeriodMs: options.openStream?.policy?.closeGracePeriodMs,
+      getSessionOptions: (progressToken) => {
+        let progress = 0;
+
+        return {
+          sendPing: async (nonce: string): Promise<void> => {
+            progress += 1;
+            await this.send({
+              jsonrpc: '2.0',
+              method: 'notifications/progress',
+              params: buildOpenStreamPingFrame({
+                progressToken,
+                progress,
+                nonce,
+              }),
+            });
+          },
+          sendPong: async (nonce: string): Promise<void> => {
+            progress += 1;
+            await this.send({
+              jsonrpc: '2.0',
+              method: 'notifications/progress',
+              params: buildOpenStreamPongFrame({
+                progressToken,
+                progress,
+                nonce,
+              }),
+            });
+          },
+          sendAbort: async (reason?: string): Promise<void> => {
+            progress += 1;
+            await this.send({
+              jsonrpc: '2.0',
+              method: 'notifications/progress',
+              params: buildOpenStreamAbortFrame({
+                progressToken,
+                progress,
+                reason,
+              }),
+            });
+          },
+        };
+      },
       logger: this.logger,
     });
   }
@@ -602,9 +658,46 @@ export class NostrClientTransport
     let progress = 0;
     return this.openStreamReceiver.createSession({
       progressToken,
-      maxBufferedChunks: Number.MAX_SAFE_INTEGER,
-      maxBufferedBytes: Number.MAX_SAFE_INTEGER,
-      onAbort: async (reason?: string): Promise<void> => {
+      maxBufferedChunks:
+        this.openStreamPolicy?.maxBufferedChunksPerStream ??
+        DEFAULT_MAX_BUFFERED_CHUNKS_PER_STREAM,
+      maxBufferedBytes:
+        this.openStreamPolicy?.maxBufferedBytesPerStream ??
+        DEFAULT_MAX_BUFFERED_BYTES_PER_STREAM,
+      idleTimeoutMs:
+        this.openStreamPolicy?.idleTimeoutMs ??
+        DEFAULT_OPEN_STREAM_IDLE_TIMEOUT_MS,
+      probeTimeoutMs:
+        this.openStreamPolicy?.probeTimeoutMs ??
+        DEFAULT_OPEN_STREAM_PROBE_TIMEOUT_MS,
+      closeGracePeriodMs:
+        this.openStreamPolicy?.closeGracePeriodMs ??
+        DEFAULT_OPEN_STREAM_CLOSE_GRACE_PERIOD_MS,
+      sendPing: async (nonce: string): Promise<void> => {
+        progress += 1;
+        await this.send({
+          jsonrpc: '2.0',
+          method: 'notifications/progress',
+          params: buildOpenStreamPingFrame({
+            progressToken,
+            progress,
+            nonce,
+          }),
+        });
+      },
+      sendPong: async (nonce: string): Promise<void> => {
+        progress += 1;
+        await this.send({
+          jsonrpc: '2.0',
+          method: 'notifications/progress',
+          params: buildOpenStreamPongFrame({
+            progressToken,
+            progress,
+            nonce,
+          }),
+        });
+      },
+      sendAbort: async (reason?: string): Promise<void> => {
         progress += 1;
         await this.send({
           jsonrpc: '2.0',
@@ -616,7 +709,6 @@ export class NostrClientTransport
           }),
         });
       },
-      onClose: async (): Promise<void> => undefined,
     });
   }
 

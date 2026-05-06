@@ -235,4 +235,253 @@ describe('OpenStreamSession', () => {
       }),
     ).rejects.toBeInstanceOf(OpenStreamSequenceError);
   });
+
+  test('calls only onAbort when the stream aborts', async () => {
+    const calls: string[] = [];
+    const session = new OpenStreamSession({
+      progressToken: 'token-abort-callbacks',
+      maxBufferedChunks: 8,
+      maxBufferedBytes: 1024,
+      onClose: async (): Promise<void> => {
+        calls.push('close');
+      },
+      onAbort: async (): Promise<void> => {
+        calls.push('abort');
+      },
+    });
+
+    await session.processFrame(1, {
+      type: 'open-stream',
+      frameType: 'start',
+    });
+
+    const closed = session.closed.catch((error: unknown) => error);
+
+    await session.processFrame(2, {
+      type: 'open-stream',
+      frameType: 'abort',
+      reason: 'boom',
+    });
+
+    expect(calls).toEqual(['abort']);
+    expect(await closed).toBeInstanceOf(OpenStreamAbortError);
+  });
+
+  test('rejects stale chunk indexes that were already flushed', async () => {
+    const session = new OpenStreamSession({
+      progressToken: 'token-stale-chunk',
+      maxBufferedChunks: 8,
+      maxBufferedBytes: 1024,
+    });
+
+    await session.processFrame(1, {
+      type: 'open-stream',
+      frameType: 'start',
+    });
+    await session.processFrame(2, {
+      type: 'open-stream',
+      frameType: 'chunk',
+      chunkIndex: 0,
+      data: 'hello',
+    });
+
+    await expect(
+      session.processFrame(3, {
+        type: 'open-stream',
+        frameType: 'chunk',
+        chunkIndex: 0,
+        data: 'late-duplicate',
+      }),
+    ).rejects.toBeInstanceOf(OpenStreamSequenceError);
+  });
+
+  test('requires all chunks through close.lastChunkIndex before finishing', async () => {
+    const session = new OpenStreamSession({
+      progressToken: 'token-last-chunk-index',
+      maxBufferedChunks: 8,
+      maxBufferedBytes: 1024,
+    });
+
+    await session.processFrame(1, {
+      type: 'open-stream',
+      frameType: 'start',
+    });
+    await session.processFrame(2, {
+      type: 'open-stream',
+      frameType: 'chunk',
+      chunkIndex: 0,
+      data: 'hello',
+    });
+
+    await expect(
+      session.processFrame(3, {
+        type: 'open-stream',
+        frameType: 'close',
+        lastChunkIndex: 1,
+      }),
+    ).rejects.toBeInstanceOf(OpenStreamSequenceError);
+  });
+
+  test('allows graceful close when close.lastChunkIndex matches received chunks', async () => {
+    const session = new OpenStreamSession({
+      progressToken: 'token-last-chunk-complete',
+      maxBufferedChunks: 8,
+      maxBufferedBytes: 1024,
+      idleTimeoutMs: 1000,
+      probeTimeoutMs: 1000,
+      closeGracePeriodMs: 1000,
+    });
+
+    await session.processFrame(1, {
+      type: 'open-stream',
+      frameType: 'start',
+    });
+    await session.processFrame(2, {
+      type: 'open-stream',
+      frameType: 'chunk',
+      chunkIndex: 0,
+      data: 'hello',
+    });
+    await session.processFrame(3, {
+      type: 'open-stream',
+      frameType: 'close',
+      lastChunkIndex: 0,
+    });
+
+    await expect(session.closed).resolves.toBeUndefined();
+  });
+
+  test('responds to ping frames with a matching pong', async () => {
+    const pongs: string[] = [];
+    const session = new OpenStreamSession({
+      progressToken: 'token-ping-pong',
+      maxBufferedChunks: 8,
+      maxBufferedBytes: 1024,
+      idleTimeoutMs: 100,
+      probeTimeoutMs: 100,
+      closeGracePeriodMs: 100,
+      sendPong: async (nonce: string): Promise<void> => {
+        pongs.push(nonce);
+      },
+    });
+
+    await session.processFrame(1, {
+      type: 'open-stream',
+      frameType: 'start',
+    });
+    await session.processFrame(2, {
+      type: 'open-stream',
+      frameType: 'ping',
+      nonce: 'nonce-1',
+    });
+
+    expect(pongs).toEqual(['nonce-1']);
+  });
+
+  test('sends ping after idle timeout and aborts after probe timeout', async () => {
+    const pings: string[] = [];
+    const aborts: Array<string | undefined> = [];
+    const session = new OpenStreamSession({
+      progressToken: 'token-probe-timeout',
+      maxBufferedChunks: 8,
+      maxBufferedBytes: 1024,
+      idleTimeoutMs: 10,
+      probeTimeoutMs: 10,
+      closeGracePeriodMs: 100,
+      sendPing: async (nonce: string): Promise<void> => {
+        pings.push(nonce);
+      },
+      sendAbort: async (reason?: string): Promise<void> => {
+        aborts.push(reason);
+      },
+    });
+    const closed = session.closed.catch((error: unknown) => error);
+
+    await session.processFrame(1, {
+      type: 'open-stream',
+      frameType: 'start',
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 35));
+
+    expect(pings).toHaveLength(1);
+    expect(aborts).toEqual(['Probe timeout']);
+    expect(await closed).toBeInstanceOf(OpenStreamAbortError);
+  });
+
+  test('clears the probe timeout when a matching pong arrives', async () => {
+    const pings: string[] = [];
+    const aborts: Array<string | undefined> = [];
+    const session = new OpenStreamSession({
+      progressToken: 'token-probe-success',
+      maxBufferedChunks: 8,
+      maxBufferedBytes: 1024,
+      idleTimeoutMs: 10,
+      probeTimeoutMs: 20,
+      closeGracePeriodMs: 100,
+      sendPing: async (nonce: string): Promise<void> => {
+        pings.push(nonce);
+      },
+      sendAbort: async (reason?: string): Promise<void> => {
+        aborts.push(reason);
+      },
+    });
+
+    await session.processFrame(1, {
+      type: 'open-stream',
+      frameType: 'start',
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    expect(pings).toHaveLength(1);
+
+    await session.processFrame(2, {
+      type: 'open-stream',
+      frameType: 'pong',
+      nonce: pings[0]!,
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    expect(aborts).toEqual([]);
+    expect(session.isActive).toBe(true);
+
+    await session.abort('test cleanup');
+    await session.closed.catch(() => undefined);
+  });
+
+  test('aborts when close grace period expires with missing chunks', async () => {
+    const aborts: Array<string | undefined> = [];
+    const session = new OpenStreamSession({
+      progressToken: 'token-close-grace-timeout',
+      maxBufferedChunks: 8,
+      maxBufferedBytes: 1024,
+      idleTimeoutMs: 100,
+      probeTimeoutMs: 100,
+      closeGracePeriodMs: 10,
+      sendAbort: async (reason?: string): Promise<void> => {
+        aborts.push(reason);
+      },
+    });
+    const closed = session.closed.catch((error: unknown) => error);
+
+    await session.processFrame(1, {
+      type: 'open-stream',
+      frameType: 'start',
+    });
+    await session.processFrame(2, {
+      type: 'open-stream',
+      frameType: 'chunk',
+      chunkIndex: 1,
+      data: 'late',
+    });
+    await session.processFrame(3, {
+      type: 'open-stream',
+      frameType: 'close',
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    expect(aborts).toEqual(['Close grace period expired']);
+    expect(await closed).toBeInstanceOf(OpenStreamAbortError);
+  });
 });
