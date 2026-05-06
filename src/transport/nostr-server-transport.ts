@@ -1371,6 +1371,36 @@ export class NostrServerTransport
             return;
           }
 
+          if (frame?.frameType === 'ping') {
+            const progressToken = String(
+              inboundMessage.params?.progressToken ?? '',
+            );
+            const nonce =
+              'nonce' in frame && typeof frame.nonce === 'string'
+                ? frame.nonce
+                : '';
+            const eventId =
+              this.correlationStore.getEventIdByProgressToken(progressToken);
+            const writer = eventId
+              ? this.openStreamWriters.get(eventId)
+              : undefined;
+
+            if (writer) {
+              void writer.pong(nonce).catch((err: unknown) => {
+                this.logger.error('Open stream ping handling failed (server)', {
+                  error: err instanceof Error ? err.message : String(err),
+                  pubkey: event.pubkey,
+                  progressToken,
+                });
+                this.onerror?.(
+                  err instanceof Error ? err : new Error(String(err)),
+                );
+              });
+
+              return;
+            }
+          }
+
           this.openStreamReceiver
             .processFrame(inboundMessage)
             .then(async () => {

@@ -31,7 +31,11 @@ function getOpenStreamWriter(extra: {
   return stream as OpenStreamWriter;
 }
 
-function createOpenStreamFixture(): {
+function createOpenStreamFixture(options?: {
+  idleTimeoutMs?: number;
+  probeTimeoutMs?: number;
+  closeGracePeriodMs?: number;
+}): {
   relayHub: MockRelayHub;
   server: McpServer;
   client: Client;
@@ -54,6 +58,11 @@ function createOpenStreamFixture(): {
     encryptionMode: EncryptionMode.DISABLED,
     openStream: {
       enabled: true,
+      policy: {
+        idleTimeoutMs: options?.idleTimeoutMs,
+        probeTimeoutMs: options?.probeTimeoutMs,
+        closeGracePeriodMs: options?.closeGracePeriodMs,
+      },
     },
   });
 
@@ -64,6 +73,11 @@ function createOpenStreamFixture(): {
     encryptionMode: EncryptionMode.DISABLED,
     openStream: {
       enabled: true,
+      policy: {
+        idleTimeoutMs: options?.idleTimeoutMs,
+        probeTimeoutMs: options?.probeTimeoutMs,
+        closeGracePeriodMs: options?.closeGracePeriodMs,
+      },
     },
   });
 
@@ -92,6 +106,44 @@ function getFrameType(event: { content: string }): string | undefined {
     };
 
     return message.params?.cvm?.frameType;
+  } catch {
+    return undefined;
+  }
+}
+
+function parseRelayMessage(event: { content: string }):
+  | {
+      method?: string;
+      params?: {
+        progressToken?: string;
+        progress?: number;
+        cvm?: {
+          frameType?: string;
+          nonce?: string;
+          chunkIndex?: number;
+          data?: string;
+          lastChunkIndex?: number;
+          reason?: string;
+        };
+      };
+    }
+  | undefined {
+  try {
+    return JSON.parse(event.content) as {
+      method?: string;
+      params?: {
+        progressToken?: string;
+        progress?: number;
+        cvm?: {
+          frameType?: string;
+          nonce?: string;
+          chunkIndex?: number;
+          data?: string;
+          lastChunkIndex?: number;
+          reason?: string;
+        };
+      };
+    };
   } catch {
     return undefined;
   }
@@ -437,6 +489,303 @@ describe('callToolStream end-to-end', () => {
       clientTransport.getOpenStreamSession(call.progressToken),
     ).toBeUndefined();
     await expect(call.stream.closed).resolves.toBeUndefined();
+
+    await cleanupOpenStreamFixture({ client, server, relayHub });
+  }, 15_000);
+
+  test('keeps the stream alive across idle timeout ping/pong and continues delivering chunks', async () => {
+    const { relayHub, server, client, serverTransport, clientTransport } =
+      createOpenStreamFixture({
+        idleTimeoutMs: 40,
+        probeTimeoutMs: 200,
+        closeGracePeriodMs: 200,
+      });
+    let releaseSecondChunk: (() => void) | undefined;
+    let observedPongNonce: string | undefined;
+
+    server.registerTool(
+      'keepaliveStream',
+      {
+        title: 'Keepalive Stream',
+        description: 'Waits long enough to require keepalive before resuming.',
+        inputSchema: {
+          topic: z.string(),
+        },
+      },
+      async ({ topic }, extra) => {
+        const stream = getOpenStreamWriter(extra);
+        const originalPong = stream.pong.bind(stream);
+
+        stream.pong = async (nonce: string): Promise<void> => {
+          observedPongNonce = nonce;
+          await originalPong(nonce);
+        };
+
+        await stream.start();
+        await stream.write(`stream:${topic}:1`);
+        await new Promise<void>((resolve) => {
+          releaseSecondChunk = resolve;
+        });
+        await stream.write(`stream:${topic}:2`);
+        await stream.close();
+
+        return {
+          content: [{ type: 'text', text: `done:${topic}` }],
+        };
+      },
+    );
+
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+
+    const call = await callToolStream({
+      client,
+      transport: clientTransport,
+      name: 'keepaliveStream',
+      arguments: {
+        topic: 'orders',
+      },
+    });
+
+    const iterator = call.stream[Symbol.asyncIterator]();
+    const firstChunk = await iterator.next();
+    expect(firstChunk.done).toBe(false);
+    expect(firstChunk.value?.value).toBe('stream:orders:1');
+
+    await waitFor({
+      produce: () => {
+        return observedPongNonce;
+      },
+      timeoutMs: 5_000,
+    });
+
+    const controlFrames = relayHub
+      .getEvents()
+      .map((event) => getFrameType(event))
+      .filter(
+        (frameType): frameType is string =>
+          frameType === 'ping' || frameType === 'pong',
+      );
+
+    expect(controlFrames).toContain('ping');
+    expect(controlFrames).toContain('pong');
+
+    releaseSecondChunk?.();
+
+    const secondChunk = await iterator.next();
+    expect(secondChunk.done).toBe(false);
+    expect(secondChunk.value?.value).toBe('stream:orders:2');
+    await expect(iterator.next()).resolves.toEqual({
+      done: true,
+      value: undefined,
+    });
+
+    await expect(call.result).resolves.toMatchObject({
+      content: [{ type: 'text', text: 'done:orders' }],
+    });
+    await expect(call.stream.closed).resolves.toBeUndefined();
+
+    await cleanupOpenStreamFixture({ client, server, relayHub });
+  }, 15_000);
+
+  test('aborts the server-side stream when the keepalive probe is not acknowledged', async () => {
+    const { relayHub, server, client, serverTransport, clientTransport } =
+      createOpenStreamFixture({
+        idleTimeoutMs: 40,
+        probeTimeoutMs: 60,
+        closeGracePeriodMs: 200,
+      });
+    let abortReason: string | undefined;
+    let producerReleased = false;
+
+    server.registerTool(
+      'probeTimeoutStream',
+      {
+        title: 'Probe Timeout Stream',
+        description:
+          'Stays open until the receiver aborts after probe timeout.',
+        inputSchema: {
+          topic: z.string(),
+        },
+      },
+      async ({ topic }, extra) => {
+        const stream = getOpenStreamWriter(extra);
+        const originalPong = stream.pong.bind(stream);
+        const originalAbort = stream.abort.bind(stream);
+
+        stream.pong = async (_nonce: string): Promise<void> => {
+          // Suppress pong so the receiver-side keepalive probe times out.
+        };
+        stream.abort = async (reason?: string): Promise<void> => {
+          abortReason = reason;
+          await originalAbort(reason);
+        };
+
+        await stream.start();
+        await stream.write(`stream:${topic}:1`);
+
+        await new Promise<void>((resolve) => {
+          const poll = (): void => {
+            if (!stream.isActive) {
+              producerReleased = true;
+              resolve();
+              return;
+            }
+
+            setTimeout(poll, 10);
+          };
+
+          poll();
+        });
+
+        stream.pong = originalPong;
+
+        return {
+          content: [{ type: 'text', text: `probe-timeout:${topic}` }],
+        };
+      },
+    );
+
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+
+    const call = await callToolStream({
+      client,
+      transport: clientTransport,
+      name: 'probeTimeoutStream',
+      arguments: {
+        topic: 'orders',
+      },
+    });
+
+    const iterator = call.stream[Symbol.asyncIterator]();
+    const firstChunk = await iterator.next();
+    expect(firstChunk.done).toBe(false);
+    expect(firstChunk.value?.value).toBe('stream:orders:1');
+    const closedResult = call.stream.closed.catch((error: unknown) => error);
+
+    await expect(iterator.next()).rejects.toThrow('Probe timeout');
+    expect(await closedResult).toBeInstanceOf(Error);
+
+    await waitFor({
+      produce: () => {
+        if (producerReleased && abortReason === 'Probe timeout') {
+          return true;
+        }
+
+        return undefined;
+      },
+      timeoutMs: 5_000,
+    });
+
+    await waitFor({
+      produce: () => {
+        const state = serverTransport.getInternalStateForTesting();
+        return state.correlationStore.eventRouteCount === 0 &&
+          state.openStreamReceiver.size === 0
+          ? true
+          : undefined;
+      },
+      timeoutMs: 5_000,
+    });
+
+    expect(abortReason).toBe('Probe timeout');
+    expect(producerReleased).toBe(true);
+    await expect(call.result).resolves.toMatchObject({
+      content: [{ type: 'text', text: 'probe-timeout:orders' }],
+    });
+
+    await cleanupOpenStreamFixture({ client, server, relayHub });
+  }, 15_000);
+
+  test('keeps streaming after an interleaved client ping and server pong', async () => {
+    const { relayHub, server, client, serverTransport, clientTransport } =
+      createOpenStreamFixture();
+    let releaseSecondChunk: (() => void) | undefined;
+
+    server.registerTool(
+      'interleavedControlStream',
+      {
+        title: 'Interleaved Control Stream',
+        description:
+          'Continues streaming after client-originated keepalive control frames.',
+        inputSchema: {
+          topic: z.string(),
+        },
+      },
+      async ({ topic }, extra) => {
+        const stream = getOpenStreamWriter(extra);
+
+        await stream.start();
+        await stream.write(`stream:${topic}:1`);
+        await new Promise<void>((resolve) => {
+          releaseSecondChunk = resolve;
+        });
+        await stream.write(`stream:${topic}:2`);
+        await stream.close();
+
+        return {
+          content: [{ type: 'text', text: `interleaved:${topic}` }],
+        };
+      },
+    );
+
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+
+    const call = await callToolStream({
+      client,
+      transport: clientTransport,
+      name: 'interleavedControlStream',
+      arguments: {
+        topic: 'orders',
+      },
+    });
+
+    const iterator = call.stream[Symbol.asyncIterator]();
+    const firstChunk = await iterator.next();
+    expect(firstChunk.done).toBe(false);
+    expect(firstChunk.value?.value).toBe('stream:orders:1');
+
+    await clientTransport.send({
+      jsonrpc: '2.0',
+      method: 'notifications/progress',
+      params: {
+        progressToken: call.progressToken,
+        progress: 1,
+        cvm: {
+          type: 'open-stream',
+          frameType: 'ping',
+          nonce: 'manual-client-ping',
+        },
+      },
+    });
+
+    await waitFor({
+      produce: () =>
+        relayHub.getEvents().find((event) => {
+          const message = parseRelayMessage(event);
+          return (
+            message?.params?.progressToken === call.progressToken &&
+            message.params?.cvm?.frameType === 'pong' &&
+            message.params?.cvm?.nonce === 'manual-client-ping'
+          );
+        }),
+      timeoutMs: 5_000,
+    });
+
+    releaseSecondChunk?.();
+
+    const secondChunk = await iterator.next();
+    expect(secondChunk.done).toBe(false);
+    expect(secondChunk.value?.value).toBe('stream:orders:2');
+    await expect(iterator.next()).resolves.toEqual({
+      done: true,
+      value: undefined,
+    });
+    await expect(call.result).resolves.toMatchObject({
+      content: [{ type: 'text', text: 'interleaved:orders' }],
+    });
 
     await cleanupOpenStreamFixture({ client, server, relayHub });
   }, 15_000);
