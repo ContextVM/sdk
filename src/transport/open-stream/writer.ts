@@ -78,15 +78,17 @@ export class OpenStreamWriter {
       return;
     }
 
+    const nonce = String(this.nextProgress());
     await this.publishFrame(
       buildOpenStreamPingFrame({
         progressToken: this.progressToken,
         progress: this.nextProgress(),
+        nonce,
       }),
     );
   }
 
-  public async pong(): Promise<void> {
+  public async pong(nonce: string): Promise<void> {
     if (!this.active) {
       return;
     }
@@ -95,6 +97,7 @@ export class OpenStreamWriter {
       buildOpenStreamPongFrame({
         progressToken: this.progressToken,
         progress: this.nextProgress(),
+        nonce,
       }),
     );
   }
@@ -110,6 +113,7 @@ export class OpenStreamWriter {
       buildOpenStreamCloseFrame({
         progressToken: this.progressToken,
         progress: this.nextProgress(),
+        lastChunkIndex: this.chunkIndex > 0 ? this.chunkIndex - 1 : undefined,
       }),
     );
   }

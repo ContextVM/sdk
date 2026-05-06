@@ -3,7 +3,7 @@ import {
   OpenStreamRegistry,
   type OpenStreamRegistryOptions,
 } from './registry.js';
-import type { OpenStreamSession } from './session.js';
+import type { OpenStreamSession, OpenStreamSessionOptions } from './session.js';
 import type { OpenStreamProgress } from './types.js';
 
 /**
@@ -34,6 +34,10 @@ export class OpenStreamReceiver {
 
   public getOrCreateSession(progressToken: string): OpenStreamSession {
     return this.registry.getOrCreateSession(progressToken);
+  }
+
+  public createSession(options: OpenStreamSessionOptions): OpenStreamSession {
+    return this.registry.createSession(options);
   }
 
   public clear(): void {

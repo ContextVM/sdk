@@ -102,8 +102,7 @@ Example conceptual envelope:
     "message": "(Optional) starting open stream",
     "cvm": {
       "type": "open-stream",
-      "frameType": "start",
-      "mode": "stream"
+      "frameType": "start"
     }
   }
 }
@@ -141,23 +140,15 @@ The outer MCP `total` and `message` fields MAY be used for UX hints or progress 
 
 The `start` frame begins the stream.
 
-Required fields:
-
-- `mode`: `stream`
-
 Optional fields:
 
-- `contentType`
-- `contentEncoding`
+- application-defined advisory payload metadata
 
 Rules:
 
-- If `mode` is omitted, receivers MAY reject the stream; senders SHOULD always provide it.
-- In this CEP version, senders MUST use `mode: "stream"`.
-- Receivers MUST reject unknown or unsupported stream modes.
-- `contentType`, when present, SHOULD identify the media type of the logical stream payload.
-- `contentEncoding`, when present, SHOULD identify how `data` string fragments are encoded for interpretation by the application.
-- `contentType` and `contentEncoding` are advisory metadata only and do not define stream correctness.
+- `start` establishes intent to begin an open-ended stream under the given `progressToken`.
+- Applications MAY include additional advisory metadata in `cvm` on `start` when both peers understand it.
+- Receivers MUST NOT depend on advisory `start` metadata for stream correctness.
 
 #### `accept` Frame
 
@@ -245,7 +236,9 @@ Rules:
 
 - `close` is required for successful stream completion.
 - `close` indicates that no further `chunk` frames will be sent for the stream.
-- If the stream included one or more `chunk` frames, `close.lastChunkIndex` MUST equal the greatest `chunkIndex` sent for the stream.
+- When present, `close.lastChunkIndex` MUST equal the greatest `chunkIndex` sent for the stream.
+- Senders SHOULD include `close.lastChunkIndex` when they intend `close` to declare a finite chunk-completeness bound for the delivered payload.
+- Senders MAY omit `close.lastChunkIndex` for live, event-like, or otherwise open-ended streams where no chunk-completeness bound is being declared.
 - If the stream included no `chunk` frames, `close.lastChunkIndex` MUST be omitted.
 
 #### `abort` Frame
@@ -285,7 +278,7 @@ Rules:
 - a second `start` received for an already active `progressToken` MUST cause the stream to fail
 - successful completion requires `close`
 - if `close.lastChunkIndex` is present, receivers MUST treat it as the completeness bound for the stream payload
-- when `close` is received and one or more `chunk` frames were sent, successful completion requires receipt of every `chunkIndex` from `0` through `lastChunkIndex`
+- when `close.lastChunkIndex` is present, successful completion requires receipt of every `chunkIndex` from `0` through `lastChunkIndex`
 - if gaps remain when `close` is received, receivers MAY wait a bounded local grace period for delayed chunks or MAY fail immediately under local policy
 - if `close` arrives after malformed or non-monotonic ordering, the stream MUST fail
 
@@ -395,8 +388,7 @@ Server starts the stream:
     "message": "starting stream",
     "cvm": {
       "type": "open-stream",
-      "frameType": "start",
-      "mode": "stream"
+      "frameType": "start"
     }
   }
 }
@@ -490,8 +482,7 @@ Client announces intent to begin a stream:
     "message": "starting client stream",
     "cvm": {
       "type": "open-stream",
-      "frameType": "start",
-      "mode": "stream"
+      "frameType": "start"
     }
   }
 }

@@ -66,10 +66,12 @@ export function buildOpenStreamChunkFrame(params: {
 export function buildOpenStreamPingFrame(params: {
   progressToken: string;
   progress: number;
+  nonce: string;
 }): OpenStreamProgress {
   const cvm: OpenStreamPingFrame = {
     type: 'open-stream',
     frameType: 'ping',
+    nonce: params.nonce,
   };
 
   return {
@@ -82,10 +84,12 @@ export function buildOpenStreamPingFrame(params: {
 export function buildOpenStreamPongFrame(params: {
   progressToken: string;
   progress: number;
+  nonce: string;
 }): OpenStreamProgress {
   const cvm: OpenStreamPongFrame = {
     type: 'open-stream',
     frameType: 'pong',
+    nonce: params.nonce,
   };
 
   return {
@@ -98,10 +102,12 @@ export function buildOpenStreamPongFrame(params: {
 export function buildOpenStreamCloseFrame(params: {
   progressToken: string;
   progress: number;
+  lastChunkIndex?: number;
 }): OpenStreamProgress {
   const cvm: OpenStreamCloseFrame = {
     type: 'open-stream',
     frameType: 'close',
+    lastChunkIndex: params.lastChunkIndex,
   };
 
   return {

@@ -48,8 +48,11 @@ import {
   OversizedTransferReceiver,
   type TransferPolicy,
 } from './oversized-transfer/index.js';
-import { OpenStreamReceiver } from './open-stream/index.js';
-import type { OpenStreamSession } from './open-stream/index.js';
+import {
+  OpenStreamReceiver,
+  OpenStreamSession,
+  buildOpenStreamAbortFrame,
+} from './open-stream/index.js';
 import { parseDiscoveredPeerCapabilities } from './discovery-tags.js';
 import {
   DEFAULT_CHUNK_SIZE,
@@ -582,6 +585,39 @@ export class NostrClientTransport
     progressToken: string,
   ): OpenStreamSession {
     return this.openStreamReceiver.getOrCreateSession(progressToken);
+  }
+
+  /**
+   * Returns an outbound CEP-41 session whose local abort publishes an abort
+   * notification to the server.
+   */
+  public createOutboundOpenStreamSession(
+    progressToken: string,
+  ): OpenStreamSession {
+    const existing = this.openStreamReceiver.getSession(progressToken);
+    if (existing) {
+      return existing;
+    }
+
+    let progress = 0;
+    return this.openStreamReceiver.createSession({
+      progressToken,
+      maxBufferedChunks: Number.MAX_SAFE_INTEGER,
+      maxBufferedBytes: Number.MAX_SAFE_INTEGER,
+      onAbort: async (reason?: string): Promise<void> => {
+        progress += 1;
+        await this.send({
+          jsonrpc: '2.0',
+          method: 'notifications/progress',
+          params: buildOpenStreamAbortFrame({
+            progressToken,
+            progress,
+            reason,
+          }),
+        });
+      },
+      onClose: async (): Promise<void> => undefined,
+    });
   }
 
   /**

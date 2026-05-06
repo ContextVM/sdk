@@ -29,14 +29,17 @@ export type OpenStreamChunkFrame = OpenStreamCommon & {
 
 export type OpenStreamPingFrame = OpenStreamCommon & {
   frameType: 'ping';
+  nonce: string;
 };
 
 export type OpenStreamPongFrame = OpenStreamCommon & {
   frameType: 'pong';
+  nonce: string;
 };
 
 export type OpenStreamCloseFrame = OpenStreamCommon & {
   frameType: 'close';
+  lastChunkIndex?: number;
 };
 
 export type OpenStreamAbortFrame = OpenStreamCommon & {

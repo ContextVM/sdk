@@ -123,4 +123,116 @@ describe('OpenStreamSession', () => {
     expect(await nextChunk).toBeInstanceOf(OpenStreamAbortError);
     expect(await closed).toBeInstanceOf(OpenStreamAbortError);
   });
+
+  test('fails when buffered chunk count exceeds the configured limit', async () => {
+    const session = new OpenStreamSession({
+      progressToken: 'token-buffer-count',
+      maxBufferedChunks: 1,
+      maxBufferedBytes: 1024,
+    });
+
+    await session.processFrame(1, {
+      type: 'open-stream',
+      frameType: 'start',
+    });
+    await session.processFrame(2, {
+      type: 'open-stream',
+      frameType: 'chunk',
+      chunkIndex: 1,
+      data: 'late',
+    });
+
+    await expect(
+      session.processFrame(3, {
+        type: 'open-stream',
+        frameType: 'chunk',
+        chunkIndex: 2,
+        data: 'later',
+      }),
+    ).rejects.toBeInstanceOf(OpenStreamSequenceError);
+  });
+
+  test('fails when buffered byte count exceeds the configured limit', async () => {
+    const session = new OpenStreamSession({
+      progressToken: 'token-buffer-bytes',
+      maxBufferedChunks: 4,
+      maxBufferedBytes: 4,
+    });
+
+    await session.processFrame(1, {
+      type: 'open-stream',
+      frameType: 'start',
+    });
+
+    await expect(
+      session.processFrame(2, {
+        type: 'open-stream',
+        frameType: 'chunk',
+        chunkIndex: 1,
+        data: 'hello',
+      }),
+    ).rejects.toBeInstanceOf(OpenStreamSequenceError);
+  });
+
+  test('rejects frames after close', async () => {
+    const session = new OpenStreamSession({
+      progressToken: 'token-post-close',
+      maxBufferedChunks: 8,
+      maxBufferedBytes: 1024,
+    });
+
+    await session.processFrame(1, {
+      type: 'open-stream',
+      frameType: 'start',
+    });
+    await session.processFrame(2, {
+      type: 'open-stream',
+      frameType: 'close',
+    });
+    await expect(session.closed).resolves.toBeUndefined();
+
+    await expect(
+      session.processFrame(3, {
+        type: 'open-stream',
+        frameType: 'chunk',
+        chunkIndex: 0,
+        data: 'late',
+      }),
+    ).rejects.toBeInstanceOf(OpenStreamSequenceError);
+  });
+
+  test('rejects frames after abort', async () => {
+    const session = new OpenStreamSession({
+      progressToken: 'token-post-abort',
+      maxBufferedChunks: 8,
+      maxBufferedBytes: 1024,
+    });
+
+    await session.processFrame(1, {
+      type: 'open-stream',
+      frameType: 'start',
+    });
+    await session.processFrame(2, {
+      type: 'open-stream',
+      frameType: 'abort',
+      reason: 'boom',
+    });
+    await expect(session.closed).rejects.toBeInstanceOf(OpenStreamAbortError);
+
+    await expect(
+      session.processFrame(3, {
+        type: 'open-stream',
+        frameType: 'chunk',
+        chunkIndex: 0,
+        data: 'late',
+      }),
+    ).rejects.toBeInstanceOf(OpenStreamSequenceError);
+
+    await expect(
+      session.processFrame(4, {
+        type: 'open-stream',
+        frameType: 'close',
+      }),
+    ).rejects.toBeInstanceOf(OpenStreamSequenceError);
+  });
 });

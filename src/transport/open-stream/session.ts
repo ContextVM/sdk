@@ -42,7 +42,7 @@ export class OpenStreamSession implements OpenStreamSessionLike<string> {
 
   private readonly onAbort?: (reason?: string) => Promise<void>;
   private readonly onClose?: () => Promise<void>;
-  private readonly closeDeferred = createDeferred<void>();
+  private readonly closeDeferred = createDeferred<undefined>();
   private readonly waiters: Array<Deferred<IteratorResult<PendingChunk>>> = [];
   private readonly queue: PendingChunk[] = [];
   private readonly bufferedChunks = new Map<number, string>();
@@ -260,7 +260,7 @@ export class OpenStreamSession implements OpenStreamSessionLike<string> {
     if (error) {
       this.closeDeferred.reject(error);
     } else {
-      this.closeDeferred.resolve();
+      this.closeDeferred.resolve(undefined);
     }
 
     void this.onClose?.();

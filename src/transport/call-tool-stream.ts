@@ -30,7 +30,7 @@ export async function callToolStream<TResult = unknown>(
 ): Promise<ToolStreamCall<TResult>> {
   const { client, transport, name, arguments: toolArguments } = params;
   const progressToken = params.progressToken ?? createProgressToken();
-  const stream = transport.getOrCreateOpenStreamSession(progressToken);
+  const stream = transport.createOutboundOpenStreamSession(progressToken);
 
   const result = client.callTool({
     name,

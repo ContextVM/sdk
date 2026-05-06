@@ -1296,12 +1296,43 @@ export class NostrServerTransport
           inboundMessage.method === 'notifications/progress' &&
           OpenStreamReceiver.isOpenStreamFrame(inboundMessage)
         ) {
+          const frame = inboundMessage.params?.cvm as
+            | { frameType?: string; reason?: string }
+            | undefined;
+
+          if (frame?.frameType === 'abort') {
+            const progressToken = String(
+              inboundMessage.params?.progressToken ?? '',
+            );
+            const eventId =
+              this.correlationStore.getEventIdByProgressToken(progressToken);
+            const writer = eventId
+              ? this.openStreamWriters.get(eventId)
+              : undefined;
+
+            if (writer) {
+              void writer.abort(frame.reason).catch((err: unknown) => {
+                this.logger.error(
+                  'Open stream abort propagation failed (server)',
+                  {
+                    error: err instanceof Error ? err.message : String(err),
+                    pubkey: event.pubkey,
+                    progressToken,
+                  },
+                );
+                this.onerror?.(
+                  err instanceof Error ? err : new Error(String(err)),
+                );
+              });
+            }
+
+            return;
+          }
+
           this.openStreamReceiver
             .processFrame(inboundMessage)
             .then(async () => {
-              const frameType = (
-                inboundMessage.params?.cvm as { frameType?: string } | undefined
-              )?.frameType;
+              const frameType = frame?.frameType;
 
               if (frameType === 'start' && session.supportsOpenStream) {
                 await this.sendNotification(event.pubkey, {

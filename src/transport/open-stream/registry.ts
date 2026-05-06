@@ -5,7 +5,7 @@ import {
   DEFAULT_MAX_CONCURRENT_OPEN_STREAMS,
 } from './constants.js';
 import { OpenStreamPolicyError, OpenStreamSequenceError } from './errors.js';
-import { OpenStreamSession } from './session.js';
+import { OpenStreamSession, type OpenStreamSessionOptions } from './session.js';
 import type { OpenStreamFrame, OpenStreamProgress } from './types.js';
 
 export interface OpenStreamRegistryOptions {
@@ -60,7 +60,16 @@ export class OpenStreamRegistry {
     return this.sessions.get(progressToken);
   }
 
-  public createSession(progressToken: string): OpenStreamSession {
+  public createSession(
+    options:
+      | string
+      | (Pick<OpenStreamSessionOptions, 'progressToken'> &
+          Partial<Omit<OpenStreamSessionOptions, 'progressToken'>>),
+  ): OpenStreamSession {
+    const sessionOptions =
+      typeof options === 'string' ? { progressToken: options } : options;
+    const { progressToken } = sessionOptions;
+
     if (this.sessions.has(progressToken)) {
       throw new OpenStreamSequenceError(
         `Stream session already exists for ${progressToken}`,
@@ -75,12 +84,16 @@ export class OpenStreamRegistry {
 
     const session = new OpenStreamSession({
       progressToken,
-      maxBufferedChunks: this.maxBufferedChunksPerStream,
-      maxBufferedBytes: this.maxBufferedBytesPerStream,
+      maxBufferedChunks:
+        sessionOptions.maxBufferedChunks ?? this.maxBufferedChunksPerStream,
+      maxBufferedBytes:
+        sessionOptions.maxBufferedBytes ?? this.maxBufferedBytesPerStream,
       onClose: async () => {
+        await sessionOptions.onClose?.();
         this.sessions.delete(progressToken);
       },
-      onAbort: async () => {
+      onAbort: async (reason?: string) => {
+        await sessionOptions.onAbort?.(reason);
         this.sessions.delete(progressToken);
       },
     });
@@ -97,7 +110,17 @@ export class OpenStreamRegistry {
     frame: OpenStreamProgress,
   ): Promise<OpenStreamSession> {
     const progressToken = String(frame.progressToken);
-    const session = this.getOrCreateSession(progressToken);
+    const existingSession = this.getSession(progressToken);
+
+    if (!existingSession) {
+      if (frame.cvm.frameType !== 'start') {
+        throw new OpenStreamSequenceError(
+          `Received ${frame.cvm.frameType} frame before start for ${progressToken}`,
+        );
+      }
+    }
+
+    const session = existingSession ?? this.createSession(progressToken);
     await session.processFrame(frame.progress, frame.cvm);
     return session;
   }
