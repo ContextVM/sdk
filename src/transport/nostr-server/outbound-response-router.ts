@@ -107,7 +107,7 @@ export class OutboundResponseRouter {
       route.progressToken &&
       session.supportsOversizedTransfer
     ) {
-      // Serialize before restoring id so the client receives the correct id.
+      // Serialize after restoring the original request id so oversized transfer uses the correct id.
       const serialized = JSON.stringify(responseToSend);
       const byteLength = new TextEncoder().encode(serialized).byteLength;
       if (byteLength > this.deps.oversizedConfig.threshold) {
