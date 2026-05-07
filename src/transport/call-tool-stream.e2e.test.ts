@@ -6,12 +6,8 @@ import { bytesToHex, hexToBytes } from 'nostr-tools/utils';
 import { z } from 'zod';
 import { waitFor } from '../core/utils/test.utils.js';
 import { EncryptionMode } from '../core/interfaces.js';
-import { createLogger } from '../core/utils/logger.js';
 import { MockRelayHub } from '../__mocks__/mock-relay-handler.js';
 import { PrivateKeySigner } from '../signer/private-key-signer.js';
-import { OpenStreamSequenceError } from './open-stream/errors.js';
-import { OpenStreamRegistry } from './open-stream/registry.js';
-import type { OpenStreamProgress } from './open-stream/types.js';
 import {
   buildOpenStreamStartFrame,
   type OpenStreamWriter,
