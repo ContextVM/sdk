@@ -1,8 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import {
-  computeCommonSchemaHash,
-  normalizeSchema,
-} from './common-schema.js';
+import { computeCommonSchemaHash, normalizeSchema } from './common-schema.js';
 
 describe('normalizeSchema', () => {
   test('recursively removes title and description fields', () => {
@@ -111,7 +108,7 @@ describe('normalizeSchema', () => {
     };
 
     expect(() => normalizeSchema(schema)).toThrow(
-      'External $ref pointers must be resolved before computing common schema hash'
+      'External $ref pointers must be resolved before computing common schema hash',
     );
   });
 

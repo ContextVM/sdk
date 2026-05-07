@@ -592,7 +592,8 @@ export class AnnouncementManager {
             : undefined;
       const announcementResult = announcementListToolsResult ?? result;
       const listToolsAnnouncementTags = announcementListToolsResult
-        ? this.getListToolsAnnouncementTags?.(announcementListToolsResult) ?? []
+        ? (this.getListToolsAnnouncementTags?.(announcementListToolsResult) ??
+          [])
         : [];
 
       for (const mapping of announcementMapping) {

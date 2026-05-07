@@ -11,6 +11,7 @@ export interface DiscoveredPeerCapabilities {
   supportsEncryption: boolean;
   supportsEphemeralEncryption: boolean;
   supportsOversizedTransfer: boolean;
+  supportsOpenStream: boolean;
 }
 
 /**
@@ -20,6 +21,7 @@ export interface PeerCapabilities {
   supportsEncryption: boolean;
   supportsEphemeralEncryption: boolean;
   supportsOversizedTransfer: boolean;
+  supportsOpenStream: boolean;
 }
 
 function cloneTag(tag: readonly string[]): string[] {
@@ -91,5 +93,6 @@ export function learnPeerCapabilities(
       eventTags,
       NOSTR_TAGS.SUPPORT_OVERSIZED_TRANSFER,
     ),
+    supportsOpenStream: hasSingleTag(eventTags, NOSTR_TAGS.SUPPORT_OPEN_STREAM),
   };
 }

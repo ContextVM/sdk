@@ -57,6 +57,14 @@ import {
   type TransferPolicy,
 } from './oversized-transfer/index.js';
 import {
+  OpenStreamReceiver,
+  OpenStreamWriter,
+  buildOpenStreamAcceptFrame,
+  buildOpenStreamAbortFrame,
+  buildOpenStreamPingFrame,
+  buildOpenStreamPongFrame,
+} from './open-stream/index.js';
+import {
   DEFAULT_CHUNK_SIZE,
   DEFAULT_OVERSIZED_THRESHOLD,
 } from './oversized-transfer/constants.js';
@@ -65,6 +73,7 @@ import {
   sendAcceptFrame,
   sendOversizedServerResponse,
 } from './nostr-server/oversized-server-handler.js';
+import type { OpenStreamTransportPolicy } from './open-stream-policy.js';
 
 /**
  * Options for configuring the NostrServerTransport.
@@ -148,6 +157,13 @@ export interface NostrServerTransportOptions extends BaseNostrTransportOptions {
     /** Receiver-side admission policy. */
     policy?: TransferPolicy;
   };
+  /** Options controlling CEP-41 open-ended stream transfer. */
+  openStream?: {
+    /** Whether open stream transfer is enabled. @default false */
+    enabled?: boolean;
+    /** Receiver/session policy reserved for CEP-41 stream lifecycle limits. */
+    policy?: OpenStreamTransportPolicy;
+  };
 }
 
 export type ListToolsResultTransformer = (
@@ -195,8 +211,10 @@ export class NostrServerTransport
       }) => void | Promise<void>)
     | undefined;
   private readonly inboundMiddlewares: InboundMiddlewareFn[] = [];
-  private readonly listToolsResultTransformers: ListToolsResultTransformer[] = [];
-  private readonly listToolsAnnouncementTagsProducers: ListToolsAnnouncementTagsProducer[] = [];
+  private readonly listToolsResultTransformers: ListToolsResultTransformer[] =
+    [];
+  private readonly listToolsAnnouncementTagsProducers: ListToolsAnnouncementTagsProducer[] =
+    [];
 
   /**
    * Deduplicate inbound events to avoid redundant work.
@@ -208,10 +226,23 @@ export class NostrServerTransport
   /** Receives inbound oversized-transfer frames from clients (client→server requests). */
   private readonly oversizedReceiver: OversizedTransferReceiver;
 
+  /** Receives inbound open-stream frames from clients (client→server notifications). */
+  private readonly openStreamReceiver: OpenStreamReceiver;
+
+  /** Pending final responses held until their CEP-41 stream terminates. */
+  private readonly pendingOpenStreamResponses = new Map<
+    string,
+    JSONRPCResponse
+  >();
+
+  /** Active server-side CEP-41 writers keyed by inbound request event id. */
+  private readonly openStreamWriters = new Map<string, OpenStreamWriter>();
+
   // Oversized-transfer sender settings (for server→client responses)
   private readonly oversizedEnabled: boolean;
   private readonly oversizedThreshold: number;
   private readonly oversizedChunkSize: number;
+  private readonly openStreamEnabled: boolean;
 
   constructor(options: NostrServerTransportOptions) {
     super('nostr-server-transport', options);
@@ -316,13 +347,73 @@ export class NostrServerTransport
       ot?.policy ?? {},
       this.logger,
     );
+    this.openStreamEnabled = options.openStream?.enabled ?? false;
+    this.openStreamReceiver = new OpenStreamReceiver({
+      maxConcurrentStreams: options.openStream?.policy?.maxConcurrentStreams,
+      maxBufferedChunksPerStream:
+        options.openStream?.policy?.maxBufferedChunksPerStream,
+      maxBufferedBytesPerStream:
+        options.openStream?.policy?.maxBufferedBytesPerStream,
+      idleTimeoutMs: options.openStream?.policy?.idleTimeoutMs,
+      probeTimeoutMs: options.openStream?.policy?.probeTimeoutMs,
+      closeGracePeriodMs: options.openStream?.policy?.closeGracePeriodMs,
+      getSessionOptions: (progressToken) => {
+        let progress = 0;
+
+        return {
+          sendPing: async (nonce: string): Promise<void> => {
+            progress += 1;
+            await this.sendNotification(progressToken, {
+              jsonrpc: '2.0',
+              method: 'notifications/progress',
+              params: buildOpenStreamPingFrame({
+                progressToken,
+                progress,
+                nonce,
+              }),
+            });
+          },
+          sendPong: async (nonce: string): Promise<void> => {
+            progress += 1;
+            await this.sendNotification(progressToken, {
+              jsonrpc: '2.0',
+              method: 'notifications/progress',
+              params: buildOpenStreamPongFrame({
+                progressToken,
+                progress,
+                nonce,
+              }),
+            });
+          },
+          sendAbort: async (reason?: string): Promise<void> => {
+            progress += 1;
+            await this.sendNotification(progressToken, {
+              jsonrpc: '2.0',
+              method: 'notifications/progress',
+              params: buildOpenStreamAbortFrame({
+                progressToken,
+                progress,
+                reason,
+              }),
+            });
+          },
+        };
+      },
+      logger: this.logger,
+    });
 
     // Advertise CEP-22 support so clients can skip the accept handshake.
+    const internalCommonTags: string[][] = [];
+
     if (this.oversizedEnabled) {
-      this.announcementManager.setInternalCommonTags([
-        [NOSTR_TAGS.SUPPORT_OVERSIZED_TRANSFER],
-      ]);
+      internalCommonTags.push([NOSTR_TAGS.SUPPORT_OVERSIZED_TRANSFER]);
     }
+
+    if (this.openStreamEnabled) {
+      internalCommonTags.push([NOSTR_TAGS.SUPPORT_OPEN_STREAM]);
+    }
+
+    this.announcementManager.setInternalCommonTags(internalCommonTags);
   }
 
   /**
@@ -430,6 +521,9 @@ export class NostrServerTransport
       this.correlationStore.clear();
       this.seenEventIds.clear();
       this.oversizedReceiver.clear();
+      this.openStreamReceiver.clear();
+      this.pendingOpenStreamResponses.clear();
+      this.openStreamWriters.clear();
       this.onclose?.();
     } catch (error) {
       this.onerror?.(error instanceof Error ? error : new Error(String(error)));
@@ -619,6 +713,40 @@ export class NostrServerTransport
       wrapKind,
       this.shouldInjectRequestEventId ? event : undefined,
     );
+
+    if (this.openStreamEnabled && progressToken) {
+      const writer = new OpenStreamWriter({
+        progressToken: String(progressToken),
+        publishFrame: async (frame) => {
+          await this.sendNotification(clientPubkey, {
+            jsonrpc: '2.0',
+            method: 'notifications/progress',
+            params: frame,
+          });
+          return undefined;
+        },
+        onClose: async (): Promise<void> => {
+          await this.flushPendingOpenStreamResponse(eventId);
+        },
+        onAbort: async (): Promise<void> => {
+          await this.flushPendingOpenStreamResponse(eventId);
+        },
+      });
+
+      this.openStreamWriters.set(eventId, writer);
+    }
+  }
+
+  private async flushPendingOpenStreamResponse(eventId: string): Promise<void> {
+    const pendingResponse = this.pendingOpenStreamResponses.get(eventId);
+    this.pendingOpenStreamResponses.delete(eventId);
+    this.openStreamWriters.delete(eventId);
+
+    if (!pendingResponse) {
+      return;
+    }
+
+    await this.handleResponse(pendingResponse);
   }
 
   /**
@@ -662,9 +790,7 @@ export class NostrServerTransport
     );
   }
 
-  private buildListToolsAnnouncementTags(
-    result: ListToolsResult,
-  ): string[][] {
+  private buildListToolsAnnouncementTags(result: ListToolsResult): string[][] {
     return this.listToolsAnnouncementTagsProducers.flatMap((producer) =>
       producer(result),
     );
@@ -687,6 +813,12 @@ export class NostrServerTransport
 
     // Find the event route using O(1) lookup
     const nostrEventId = response.id as string;
+    const existingOpenStreamWriter = this.openStreamWriters.get(nostrEventId);
+    if (existingOpenStreamWriter && existingOpenStreamWriter.isActive) {
+      this.pendingOpenStreamResponses.set(nostrEventId, response);
+      return;
+    }
+
     const route = this.correlationStore.popEventRoute(nostrEventId);
 
     if (!route) {
@@ -711,7 +843,9 @@ export class NostrServerTransport
     const responseToSend = parsedListToolsResult?.success
       ? {
           ...response,
-          result: this.applyListToolsResultTransformers(parsedListToolsResult.data),
+          result: this.applyListToolsResultTransformers(
+            parsedListToolsResult.data,
+          ),
         }
       : response;
 
@@ -1070,6 +1204,8 @@ export class NostrServerTransport
         return;
       }
 
+      const inboundMessage: JSONRPCMessage = mcpMessage;
+
       // Check authorization using the authorization policy
       const authDecision = await this.authorizationPolicy.authorize(
         event.pubkey,
@@ -1133,6 +1269,8 @@ export class NostrServerTransport
       session.supportsOversizedTransfer ||=
         this.oversizedEnabled &&
         discoveredCapabilities.supportsOversizedTransfer;
+      session.supportsOpenStream ||=
+        this.openStreamEnabled && discoveredCapabilities.supportsOpenStream;
 
       const shouldSendAccept = !hadLearnedOversizedSupport;
 
@@ -1168,43 +1306,152 @@ export class NostrServerTransport
         return forwarded;
       };
 
-      if (isJSONRPCRequest(mcpMessage)) {
+      if (isJSONRPCRequest(inboundMessage)) {
         this.handleIncomingRequest(
           event,
           event.id,
-          mcpMessage,
+          inboundMessage,
           event.pubkey,
           wrapKind,
         );
 
         if (this.shouldInjectRequestEventId) {
-          injectRequestEventId(mcpMessage, event.id);
+          injectRequestEventId(inboundMessage, event.id);
         }
 
         if (this.injectClientPubkey) {
-          injectClientPubkey(mcpMessage, event.pubkey);
+          injectClientPubkey(inboundMessage, event.pubkey);
         }
-      } else if (isJSONRPCNotification(mcpMessage)) {
-        this.handleIncomingNotification(event.pubkey, mcpMessage);
+
+        const openStreamWriter = this.openStreamWriters.get(event.id);
+        if (openStreamWriter) {
+          const params = inboundMessage.params ?? {};
+          inboundMessage.params = params;
+          const meta = params._meta ?? {};
+          params._meta = meta;
+          (meta as { stream?: OpenStreamWriter }).stream = openStreamWriter;
+        }
+      } else if (isJSONRPCNotification(inboundMessage)) {
+        this.handleIncomingNotification(event.pubkey, inboundMessage);
 
         if (
-          mcpMessage.method === 'notifications/progress' &&
-          OversizedTransferReceiver.isOversizedFrame(mcpMessage)
+          inboundMessage.method === 'notifications/progress' &&
+          OpenStreamReceiver.isOpenStreamFrame(inboundMessage)
+        ) {
+          const frame = inboundMessage.params?.cvm as
+            | { frameType?: string; reason?: string }
+            | undefined;
+
+          if (frame?.frameType === 'abort') {
+            const progressToken = String(
+              inboundMessage.params?.progressToken ?? '',
+            );
+            const eventId =
+              this.correlationStore.getEventIdByProgressToken(progressToken);
+            const writer = eventId
+              ? this.openStreamWriters.get(eventId)
+              : undefined;
+
+            if (writer) {
+              void writer.abort(frame.reason).catch((err: unknown) => {
+                this.logger.error(
+                  'Open stream abort propagation failed (server)',
+                  {
+                    error: err instanceof Error ? err.message : String(err),
+                    pubkey: event.pubkey,
+                    progressToken,
+                  },
+                );
+                this.onerror?.(
+                  err instanceof Error ? err : new Error(String(err)),
+                );
+              });
+            }
+
+            return;
+          }
+
+          if (frame?.frameType === 'ping') {
+            const progressToken = String(
+              inboundMessage.params?.progressToken ?? '',
+            );
+            const nonce =
+              'nonce' in frame && typeof frame.nonce === 'string'
+                ? frame.nonce
+                : '';
+            const eventId =
+              this.correlationStore.getEventIdByProgressToken(progressToken);
+            const writer = eventId
+              ? this.openStreamWriters.get(eventId)
+              : undefined;
+
+            if (writer) {
+              void writer.pong(nonce).catch((err: unknown) => {
+                this.logger.error('Open stream ping handling failed (server)', {
+                  error: err instanceof Error ? err.message : String(err),
+                  pubkey: event.pubkey,
+                  progressToken,
+                });
+                this.onerror?.(
+                  err instanceof Error ? err : new Error(String(err)),
+                );
+              });
+
+              return;
+            }
+          }
+
+          this.openStreamReceiver
+            .processFrame(inboundMessage)
+            .then(async () => {
+              const frameType = frame?.frameType;
+
+              if (frameType === 'start' && session.supportsOpenStream) {
+                await this.sendNotification(event.pubkey, {
+                  jsonrpc: '2.0',
+                  method: 'notifications/progress',
+                  params: buildOpenStreamAcceptFrame({
+                    progressToken: String(
+                      inboundMessage.params?.progressToken ?? '',
+                    ),
+                    progress: Number(inboundMessage.params?.progress ?? 0) + 1,
+                  }),
+                });
+              }
+            })
+            .catch((err: unknown) => {
+              this.logger.error('Open stream error (server)', {
+                error: err instanceof Error ? err.message : String(err),
+                pubkey: event.pubkey,
+              });
+              this.onerror?.(
+                err instanceof Error ? err : new Error(String(err)),
+              );
+            });
+          return;
+        }
+
+        if (
+          inboundMessage.method === 'notifications/progress' &&
+          OversizedTransferReceiver.isOversizedFrame(inboundMessage)
         ) {
           this.oversizedReceiver
-            .processFrame(mcpMessage)
+            .processFrame(inboundMessage)
             .then(async (synthetic) => {
               if (synthetic === null) {
                 if (
-                  (mcpMessage.params?.cvm as { frameType?: string } | undefined)
-                    ?.frameType === 'start' &&
+                  (
+                    inboundMessage.params?.cvm as
+                      | { frameType?: string }
+                      | undefined
+                  )?.frameType === 'start' &&
                   shouldSendAccept
                 ) {
                   await sendAcceptFrame(
                     {
                       clientPubkey: event.pubkey,
                       progressToken: String(
-                        mcpMessage.params?.progressToken ?? '',
+                        inboundMessage.params?.progressToken ?? '',
                       ),
                     },
                     {
@@ -1272,10 +1519,10 @@ export class NostrServerTransport
         }
       }
 
-      void dispatch(0, mcpMessage)
+      void dispatch(0, inboundMessage)
         .then((forwarded) => {
           if (!forwarded) {
-            this.cleanupDroppedRequest(mcpMessage);
+            this.cleanupDroppedRequest(inboundMessage);
           }
         })
         .catch((err: unknown) => {
@@ -1307,6 +1554,8 @@ export class NostrServerTransport
     return {
       sessionStore: this.sessionStore,
       correlationStore: this.correlationStore,
+      oversizedReceiver: this.oversizedReceiver,
+      openStreamReceiver: this.openStreamReceiver,
     };
   }
 }
