@@ -631,8 +631,6 @@ export class NostrServerTransport
     return session;
   }
 
-
-
   private getRelayUrls(relayHandler: RelayHandler): string[] {
     return relayHandler.getRelayUrls();
   }

@@ -1002,15 +1002,14 @@ export class NostrClientTransport
       return;
     }
 
-    this.capabilityNegotiator.serverSupportsEphemeralGiftWraps ||=
-      discovered.supportsEphemeralEncryption;
+    this.capabilityNegotiator.learnServerCapabilities(discovered);
     this.serverSupportsOversizedTransfer ||=
       discovered.supportsOversizedTransfer;
     this.serverSupportsOpenStream ||= discovered.supportsOpenStream;
 
     if (!this.serverInitializeEvent) {
       this.serverInitializeEvent = event;
-      this.capabilityNegotiator.serverInitializeEvent = event;
+      this.capabilityNegotiator.setServerInitializeEvent(event);
       this.logger.info('Learned server discovery tags from inbound event', {
         eventId: event.id,
       });
@@ -1026,7 +1025,7 @@ export class NostrClientTransport
 
     if (!existingHasInitializeResult && currentHasInitializeResult) {
       this.serverInitializeEvent = event;
-      this.capabilityNegotiator.serverInitializeEvent = event;
+      this.capabilityNegotiator.setServerInitializeEvent(event);
       this.logger.info(
         'Upgraded learned server discovery event to initialize response',
         {

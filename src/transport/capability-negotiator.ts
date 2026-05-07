@@ -123,8 +123,8 @@ export class ServerCapabilityNegotiator {
 export class ClientCapabilityNegotiator {
   private hasSentDiscoveryTags = false;
   private clientPmis?: readonly string[];
-  public serverSupportsEphemeralGiftWraps = false;
-  public serverInitializeEvent?: NostrEvent;
+  private serverSupportsEphemeralGiftWraps = false;
+  private _serverInitializeEvent?: NostrEvent;
 
   constructor(
     private deps: {
@@ -142,6 +142,23 @@ export class ClientCapabilityNegotiator {
 
   public setClientPmis(pmis: readonly string[]): void {
     this.clientPmis = pmis;
+  }
+
+  /**
+   * Updates server capability flags from discovered peer tags.
+   * Called by the transport when it learns new capabilities from inbound events.
+   */
+  public learnServerCapabilities(discovered: {
+    supportsEphemeralEncryption: boolean;
+  }): void {
+    this.serverSupportsEphemeralGiftWraps ||= discovered.supportsEphemeralEncryption;
+  }
+
+  /**
+   * Records the server's initialize event for gift-wrap kind negotiation.
+   */
+  public setServerInitializeEvent(event: NostrEvent): void {
+    this._serverInitializeEvent = event;
   }
 
   public getCapabilityTags(): string[][] {
@@ -196,7 +213,7 @@ export class ClientCapabilityNegotiator {
     if (this.deps.giftWrapMode === GiftWrapMode.EPHEMERAL) return EPHEMERAL_GIFT_WRAP_KIND;
     if (this.serverSupportsEphemeralGiftWraps) return EPHEMERAL_GIFT_WRAP_KIND;
     const supportsEphemeralFromInit = queryTags(
-      this.serverInitializeEvent,
+      this._serverInitializeEvent,
       NOSTR_TAGS.SUPPORT_ENCRYPTION_EPHEMERAL,
     ).isFlag;
     return supportsEphemeralFromInit ? EPHEMERAL_GIFT_WRAP_KIND : GIFT_WRAP_KIND;

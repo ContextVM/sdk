@@ -150,7 +150,7 @@ export class InboundNotificationDispatcher {
                   progressToken: String(inboundMessage.params?.progressToken ?? ''),
                 },
                 {
-                  sendNotification: this.deps.sendNotification.bind(this.deps),
+                  sendNotification: this.deps.sendNotification,
                 },
               ).catch((err: unknown) => {
                 this.deps.logger.error('Failed to send oversized accept', {
