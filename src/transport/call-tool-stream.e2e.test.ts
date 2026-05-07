@@ -1072,6 +1072,9 @@ describe('OpenStreamRegistry progress payload validation', () => {
 
     expect(session.progressToken).toBe('token-advisory-start');
     expect(registry.getSession('token-advisory-start')).toBe(session);
+
+    registry.clear();
+    await expect(session.closed).resolves.toBeUndefined();
   });
 
   test('rejects malformed progress payloads that are not CEP-41 frames', () => {

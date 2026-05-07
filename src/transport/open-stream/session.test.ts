@@ -376,6 +376,9 @@ describe('OpenStreamSession', () => {
     });
 
     expect(pongs).toEqual(['nonce-1']);
+
+    session.dispose();
+    await expect(session.closed).resolves.toBeUndefined();
   });
 
   test('sends ping after idle timeout and aborts after probe timeout', async () => {
