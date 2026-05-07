@@ -1,9 +1,4 @@
 import {
-  InitializeResultSchema,
-  ListPromptsResultSchema,
-  ListResourcesResultSchema,
-  ListResourceTemplatesResultSchema,
-  ListToolsResultSchema,
   type ListToolsResult,
   isJSONRPCRequest,
   isJSONRPCNotification,
@@ -68,11 +63,9 @@ import {
   DEFAULT_OVERSIZED_THRESHOLD,
 } from './oversized-transfer/constants.js';
 import { learnPeerCapabilities } from './discovery-tags.js';
-import {
-  sendOversizedServerResponse,
-} from './nostr-server/oversized-server-handler.js';
 import type { OpenStreamTransportPolicy } from './open-stream-policy.js';
 import { InboundNotificationDispatcher } from './nostr-server/inbound-notification-dispatcher.js';
+import { OutboundResponseRouter } from './nostr-server/outbound-response-router.js';
 
 /**
  * Options for configuring the NostrServerTransport.
@@ -243,6 +236,7 @@ export class NostrServerTransport
   private readonly oversizedChunkSize: number;
   private readonly openStreamEnabled: boolean;
   private readonly inboundNotificationDispatcher: InboundNotificationDispatcher;
+  private readonly outboundResponseRouter: OutboundResponseRouter;
 
   constructor(options: NostrServerTransportOptions) {
     super('nostr-server-transport', options);
@@ -426,6 +420,26 @@ export class NostrServerTransport
       cleanupDroppedRequest: this.cleanupDroppedRequest.bind(this),
       shouldInjectRequestEventId: this.shouldInjectRequestEventId,
       injectClientPubkey: this.injectClientPubkey,
+      logger: this.logger,
+      onerror: (error) => this.onerror?.(error),
+    });
+
+    this.outboundResponseRouter = new OutboundResponseRouter({
+      correlationStore: this.correlationStore,
+      sessionStore: this.sessionStore,
+      announcementManager: this.announcementManager,
+      openStreamWriters: this.openStreamWriters,
+      pendingOpenStreamResponses: this.pendingOpenStreamResponses,
+      oversizedConfig: {
+        enabled: this.oversizedEnabled,
+        threshold: this.oversizedThreshold,
+        chunkSize: this.oversizedChunkSize,
+      },
+      applyListToolsResultTransformers: this.applyListToolsResultTransformers.bind(this),
+      buildOutboundTags: this.buildServerOutboundTags.bind(this),
+      createResponseTags: this.createResponseTags.bind(this),
+      chooseGiftWrapKind: this.chooseServerOutboundGiftWrapKind.bind(this),
+      sendMcpMessage: this.sendMcpMessage.bind(this),
       logger: this.logger,
       onerror: (error) => this.onerror?.(error),
     });
@@ -814,148 +828,7 @@ export class NostrServerTransport
   private async handleResponse(
     response: JSONRPCResponse | JSONRPCErrorResponse,
   ): Promise<void> {
-    // Handle special announcement responses
-    if (response.id === 'announcement') {
-      const wasHandled =
-        await this.announcementManager.handleAnnouncementResponse(response);
-      if (wasHandled && isJSONRPCResultResponse(response)) {
-        if (InitializeResultSchema.safeParse(response.result).success) {
-          this.logger.info('Initialized');
-        }
-      }
-      return;
-    }
-
-    // Find the event route using O(1) lookup
-    const nostrEventId = response.id as string;
-    const existingOpenStreamWriter = this.openStreamWriters.get(nostrEventId);
-    if (existingOpenStreamWriter && existingOpenStreamWriter.isActive) {
-      this.pendingOpenStreamResponses.set(nostrEventId, response);
-      return;
-    }
-
-    const route = this.correlationStore.popEventRoute(nostrEventId);
-
-    if (!route) {
-      this.onerror?.(
-        new Error(`No pending request found for response ID: ${response.id}`),
-      );
-      return;
-    }
-
-    const session = this.sessionStore.getSession(route.clientPubkey);
-    if (!session) {
-      this.onerror?.(
-        new Error(`No session found for client: ${route.clientPubkey}`),
-      );
-      return;
-    }
-
-    const parsedListToolsResult = isJSONRPCResultResponse(response)
-      ? ListToolsResultSchema.safeParse(response.result)
-      : null;
-
-    const responseToSend = parsedListToolsResult?.success
-      ? {
-          ...response,
-          result: this.applyListToolsResultTransformers(
-            parsedListToolsResult.data,
-          ),
-        }
-      : response;
-
-    // Restore the original request ID in the response
-    responseToSend.id = route.originalRequestId;
-
-    // CEP-22 Oversized Transfer (proactive path for server responses)
-    if (
-      this.oversizedEnabled &&
-      route.progressToken &&
-      session.supportsOversizedTransfer
-    ) {
-      // Serialize before restoring id so the client receives the correct id.
-      const serialized = JSON.stringify(responseToSend);
-      const byteLength = new TextEncoder().encode(serialized).byteLength;
-      if (byteLength > this.oversizedThreshold) {
-        const continuationFrameTags = this.createResponseTags(
-          route.clientPubkey,
-          nostrEventId,
-        );
-        const startFrameTags = this.buildServerOutboundTags({
-          baseTags: continuationFrameTags,
-          session,
-        });
-        const giftWrapKind = this.chooseServerOutboundGiftWrapKind({
-          session,
-          fallbackWrapKind: route.wrapKind,
-        });
-
-        await sendOversizedServerResponse(
-          {
-            serialized,
-            clientPubkey: route.clientPubkey,
-            progressToken: route.progressToken,
-            startFrameTags,
-            continuationFrameTags,
-            isEncrypted: session.isEncrypted,
-            giftWrapKind,
-          },
-          {
-            chunkSizeBytes: this.oversizedChunkSize,
-          },
-          {
-            sendMcpMessage: this.sendMcpMessage.bind(this),
-            logger: this.logger,
-          },
-        );
-        return;
-      }
-    }
-
-    // Send the response back to the original requester
-    const tags = this.buildServerOutboundTags({
-      baseTags: this.createResponseTags(route.clientPubkey, nostrEventId),
-      session,
-    });
-
-    const giftWrapKind = this.chooseServerOutboundGiftWrapKind({
-      session,
-      fallbackWrapKind: route.wrapKind,
-    });
-
-    // Attach pricing tags to capability list responses so clients can access CEP-8 pricing
-    if (isJSONRPCResultResponse(responseToSend)) {
-      const result = responseToSend.result;
-      if (
-        ListToolsResultSchema.safeParse(result).success ||
-        ListResourcesResultSchema.safeParse(result).success ||
-        ListResourceTemplatesResultSchema.safeParse(result).success ||
-        ListPromptsResultSchema.safeParse(result).success
-      ) {
-        tags.push(...this.announcementManager.getPricingTags());
-      }
-    }
-
-    try {
-      await this.sendMcpMessage(
-        responseToSend,
-        route.clientPubkey,
-        CTXVM_MESSAGES_KIND,
-        tags,
-        session.isEncrypted,
-        undefined,
-        giftWrapKind,
-      );
-    } catch (error) {
-      this.correlationStore.registerEventRoute(
-        nostrEventId,
-        route.clientPubkey,
-        route.originalRequestId,
-        route.progressToken,
-        route.wrapKind,
-      );
-      throw error;
-    }
+    await this.outboundResponseRouter.route(response);
   }
 
   /**
