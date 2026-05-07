@@ -66,6 +66,7 @@ import {
   parseDiscoveredPeerCapabilities,
   ClientCapabilityNegotiator,
 } from './capability-negotiator.js';
+import { ClientInboundNotificationDispatcher } from './nostr-client/inbound-notification-dispatcher.js';
 import {
   DEFAULT_CHUNK_SIZE,
   DEFAULT_OVERSIZED_THRESHOLD,
@@ -179,6 +180,7 @@ export class NostrClientTransport
   private serverSupportsOpenStream: boolean = false;
 
   private readonly capabilityNegotiator: ClientCapabilityNegotiator;
+  private readonly inboundNotificationDispatcher: ClientInboundNotificationDispatcher;
 
   // Oversized-transfer sender settings
   private readonly oversizedEnabled: boolean;
@@ -300,6 +302,15 @@ export class NostrClientTransport
       oversizedEnabled: this.oversizedEnabled,
       openStreamEnabled: this.openStreamEnabled,
       composeOutboundTags: this.composeOutboundTags.bind(this),
+    });
+
+    this.inboundNotificationDispatcher = new ClientInboundNotificationDispatcher({
+      openStreamReceiver: this.openStreamReceiver,
+      oversizedReceiver: this.oversizedReceiver,
+      handleResponse: this.handleResponse.bind(this),
+      handleNotification: this.handleNotification.bind(this),
+      logger: this.logger,
+      onerror: (error) => this.onerror?.(error),
     });
   }
 
@@ -1114,58 +1125,7 @@ export class NostrClientTransport
         return;
       }
 
-      // CEP-22: intercept oversized-transfer frames and do NOT forward raw frames.
-      if (
-        isJSONRPCNotification(mcpMessage) &&
-        mcpMessage.method === 'notifications/progress' &&
-        OpenStreamReceiver.isOpenStreamFrame(mcpMessage)
-      ) {
-        this.openStreamReceiver
-          .processFrame(mcpMessage)
-          .catch((err: unknown) => {
-            this.logger.error('Open stream error (client)', {
-              error: err instanceof Error ? err.message : String(err),
-            });
-            this.onerror?.(err instanceof Error ? err : new Error(String(err)));
-          });
-        return;
-      }
-
-      if (
-        isJSONRPCNotification(mcpMessage) &&
-        mcpMessage.method === 'notifications/progress' &&
-        OversizedTransferReceiver.isOversizedFrame(mcpMessage)
-      ) {
-        this.oversizedReceiver
-          .processFrame(mcpMessage)
-          .then((synthetic) => {
-            if (synthetic !== null) {
-              if (
-                isJSONRPCResultResponse(synthetic) ||
-                isJSONRPCErrorResponse(synthetic)
-              ) {
-                if (correlatedEventId) {
-                  this.handleResponse(correlatedEventId, synthetic);
-                } else {
-                  this.logger.warn(
-                    'Oversized response completed without correlation `e` tag',
-                    {
-                      eventId,
-                    },
-                  );
-                }
-                return;
-              }
-
-              this.handleNotification(eventId, correlatedEventId, synthetic);
-            }
-          })
-          .catch((err: unknown) => {
-            this.logger.error('Oversized transfer error (client)', {
-              error: err instanceof Error ? err.message : String(err),
-            });
-            this.onerror?.(err instanceof Error ? err : new Error(String(err)));
-          });
+      if (this.inboundNotificationDispatcher.tryIntercept(mcpMessage, eventId, correlatedEventId)) {
         return;
       }
 
