@@ -34,7 +34,7 @@ import { getNostrEventTag } from '../core/utils/serializers.js';
 import { NostrEvent } from 'nostr-tools';
 import { verifyEvent } from 'nostr-tools/pure';
 import { LogLevel } from '../core/utils/logger.js';
-import { EncryptionMode, GiftWrapMode } from '../core/interfaces.js';
+
 import {
   ClientCorrelationStore,
   PendingRequest,
@@ -62,7 +62,10 @@ import {
   DEFAULT_MAX_BUFFERED_BYTES_PER_STREAM,
   DEFAULT_MAX_BUFFERED_CHUNKS_PER_STREAM,
 } from './open-stream/constants.js';
-import { parseDiscoveredPeerCapabilities } from './discovery-tags.js';
+import {
+  parseDiscoveredPeerCapabilities,
+  ClientCapabilityNegotiator,
+} from './capability-negotiator.js';
 import {
   DEFAULT_CHUNK_SIZE,
   DEFAULT_OVERSIZED_THRESHOLD,
@@ -157,8 +160,6 @@ export class NostrClientTransport
   private readonly discoveryRelayUrls: readonly string[];
   /** Optional non-authoritative operational relays used as a fast fallback. */
   private readonly fallbackOperationalRelayUrls: readonly string[];
-  /** Optional list of client-supported PMIs (ordered by preference). */
-  private clientPmis: readonly string[] | undefined;
   /** The server's initialize event, if received */
   private serverInitializeEvent: NostrEvent | undefined;
 
@@ -171,17 +172,13 @@ export class NostrClientTransport
   /** The latest server resources/templates/list response event envelope, if received. */
   private serverResourceTemplatesListEvent: NostrEvent | undefined;
 
-  /** Whether the server has advertised ephemeral gift wrap support via Nostr tags. */
-  private serverSupportsEphemeralGiftWraps: boolean = false;
-
   /** Whether the server has advertised CEP-22 oversized transfer support. */
   private serverSupportsOversizedTransfer: boolean = false;
 
   /** Whether the server has advertised CEP-41 open stream support. */
   private serverSupportsOpenStream: boolean = false;
 
-  /** Whether this client has already sent its discovery tags to the server. */
-  private hasSentDiscoveryTags: boolean = false;
+  private readonly capabilityNegotiator: ClientCapabilityNegotiator;
 
   // Oversized-transfer sender settings
   private readonly oversizedEnabled: boolean;
@@ -296,6 +293,14 @@ export class NostrClientTransport
       },
       logger: this.logger,
     });
+
+    this.capabilityNegotiator = new ClientCapabilityNegotiator({
+      encryptionMode: this.encryptionMode,
+      giftWrapMode: this.giftWrapMode,
+      oversizedEnabled: this.oversizedEnabled,
+      openStreamEnabled: this.openStreamEnabled,
+      composeOutboundTags: this.composeOutboundTags.bind(this),
+    });
   }
 
   /**
@@ -304,67 +309,7 @@ export class NostrClientTransport
    * Intended to be called by payments wrappers (e.g. `withClientPayments()`).
    */
   public setClientPmis(pmis: readonly string[]): void {
-    this.clientPmis = pmis;
-  }
-
-  private getClientCapabilityTags(): string[][] {
-    const tags: string[][] = [];
-
-    if (this.encryptionMode !== EncryptionMode.DISABLED) {
-      tags.push([NOSTR_TAGS.SUPPORT_ENCRYPTION]);
-    }
-
-    if (
-      this.encryptionMode !== EncryptionMode.DISABLED &&
-      this.giftWrapMode !== GiftWrapMode.PERSISTENT
-    ) {
-      tags.push([NOSTR_TAGS.SUPPORT_ENCRYPTION_EPHEMERAL]);
-    }
-
-    if (this.oversizedEnabled) {
-      tags.push([NOSTR_TAGS.SUPPORT_OVERSIZED_TRANSFER]);
-    }
-
-    if (this.openStreamEnabled) {
-      tags.push([NOSTR_TAGS.SUPPORT_OPEN_STREAM]);
-    }
-
-    return tags;
-  }
-
-  private getClientNegotiationTags(): string[][] {
-    const tags: string[][] = [];
-
-    if (this.clientPmis) {
-      tags.push(...this.clientPmis.map((pmi) => ['pmi', pmi]));
-    }
-
-    return tags;
-  }
-
-  private getPendingClientDiscoveryTags(): string[][] {
-    return this.hasSentDiscoveryTags ? [] : this.getClientCapabilityTags();
-  }
-
-  private buildOutboundClientTags(params: {
-    baseTags: readonly string[][];
-    includeDiscovery: boolean;
-  }): string[][] {
-    const { baseTags, includeDiscovery } = params;
-
-    return this.composeOutboundTags({
-      baseTags,
-      discoveryTags: includeDiscovery
-        ? this.getPendingClientDiscoveryTags()
-        : [],
-      negotiationTags: includeDiscovery ? this.getClientNegotiationTags() : [],
-    });
-  }
-
-  private markClientDiscoveryTagsSent(): void {
-    if (this.getPendingClientDiscoveryTags().length > 0) {
-      this.hasSentDiscoveryTags = true;
-    }
+    this.capabilityNegotiator.setClientPmis(pmis);
   }
 
   /**
@@ -482,12 +427,12 @@ export class NostrClientTransport
       }
     }
 
-    const tags = this.buildOutboundClientTags({
+    const tags = this.capabilityNegotiator.buildOutboundTags({
       baseTags: this.createRecipientTags(this.serverPubkey),
       includeDiscovery: isRequest,
     });
 
-    const giftWrapKind = this.chooseOutboundGiftWrapKind();
+    const giftWrapKind = this.capabilityNegotiator.chooseOutboundGiftWrapKind();
 
     const eventId = await this.sendMcpMessage(
       message,
@@ -514,7 +459,7 @@ export class NostrClientTransport
     );
 
     if (isRequest) {
-      this.markClientDiscoveryTagsSent();
+      this.capabilityNegotiator.markDiscoveryTagsSent();
     }
 
     return eventId;
@@ -531,7 +476,7 @@ export class NostrClientTransport
     progressToken: string,
   ): Promise<void> {
     const frameRecipientTags = this.createRecipientTags(this.serverPubkey);
-    const startFrameTags = this.buildOutboundClientTags({
+    const startFrameTags = this.capabilityNegotiator.buildOutboundTags({
       baseTags: frameRecipientTags,
       includeDiscovery: true,
     });
@@ -543,7 +488,7 @@ export class NostrClientTransport
         acceptTimeoutMs: this.oversizedAcceptTimeoutMs,
         serverPubkey: this.serverPubkey,
         serverSupportsOversizedTransfer: this.serverSupportsOversizedTransfer,
-        giftWrapKind: this.chooseOutboundGiftWrapKind(),
+        giftWrapKind: this.capabilityNegotiator.chooseOutboundGiftWrapKind(),
         startFrameTags,
         continuationFrameTags: frameRecipientTags,
       },
@@ -566,27 +511,7 @@ export class NostrClientTransport
       });
     }
 
-    this.markClientDiscoveryTagsSent();
-  }
-
-  private chooseOutboundGiftWrapKind(): number {
-    // Strict modes are deterministic.
-    if (this.giftWrapMode === GiftWrapMode.PERSISTENT) return GIFT_WRAP_KIND;
-    if (this.giftWrapMode === GiftWrapMode.EPHEMERAL)
-      return EPHEMERAL_GIFT_WRAP_KIND;
-
-    if (this.serverSupportsEphemeralGiftWraps) {
-      return EPHEMERAL_GIFT_WRAP_KIND;
-    }
-
-    const supportsEphemeralFromInit = queryTags(
-      this.serverInitializeEvent,
-      NOSTR_TAGS.SUPPORT_ENCRYPTION_EPHEMERAL,
-    ).isFlag;
-
-    return supportsEphemeralFromInit
-      ? EPHEMERAL_GIFT_WRAP_KIND
-      : GIFT_WRAP_KIND;
+    this.capabilityNegotiator.markDiscoveryTagsSent();
   }
 
   private getOriginalRequestContext(
@@ -1066,7 +991,7 @@ export class NostrClientTransport
       return;
     }
 
-    this.serverSupportsEphemeralGiftWraps ||=
+    this.capabilityNegotiator.serverSupportsEphemeralGiftWraps ||=
       discovered.supportsEphemeralEncryption;
     this.serverSupportsOversizedTransfer ||=
       discovered.supportsOversizedTransfer;
@@ -1074,6 +999,7 @@ export class NostrClientTransport
 
     if (!this.serverInitializeEvent) {
       this.serverInitializeEvent = event;
+      this.capabilityNegotiator.serverInitializeEvent = event;
       this.logger.info('Learned server discovery tags from inbound event', {
         eventId: event.id,
       });
@@ -1089,6 +1015,7 @@ export class NostrClientTransport
 
     if (!existingHasInitializeResult && currentHasInitializeResult) {
       this.serverInitializeEvent = event;
+      this.capabilityNegotiator.serverInitializeEvent = event;
       this.logger.info(
         'Upgraded learned server discovery event to initialize response',
         {

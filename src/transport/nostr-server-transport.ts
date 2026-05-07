@@ -62,7 +62,10 @@ import {
   DEFAULT_CHUNK_SIZE,
   DEFAULT_OVERSIZED_THRESHOLD,
 } from './oversized-transfer/constants.js';
-import { learnPeerCapabilities } from './discovery-tags.js';
+import {
+  learnPeerCapabilities,
+  ServerCapabilityNegotiator,
+} from './capability-negotiator.js';
 import type { OpenStreamTransportPolicy } from './open-stream-policy.js';
 import { InboundNotificationDispatcher } from './nostr-server/inbound-notification-dispatcher.js';
 import { OutboundResponseRouter } from './nostr-server/outbound-response-router.js';
@@ -235,6 +238,7 @@ export class NostrServerTransport
   private readonly oversizedThreshold: number;
   private readonly oversizedChunkSize: number;
   private readonly openStreamEnabled: boolean;
+  private readonly capabilityNegotiator: ServerCapabilityNegotiator;
   private readonly inboundNotificationDispatcher: InboundNotificationDispatcher;
   private readonly outboundResponseRouter: OutboundResponseRouter;
 
@@ -409,6 +413,12 @@ export class NostrServerTransport
 
     this.announcementManager.setInternalCommonTags(internalCommonTags);
 
+    this.capabilityNegotiator = new ServerCapabilityNegotiator({
+      getCommonTags: this.announcementManager.getCommonTags.bind(this.announcementManager),
+      composeOutboundTags: this.composeOutboundTags.bind(this),
+      giftWrapMode: this.giftWrapMode,
+    });
+
     this.inboundNotificationDispatcher = new InboundNotificationDispatcher({
       openStreamReceiver: this.openStreamReceiver,
       oversizedReceiver: this.oversizedReceiver,
@@ -436,9 +446,9 @@ export class NostrServerTransport
         chunkSize: this.oversizedChunkSize,
       },
       applyListToolsResultTransformers: this.applyListToolsResultTransformers.bind(this),
-      buildOutboundTags: this.buildServerOutboundTags.bind(this),
+      buildOutboundTags: this.capabilityNegotiator.buildOutboundTags.bind(this.capabilityNegotiator),
       createResponseTags: this.createResponseTags.bind(this),
-      chooseGiftWrapKind: this.chooseServerOutboundGiftWrapKind.bind(this),
+      chooseGiftWrapKind: this.capabilityNegotiator.chooseOutboundGiftWrapKind.bind(this.capabilityNegotiator),
       sendMcpMessage: this.sendMcpMessage.bind(this),
       logger: this.logger,
       onerror: (error) => this.onerror?.(error),
@@ -620,61 +630,7 @@ export class NostrServerTransport
     return session;
   }
 
-  private takePendingServerDiscoveryTags(session: ClientSession): string[][] {
-    if (session.hasSentCommonTags) {
-      return [];
-    }
 
-    session.hasSentCommonTags = true;
-    return this.announcementManager.getCommonTags();
-  }
-
-  private buildServerOutboundTags(params: {
-    baseTags: readonly string[][];
-    session: ClientSession;
-    includeDiscovery?: boolean;
-    negotiationTags?: readonly string[][];
-  }): string[][] {
-    const {
-      baseTags,
-      session,
-      includeDiscovery = true,
-      negotiationTags = [],
-    } = params;
-
-    return this.composeOutboundTags({
-      baseTags,
-      discoveryTags: includeDiscovery
-        ? this.takePendingServerDiscoveryTags(session)
-        : [],
-      negotiationTags,
-    });
-  }
-
-  private chooseServerOutboundGiftWrapKind(params: {
-    session: ClientSession;
-    fallbackWrapKind?: number;
-  }): number | undefined {
-    const { session, fallbackWrapKind } = params;
-
-    if (!session.isEncrypted) {
-      return undefined;
-    }
-
-    if (this.giftWrapMode === GiftWrapMode.EPHEMERAL) {
-      return EPHEMERAL_GIFT_WRAP_KIND;
-    }
-
-    if (this.giftWrapMode === GiftWrapMode.PERSISTENT) {
-      return GIFT_WRAP_KIND;
-    }
-
-    if (session.supportsEphemeralEncryption) {
-      return EPHEMERAL_GIFT_WRAP_KIND;
-    }
-
-    return fallbackWrapKind;
-  }
 
   private getRelayUrls(relayHandler: RelayHandler): string[] {
     return relayHandler.getRelayUrls();
@@ -921,12 +877,12 @@ export class NostrServerTransport
       baseTags.push([NOSTR_TAGS.EVENT_ID, correlatedEventId]);
     }
 
-    const tags = this.buildServerOutboundTags({
+    const tags = this.capabilityNegotiator.buildOutboundTags({
       baseTags,
       session,
     });
 
-    const giftWrapKind = this.chooseServerOutboundGiftWrapKind({
+    const giftWrapKind = this.capabilityNegotiator.chooseOutboundGiftWrapKind({
       session,
     });
 
