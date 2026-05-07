@@ -177,6 +177,11 @@ export class OpenStreamRegistry {
     this.logger.debug('Clearing open stream registry', {
       count: this.sessions.size,
     });
+
+    for (const session of this.sessions.values()) {
+      session.dispose();
+    }
+
     this.sessions.clear();
   }
 

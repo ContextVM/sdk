@@ -115,6 +115,10 @@ export class OpenStreamSession implements OpenStreamSessionLike<string> {
     await this.finishAborted(error, reason, true);
   }
 
+  public dispose(): void {
+    this.finalize();
+  }
+
   public async processFrame(
     progress: number,
     frame: OpenStreamFrame,

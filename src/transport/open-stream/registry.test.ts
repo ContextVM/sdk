@@ -160,4 +160,42 @@ describe('OpenStreamRegistry', () => {
     expect(pongs).toEqual(['peer-nonce']);
     expect(aborts).toEqual([]);
   });
+
+  test('clearing the registry disposes active sessions and cancels pending timers', async () => {
+    const pings: string[] = [];
+    const aborts: Array<string | undefined> = [];
+    const registry = new OpenStreamRegistry({
+      maxConcurrentStreams: 2,
+      maxBufferedChunksPerStream: 4,
+      maxBufferedBytesPerStream: 128,
+      idleTimeoutMs: 10,
+      probeTimeoutMs: 10,
+      logger: createLogger('test', { level: 'silent' }),
+      getSessionOptions: () => ({
+        sendPing: async (nonce: string): Promise<void> => {
+          pings.push(nonce);
+        },
+        sendAbort: async (reason?: string): Promise<void> => {
+          aborts.push(reason);
+        },
+      }),
+    });
+
+    const session = registry.createSession('token-clear-disposes');
+
+    await session.processFrame(1, {
+      type: 'open-stream',
+      frameType: 'start',
+    });
+
+    registry.clear();
+
+    await expect(session.closed).resolves.toBeUndefined();
+
+    await new Promise((resolve) => setTimeout(resolve, 35));
+
+    expect(registry.size).toBe(0);
+    expect(pings).toEqual([]);
+    expect(aborts).toEqual([]);
+  });
 });
