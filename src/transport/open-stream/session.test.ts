@@ -452,6 +452,45 @@ describe('OpenStreamSession', () => {
     await session.closed.catch(() => undefined);
   });
 
+  test('ignores unexpected pong frames for liveness tracking', async () => {
+    const pings: string[] = [];
+    const aborts: Array<string | undefined> = [];
+    const session = new OpenStreamSession({
+      progressToken: 'token-invalid-pong',
+      maxBufferedChunks: 8,
+      maxBufferedBytes: 1024,
+      idleTimeoutMs: 10,
+      probeTimeoutMs: 10,
+      closeGracePeriodMs: 100,
+      sendPing: async (nonce: string): Promise<void> => {
+        pings.push(nonce);
+      },
+      sendAbort: async (reason?: string): Promise<void> => {
+        aborts.push(reason);
+      },
+    });
+    const closed = session.closed.catch((error: unknown) => error);
+
+    await session.processFrame(1, {
+      type: 'open-stream',
+      frameType: 'start',
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    expect(pings).toHaveLength(1);
+
+    await session.processFrame(2, {
+      type: 'open-stream',
+      frameType: 'pong',
+      nonce: 'unexpected-pong',
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 15));
+
+    expect(aborts).toEqual(['Probe timeout']);
+    expect(await closed).toBeInstanceOf(OpenStreamAbortError);
+  });
+
   test('aborts when close grace period expires with missing chunks', async () => {
     const aborts: Array<string | undefined> = [];
     const session = new OpenStreamSession({

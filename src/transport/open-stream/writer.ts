@@ -32,6 +32,7 @@ export class OpenStreamWriter {
   private readonly onAbort?: (reason?: string) => Promise<void>;
   private progress = 0;
   private chunkIndex = 0;
+  private controlNonce = 0;
   private started = false;
   private active = true;
 
@@ -89,7 +90,7 @@ export class OpenStreamWriter {
       buildOpenStreamPingFrame({
         progressToken: this.progressToken,
         progress,
-        nonce: String(progress),
+        nonce: this.nextControlNonce(),
       }),
     );
   }
@@ -144,5 +145,10 @@ export class OpenStreamWriter {
   private nextProgress(): number {
     this.progress += 1;
     return this.progress;
+  }
+
+  private nextControlNonce(): string {
+    this.controlNonce += 1;
+    return `${this.progressToken}:${this.controlNonce}`;
   }
 }

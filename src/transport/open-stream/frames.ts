@@ -17,8 +17,11 @@ export function buildOpenStreamStartFrame(params: {
   const cvm: OpenStreamStartFrame = {
     type: 'open-stream',
     frameType: 'start',
-    contentType: params.contentType,
   };
+
+  if (params.contentType !== undefined) {
+    cvm.contentType = params.contentType;
+  }
 
   return {
     progressToken: params.progressToken,
@@ -107,8 +110,11 @@ export function buildOpenStreamCloseFrame(params: {
   const cvm: OpenStreamCloseFrame = {
     type: 'open-stream',
     frameType: 'close',
-    lastChunkIndex: params.lastChunkIndex,
   };
+
+  if (params.lastChunkIndex !== undefined) {
+    cvm.lastChunkIndex = params.lastChunkIndex;
+  }
 
   return {
     progressToken: params.progressToken,
@@ -125,8 +131,11 @@ export function buildOpenStreamAbortFrame(params: {
   const cvm: OpenStreamAbortFrame = {
     type: 'open-stream',
     frameType: 'abort',
-    reason: params.reason,
   };
+
+  if (params.reason !== undefined) {
+    cvm.reason = params.reason;
+  }
 
   return {
     progressToken: params.progressToken,

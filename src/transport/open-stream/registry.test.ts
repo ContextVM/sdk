@@ -6,6 +6,7 @@ import {
 } from './constants.js';
 import { OpenStreamPolicyError, OpenStreamSequenceError } from './errors.js';
 import { OpenStreamRegistry } from './registry.js';
+import type { OpenStreamProgress } from './types.js';
 
 describe('OpenStreamRegistry', () => {
   test('enforces the max concurrent stream policy and reuses slots after close', async () => {
@@ -197,5 +198,75 @@ describe('OpenStreamRegistry', () => {
     expect(registry.size).toBe(0);
     expect(pings).toEqual([]);
     expect(aborts).toEqual([]);
+  });
+
+  test('accepts a start frame with advisory metadata omitted', async () => {
+    const registry = new OpenStreamRegistry({
+      maxConcurrentStreams: 2,
+      maxBufferedChunksPerStream: 4,
+      maxBufferedBytesPerStream: 128,
+      logger: createLogger('test', { level: 'silent' }),
+    });
+
+    const session = await registry.processFrame({
+      progressToken: 'token-advisory-start',
+      progress: 1,
+      cvm: {
+        type: 'open-stream',
+        frameType: 'start',
+      },
+    });
+
+    expect(session.progressToken).toBe('token-advisory-start');
+    expect(registry.getSession('token-advisory-start')).toBe(session);
+
+    registry.clear();
+    await expect(session.closed).resolves.toBeUndefined();
+  });
+
+  test('rejects malformed progress payloads that are not CEP-41 frames', () => {
+    const malformedPayloads: unknown[] = [
+      null,
+      {},
+      { progressToken: 'missing-cvm', progress: 1 },
+      {
+        progressToken: 'wrong-type',
+        progress: 1,
+        cvm: { type: 'other', frameType: 'start' },
+      },
+      {
+        progressToken: 'missing-frame-type',
+        progress: 1,
+        cvm: { type: 'open-stream' },
+      },
+    ];
+
+    expect(
+      malformedPayloads.every(
+        (payload) => !OpenStreamRegistry.isOpenStreamProgress(payload),
+      ),
+    ).toBe(true);
+  });
+
+  test('rejects accept as the first frame for an unknown token', async () => {
+    const registry = new OpenStreamRegistry({
+      maxConcurrentStreams: 2,
+      maxBufferedChunksPerStream: 4,
+      maxBufferedBytesPerStream: 128,
+      logger: createLogger('test', { level: 'silent' }),
+    });
+    const acceptFrame: OpenStreamProgress = {
+      progressToken: 'token-orphan-accept',
+      progress: 1,
+      cvm: {
+        type: 'open-stream',
+        frameType: 'accept',
+      },
+    };
+
+    await expect(registry.processFrame(acceptFrame)).rejects.toBeInstanceOf(
+      OpenStreamSequenceError,
+    );
+    expect(registry.getSession('token-orphan-accept')).toBeUndefined();
   });
 });

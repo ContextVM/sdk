@@ -24,7 +24,7 @@ describe('OpenStreamWriter', () => {
       cvm: {
         type: 'open-stream',
         frameType: 'ping',
-        nonce: '2',
+        nonce: 'token-keepalive:1',
       },
     });
     expect(frames[2]).toMatchObject({
@@ -57,10 +57,10 @@ describe('OpenStreamWriter', () => {
         frameType: 'close',
       },
     });
-    expect('lastChunkIndex' in frames[1]!.cvm).toBe(true);
     if (frames[1]?.cvm.frameType !== 'close') {
       throw new Error('Expected close frame');
     }
+    expect('lastChunkIndex' in frames[1].cvm).toBe(false);
     expect(frames[1].cvm.lastChunkIndex).toBeUndefined();
   });
 

@@ -1048,78 +1048,74 @@ describe('callToolStream end-to-end', () => {
 
     await cleanupOpenStreamFixture({ client, server, relayHub });
   }, 15_000);
-});
 
-describe('OpenStreamRegistry progress payload validation', () => {
-  const logger = createLogger('test', { level: 'silent' });
+  test('defers the final JSON-RPC response until the stream closes', async () => {
+    const { relayHub, server, client, serverTransport, clientTransport } =
+      createOpenStreamFixture();
+    let releaseClose: (() => void) | undefined;
 
-  test('accepts a start frame with advisory metadata omitted', async () => {
-    const registry = new OpenStreamRegistry({
-      maxConcurrentStreams: 2,
-      maxBufferedChunksPerStream: 4,
-      maxBufferedBytesPerStream: 128,
-      logger,
-    });
-
-    const session = await registry.processFrame({
-      progressToken: 'token-advisory-start',
-      progress: 1,
-      cvm: {
-        type: 'open-stream',
-        frameType: 'start',
-      },
-    });
-
-    expect(session.progressToken).toBe('token-advisory-start');
-    expect(registry.getSession('token-advisory-start')).toBe(session);
-
-    registry.clear();
-    await expect(session.closed).resolves.toBeUndefined();
-  });
-
-  test('rejects malformed progress payloads that are not CEP-41 frames', () => {
-    const malformedPayloads: unknown[] = [
-      null,
-      {},
-      { progressToken: 'missing-cvm', progress: 1 },
+    server.registerTool(
+      'deferredResponseStream',
       {
-        progressToken: 'wrong-type',
-        progress: 1,
-        cvm: { type: 'other', frameType: 'start' },
+        title: 'Deferred Response Stream',
+        description: 'Keeps the stream open until explicitly released.',
+        inputSchema: {
+          topic: z.string(),
+        },
       },
-      {
-        progressToken: 'missing-frame-type',
-        progress: 1,
-        cvm: { type: 'open-stream' },
+      async ({ topic }, extra) => {
+        const stream = getOpenStreamWriter(extra);
+
+        await stream.start();
+        await stream.write(`stream:${topic}:1`);
+
+        await new Promise<void>((resolve) => {
+          releaseClose = resolve;
+        });
+
+        await stream.close();
+
+        return {
+          content: [{ type: 'text', text: `deferred:${topic}` }],
+        };
       },
-    ];
-
-    expect(
-      malformedPayloads.every(
-        (payload) => !OpenStreamRegistry.isOpenStreamProgress(payload),
-      ),
-    ).toBe(true);
-  });
-
-  test('rejects accept as the first frame for an unknown token', async () => {
-    const registry = new OpenStreamRegistry({
-      maxConcurrentStreams: 2,
-      maxBufferedChunksPerStream: 4,
-      maxBufferedBytesPerStream: 128,
-      logger,
-    });
-    const acceptFrame: OpenStreamProgress = {
-      progressToken: 'token-orphan-accept',
-      progress: 1,
-      cvm: {
-        type: 'open-stream',
-        frameType: 'accept',
-      },
-    };
-
-    await expect(registry.processFrame(acceptFrame)).rejects.toBeInstanceOf(
-      OpenStreamSequenceError,
     );
-    expect(registry.getSession('token-orphan-accept')).toBeUndefined();
-  });
+
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+
+    const call = await callToolStream({
+      client,
+      transport: clientTransport,
+      name: 'deferredResponseStream',
+      arguments: {
+        topic: 'orders',
+      },
+    });
+
+    const iterator = call.stream[Symbol.asyncIterator]();
+    const firstChunk = await iterator.next();
+    expect(firstChunk.done).toBe(false);
+    expect(firstChunk.value?.value).toBe('stream:orders:1');
+
+    let resultSettled = false;
+    void call.result.finally(() => {
+      resultSettled = true;
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(resultSettled).toBe(false);
+
+    releaseClose?.();
+
+    await expect(iterator.next()).resolves.toEqual({
+      done: true,
+      value: undefined,
+    });
+    await expect(call.result).resolves.toMatchObject({
+      content: [{ type: 'text', text: 'deferred:orders' }],
+    });
+
+    await cleanupOpenStreamFixture({ client, server, relayHub });
+  }, 15_000);
 });
