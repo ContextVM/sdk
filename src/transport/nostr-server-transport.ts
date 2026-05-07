@@ -69,6 +69,7 @@ import {
 import type { OpenStreamTransportPolicy } from './open-stream-policy.js';
 import { InboundNotificationDispatcher } from './nostr-server/inbound-notification-dispatcher.js';
 import { OutboundResponseRouter } from './nostr-server/outbound-response-router.js';
+import { ServerOpenStreamFactory } from './nostr-server/open-stream-factory.js';
 
 /**
  * Options for configuring the NostrServerTransport.
@@ -224,21 +225,13 @@ export class NostrServerTransport
   /** Receives inbound open-stream frames from clients (client→server notifications). */
   private readonly openStreamReceiver: OpenStreamReceiver;
 
-  /** Pending final responses held until their CEP-41 stream terminates. */
-  private readonly pendingOpenStreamResponses = new Map<
-    string,
-    JSONRPCResponse
-  >();
-
-  /** Active server-side CEP-41 writers keyed by inbound request event id. */
-  private readonly openStreamWriters = new Map<string, OpenStreamWriter>();
-
   // Oversized-transfer sender settings (for server→client responses)
   private readonly oversizedEnabled: boolean;
   private readonly oversizedThreshold: number;
   private readonly oversizedChunkSize: number;
   private readonly openStreamEnabled: boolean;
   private readonly capabilityNegotiator: ServerCapabilityNegotiator;
+  private readonly openStreamFactory: ServerOpenStreamFactory;
   private readonly inboundNotificationDispatcher: InboundNotificationDispatcher;
   private readonly outboundResponseRouter: OutboundResponseRouter;
 
@@ -419,10 +412,18 @@ export class NostrServerTransport
       giftWrapMode: this.giftWrapMode,
     });
 
+    this.openStreamFactory = new ServerOpenStreamFactory({
+      openStreamEnabled: this.openStreamEnabled,
+      sendNotification: this.sendNotification.bind(this),
+      handleResponse: async (response) => {
+        await this.outboundResponseRouter.route(response);
+      },
+    });
+
     this.inboundNotificationDispatcher = new InboundNotificationDispatcher({
       openStreamReceiver: this.openStreamReceiver,
       oversizedReceiver: this.oversizedReceiver,
-      openStreamWriters: this.openStreamWriters,
+      openStreamWriters: this.openStreamFactory.getWritersMap(),
       correlationStore: this.correlationStore,
       sendNotification: this.sendNotification.bind(this),
       handleIncomingRequest: this.handleIncomingRequest.bind(this),
@@ -438,8 +439,8 @@ export class NostrServerTransport
       correlationStore: this.correlationStore,
       sessionStore: this.sessionStore,
       announcementManager: this.announcementManager,
-      openStreamWriters: this.openStreamWriters,
-      pendingOpenStreamResponses: this.pendingOpenStreamResponses,
+      openStreamWriters: this.openStreamFactory.getWritersMap(),
+      pendingOpenStreamResponses: this.openStreamFactory.getPendingResponsesMap(),
       oversizedConfig: {
         enabled: this.oversizedEnabled,
         threshold: this.oversizedThreshold,
@@ -561,8 +562,8 @@ export class NostrServerTransport
       this.seenEventIds.clear();
       this.oversizedReceiver.clear();
       this.openStreamReceiver.clear();
-      this.pendingOpenStreamResponses.clear();
-      this.openStreamWriters.clear();
+      this.openStreamFactory.getPendingResponsesMap().clear();
+      this.openStreamFactory.getWritersMap().clear();
       this.onclose?.();
     } catch (error) {
       this.onerror?.(error instanceof Error ? error : new Error(String(error)));
@@ -699,39 +700,11 @@ export class NostrServerTransport
       this.shouldInjectRequestEventId ? event : undefined,
     );
 
-    if (this.openStreamEnabled && progressToken) {
-      const writer = new OpenStreamWriter({
-        progressToken: String(progressToken),
-        publishFrame: async (frame) => {
-          await this.sendNotification(clientPubkey, {
-            jsonrpc: '2.0',
-            method: 'notifications/progress',
-            params: frame,
-          });
-          return undefined;
-        },
-        onClose: async (): Promise<void> => {
-          await this.flushPendingOpenStreamResponse(eventId);
-        },
-        onAbort: async (): Promise<void> => {
-          await this.flushPendingOpenStreamResponse(eventId);
-        },
-      });
-
-      this.openStreamWriters.set(eventId, writer);
-    }
-  }
-
-  private async flushPendingOpenStreamResponse(eventId: string): Promise<void> {
-    const pendingResponse = this.pendingOpenStreamResponses.get(eventId);
-    this.pendingOpenStreamResponses.delete(eventId);
-    this.openStreamWriters.delete(eventId);
-
-    if (!pendingResponse) {
-      return;
-    }
-
-    await this.handleResponse(pendingResponse);
+    this.openStreamFactory.createWriterIfEnabled(
+      eventId,
+      clientPubkey,
+      progressToken ? String(progressToken) : undefined,
+    );
   }
 
   /**
@@ -1167,7 +1140,7 @@ export class NostrServerTransport
           injectClientPubkey(inboundMessage, event.pubkey);
         }
 
-        const openStreamWriter = this.openStreamWriters.get(event.id);
+        const openStreamWriter = this.openStreamFactory.getWriter(event.id);
         if (openStreamWriter) {
           const params = inboundMessage.params ?? {};
           inboundMessage.params = params;
