@@ -59,7 +59,6 @@ import {
 import {
   OpenStreamReceiver,
   OpenStreamWriter,
-  buildOpenStreamAcceptFrame,
   buildOpenStreamAbortFrame,
   buildOpenStreamPingFrame,
   buildOpenStreamPongFrame,
@@ -70,10 +69,10 @@ import {
 } from './oversized-transfer/constants.js';
 import { learnPeerCapabilities } from './discovery-tags.js';
 import {
-  sendAcceptFrame,
   sendOversizedServerResponse,
 } from './nostr-server/oversized-server-handler.js';
 import type { OpenStreamTransportPolicy } from './open-stream-policy.js';
+import { InboundNotificationDispatcher } from './nostr-server/inbound-notification-dispatcher.js';
 
 /**
  * Options for configuring the NostrServerTransport.
@@ -243,6 +242,7 @@ export class NostrServerTransport
   private readonly oversizedThreshold: number;
   private readonly oversizedChunkSize: number;
   private readonly openStreamEnabled: boolean;
+  private readonly inboundNotificationDispatcher: InboundNotificationDispatcher;
 
   constructor(options: NostrServerTransportOptions) {
     super('nostr-server-transport', options);
@@ -414,6 +414,21 @@ export class NostrServerTransport
     }
 
     this.announcementManager.setInternalCommonTags(internalCommonTags);
+
+    this.inboundNotificationDispatcher = new InboundNotificationDispatcher({
+      openStreamReceiver: this.openStreamReceiver,
+      oversizedReceiver: this.oversizedReceiver,
+      openStreamWriters: this.openStreamWriters,
+      correlationStore: this.correlationStore,
+      sendNotification: this.sendNotification.bind(this),
+      handleIncomingRequest: this.handleIncomingRequest.bind(this),
+      handleIncomingNotification: this.handleIncomingNotification.bind(this),
+      cleanupDroppedRequest: this.cleanupDroppedRequest.bind(this),
+      shouldInjectRequestEventId: this.shouldInjectRequestEventId,
+      injectClientPubkey: this.injectClientPubkey,
+      logger: this.logger,
+      onerror: (error) => this.onerror?.(error),
+    });
   }
 
   /**
@@ -1334,189 +1349,12 @@ export class NostrServerTransport
       } else if (isJSONRPCNotification(inboundMessage)) {
         this.handleIncomingNotification(event.pubkey, inboundMessage);
 
-        if (
-          inboundMessage.method === 'notifications/progress' &&
-          OpenStreamReceiver.isOpenStreamFrame(inboundMessage)
-        ) {
-          const frame = inboundMessage.params?.cvm as
-            | { frameType?: string; reason?: string }
-            | undefined;
-
-          if (frame?.frameType === 'abort') {
-            const progressToken = String(
-              inboundMessage.params?.progressToken ?? '',
-            );
-            const eventId =
-              this.correlationStore.getEventIdByProgressToken(progressToken);
-            const writer = eventId
-              ? this.openStreamWriters.get(eventId)
-              : undefined;
-
-            if (writer) {
-              void writer.abort(frame.reason).catch((err: unknown) => {
-                this.logger.error(
-                  'Open stream abort propagation failed (server)',
-                  {
-                    error: err instanceof Error ? err.message : String(err),
-                    pubkey: event.pubkey,
-                    progressToken,
-                  },
-                );
-                this.onerror?.(
-                  err instanceof Error ? err : new Error(String(err)),
-                );
-              });
-            }
-
-            return;
-          }
-
-          if (frame?.frameType === 'ping') {
-            const progressToken = String(
-              inboundMessage.params?.progressToken ?? '',
-            );
-            const nonce =
-              'nonce' in frame && typeof frame.nonce === 'string'
-                ? frame.nonce
-                : '';
-            const eventId =
-              this.correlationStore.getEventIdByProgressToken(progressToken);
-            const writer = eventId
-              ? this.openStreamWriters.get(eventId)
-              : undefined;
-
-            if (writer) {
-              void writer.pong(nonce).catch((err: unknown) => {
-                this.logger.error('Open stream ping handling failed (server)', {
-                  error: err instanceof Error ? err.message : String(err),
-                  pubkey: event.pubkey,
-                  progressToken,
-                });
-                this.onerror?.(
-                  err instanceof Error ? err : new Error(String(err)),
-                );
-              });
-
-              return;
-            }
-          }
-
-          this.openStreamReceiver
-            .processFrame(inboundMessage)
-            .then(async () => {
-              const frameType = frame?.frameType;
-
-              if (frameType === 'start' && session.supportsOpenStream) {
-                await this.sendNotification(event.pubkey, {
-                  jsonrpc: '2.0',
-                  method: 'notifications/progress',
-                  params: buildOpenStreamAcceptFrame({
-                    progressToken: String(
-                      inboundMessage.params?.progressToken ?? '',
-                    ),
-                    progress: Number(inboundMessage.params?.progress ?? 0) + 1,
-                  }),
-                });
-              }
-            })
-            .catch((err: unknown) => {
-              this.logger.error('Open stream error (server)', {
-                error: err instanceof Error ? err.message : String(err),
-                pubkey: event.pubkey,
-              });
-              this.onerror?.(
-                err instanceof Error ? err : new Error(String(err)),
-              );
-            });
-          return;
-        }
-
-        if (
-          inboundMessage.method === 'notifications/progress' &&
-          OversizedTransferReceiver.isOversizedFrame(inboundMessage)
-        ) {
-          this.oversizedReceiver
-            .processFrame(inboundMessage)
-            .then(async (synthetic) => {
-              if (synthetic === null) {
-                if (
-                  (
-                    inboundMessage.params?.cvm as
-                      | { frameType?: string }
-                      | undefined
-                  )?.frameType === 'start' &&
-                  shouldSendAccept
-                ) {
-                  await sendAcceptFrame(
-                    {
-                      clientPubkey: event.pubkey,
-                      progressToken: String(
-                        inboundMessage.params?.progressToken ?? '',
-                      ),
-                    },
-                    {
-                      sendNotification: this.sendNotification.bind(this),
-                    },
-                  ).catch((err: unknown) => {
-                    this.logger.error('Failed to send oversized accept', {
-                      error: err instanceof Error ? err.message : String(err),
-                    });
-                  });
-                }
-                return;
-              }
-
-              if (isJSONRPCRequest(synthetic)) {
-                this.handleIncomingRequest(
-                  event,
-                  event.id,
-                  synthetic,
-                  event.pubkey,
-                  wrapKind,
-                );
-
-                if (this.shouldInjectRequestEventId) {
-                  injectRequestEventId(synthetic, event.id);
-                }
-
-                if (this.injectClientPubkey) {
-                  injectClientPubkey(synthetic, event.pubkey);
-                }
-              } else if (isJSONRPCNotification(synthetic)) {
-                this.handleIncomingNotification(event.pubkey, synthetic);
-              }
-
-              void dispatch(0, synthetic)
-                .then((forwarded) => {
-                  if (!forwarded) {
-                    this.cleanupDroppedRequest(synthetic);
-                  }
-                })
-                .catch((err: unknown) => {
-                  this.logger.error(
-                    'Error dispatching reassembled oversized message',
-                    {
-                      error: err instanceof Error ? err.message : String(err),
-                      pubkey: event.pubkey,
-                    },
-                  );
-                  this.onerror?.(
-                    err instanceof Error
-                      ? err
-                      : new Error('oversized dispatch failed'),
-                  );
-                });
-            })
-            .catch((err: unknown) => {
-              this.logger.error('Oversized transfer error (server)', {
-                error: err instanceof Error ? err.message : String(err),
-              });
-              this.onerror?.(
-                err instanceof Error ? err : new Error(String(err)),
-              );
-            });
-          return;
-        }
+        const intercepted = this.inboundNotificationDispatcher.tryIntercept(
+          inboundMessage,
+          { event, session, shouldSendAccept, wrapKind },
+          (msg) => dispatch(0, msg),
+        );
+        if (intercepted) return;
       }
 
       void dispatch(0, inboundMessage)
