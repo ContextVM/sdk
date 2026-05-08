@@ -14,7 +14,6 @@ import {
   Subject,
   filter,
   take,
-  merge,
   firstValueFrom,
   NEVER,
 } from 'rxjs';
@@ -597,33 +596,34 @@ export class ApplesauceRelayPool implements RelayHandler {
       return;
     }
 
-    const pingId = `ping:${Date.now()}`;
-
     try {
-      // Send pings to all connected relays using the internal send method
-      // Cast to Relay to access the non-interface send method
-      for (const relay of connectedRelays) {
-        try {
-          (relay as Relay).send(['REQ', pingId, PING_FILTER]);
-        } catch (error) {
-          // If send fails immediately, log but continue - timeout will catch it
-          logger.debug('Failed to send ping to relay', {
-            url: relay.url,
-            error,
-          });
-        }
-      }
+      await Promise.all(
+        connectedRelays.map(async (relay, index) => {
+          const pingId = `ping:${Date.now()}:${index}`;
 
-      // Wait for any response with timeout using raw message stream
-      await lastValueFrom(
-        merge(...connectedRelays.map((relay) => relay.message$)).pipe(
-          filter(
-            (msg) =>
-              Array.isArray(msg) && msg[0] === 'EOSE' && msg[1] === pingId,
-          ),
-          take(1),
-          timeout(this.pingTimeoutMs),
-        ),
+          try {
+            relay.send(['REQ', pingId, PING_FILTER]);
+
+            await lastValueFrom(
+              relay.message$.pipe(
+                filter(
+                  (msg) =>
+                    Array.isArray(msg) &&
+                    msg[0] === 'EOSE' &&
+                    msg[1] === pingId,
+                ),
+                take(1),
+                timeout(this.pingTimeoutMs),
+              ),
+            );
+          } finally {
+            try {
+              relay.send(['CLOSE', pingId]);
+            } catch {
+              // best-effort cleanup
+            }
+          }
+        }),
       );
     } catch (error) {
       if (error instanceof Error && error.name === 'TimeoutError') {
