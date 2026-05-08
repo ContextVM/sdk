@@ -174,6 +174,82 @@ describe('OpenStreamSession', () => {
     ).rejects.toBeInstanceOf(OpenStreamSequenceError);
   });
 
+  test('counts unread queued chunks against the buffered byte limit', async () => {
+    const session = new OpenStreamSession({
+      progressToken: 'token-queued-bytes',
+      maxBufferedChunks: 4,
+      maxBufferedBytes: 5,
+    });
+
+    await session.processFrame(1, {
+      type: 'open-stream',
+      frameType: 'start',
+    });
+    await session.processFrame(2, {
+      type: 'open-stream',
+      frameType: 'chunk',
+      chunkIndex: 0,
+      data: 'abc',
+    });
+
+    await expect(
+      session.processFrame(3, {
+        type: 'open-stream',
+        frameType: 'chunk',
+        chunkIndex: 1,
+        data: 'def',
+      }),
+    ).rejects.toBeInstanceOf(OpenStreamSequenceError);
+  });
+
+  test('releases queued byte budget after queued chunks are consumed', async () => {
+    const session = new OpenStreamSession({
+      progressToken: 'token-queued-byte-release',
+      maxBufferedChunks: 4,
+      maxBufferedBytes: 6,
+    });
+    const iterator = session[Symbol.asyncIterator]();
+
+    await session.processFrame(1, {
+      type: 'open-stream',
+      frameType: 'start',
+    });
+    await session.processFrame(2, {
+      type: 'open-stream',
+      frameType: 'chunk',
+      chunkIndex: 0,
+      data: 'abc',
+    });
+    await session.processFrame(3, {
+      type: 'open-stream',
+      frameType: 'chunk',
+      chunkIndex: 1,
+      data: 'def',
+    });
+
+    await expect(
+      session.processFrame(4, {
+        type: 'open-stream',
+        frameType: 'chunk',
+        chunkIndex: 2,
+        data: 'g',
+      }),
+    ).rejects.toBeInstanceOf(OpenStreamSequenceError);
+
+    const first = await iterator.next();
+    expect(first).toEqual({
+      done: false,
+      value: { value: 'abc', chunkIndex: 0 },
+    });
+
+    await session.processFrame(5, {
+      type: 'open-stream',
+      frameType: 'chunk',
+      chunkIndex: 2,
+      data: 'g',
+    });
+  });
+
   test('rejects frames after close', async () => {
     const session = new OpenStreamSession({
       progressToken: 'token-post-close',
@@ -525,5 +601,40 @@ describe('OpenStreamSession', () => {
 
     expect(aborts).toEqual(['Close grace period expired']);
     expect(await closed).toBeInstanceOf(OpenStreamAbortError);
+  });
+
+  test('keeps ordered delivery when chunk and close are processed concurrently', async () => {
+    const session = new OpenStreamSession({
+      progressToken: 'token-concurrent-order',
+      maxBufferedChunks: 8,
+      maxBufferedBytes: 1024,
+    });
+
+    await session.processFrame(1, {
+      type: 'open-stream',
+      frameType: 'start',
+    });
+
+    await Promise.all([
+      session.processFrame(2, {
+        type: 'open-stream',
+        frameType: 'chunk',
+        chunkIndex: 0,
+        data: 'hello',
+      }),
+      session.processFrame(3, {
+        type: 'open-stream',
+        frameType: 'close',
+        lastChunkIndex: 0,
+      }),
+    ]);
+
+    const chunks: string[] = [];
+    for await (const chunk of session) {
+      chunks.push(chunk.value);
+    }
+
+    expect(chunks).toEqual(['hello']);
+    await expect(session.closed).resolves.toBeUndefined();
   });
 });

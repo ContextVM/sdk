@@ -71,6 +71,7 @@ export class OpenStreamSession implements OpenStreamSessionLike<string> {
   private readonly sendPong?: (nonce: string) => Promise<void>;
   private readonly sendAbort?: (reason?: string) => Promise<void>;
   private bufferedBytes = 0;
+  private queuedBytes = 0;
   private active = true;
   private started = false;
   private closedRemotely = false;
@@ -188,6 +189,8 @@ export class OpenStreamSession implements OpenStreamSessionLike<string> {
             return { done: true, value: undefined };
           }
 
+          this.queuedBytes -= Buffer.byteLength(value.value, 'utf8');
+
           return { done: false, value };
         }
 
@@ -261,7 +264,10 @@ export class OpenStreamSession implements OpenStreamSessionLike<string> {
       );
     }
 
-    if (this.bufferedBytes + chunkBytes > this.maxBufferedBytes) {
+    if (
+      this.bufferedBytes + this.queuedBytes + chunkBytes >
+      this.maxBufferedBytes
+    ) {
       throw new OpenStreamSequenceError(
         `Buffered byte limit exceeded for stream ${this.progressToken}`,
       );
@@ -296,6 +302,7 @@ export class OpenStreamSession implements OpenStreamSessionLike<string> {
       return;
     }
 
+    this.queuedBytes += Buffer.byteLength(value.value, 'utf8');
     this.queue.push(value);
   }
 
@@ -322,7 +329,7 @@ export class OpenStreamSession implements OpenStreamSessionLike<string> {
       }
     }
 
-    void this.finishClosed();
+    void this.finishClosed().catch(() => undefined);
   }
 
   private async handlePing(frame: OpenStreamPingFrame): Promise<void> {
@@ -461,6 +468,7 @@ export class OpenStreamSession implements OpenStreamSessionLike<string> {
     this.clearTimers();
     this.active = false;
     this.terminalError = error;
+    this.queuedBytes = 0;
 
     while (this.waiters.length > 0) {
       const waiter = this.waiters.shift();
