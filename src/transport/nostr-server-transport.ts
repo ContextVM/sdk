@@ -21,12 +21,10 @@ import {
   GIFT_WRAP_KIND,
   NOSTR_TAGS,
   NOTIFICATIONS_INITIALIZED_METHOD,
-  decryptMessage,
   DEFAULT_LRU_SIZE,
 } from '../core/index.js';
-import { EncryptionMode, GiftWrapMode } from '../core/interfaces.js';
+import { GiftWrapMode } from '../core/interfaces.js';
 import { NostrEvent } from 'nostr-tools';
-import { verifyEvent } from 'nostr-tools/pure';
 import { LogLevel } from '../core/utils/logger.js';
 import {
   injectClientPubkey,
@@ -52,11 +50,7 @@ import {
   type TransferPolicy,
 } from './oversized-transfer/index.js';
 import {
-  OpenStreamReceiver,
   OpenStreamWriter,
-  buildOpenStreamAbortFrame,
-  buildOpenStreamPingFrame,
-  buildOpenStreamPongFrame,
 } from './open-stream/index.js';
 import {
   DEFAULT_CHUNK_SIZE,

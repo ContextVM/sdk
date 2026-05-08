@@ -1,6 +1,8 @@
-import { OpenStreamWriter, OpenStreamReceiver, buildOpenStreamPingFrame, buildOpenStreamPongFrame, buildOpenStreamAbortFrame, type OpenStreamPolicy } from '../open-stream/index.js';
+import { OpenStreamWriter, OpenStreamReceiver, buildOpenStreamPingFrame, buildOpenStreamPongFrame, buildOpenStreamAbortFrame } from '../open-stream/index.js';
+import { type OpenStreamRegistryOptions } from '../open-stream/registry.js';
 import { type Logger } from '../../core/utils/logger.js';
 import { type CorrelationStore } from './correlation-store.js';
+import { type JSONRPCMessage, type JSONRPCResponse } from '@modelcontextprotocol/sdk/types.js';
 
 /**
  * Dependencies for the ServerOpenStreamFactory.
@@ -10,7 +12,7 @@ export interface ServerOpenStreamFactoryDeps {
   sendNotification: (clientPubkey: string, notification: JSONRPCMessage) => Promise<void>;
   handleResponse: (response: JSONRPCResponse) => Promise<void>;
   correlationStore: CorrelationStore;
-  policy?: OpenStreamPolicy;
+  policy?: Partial<OpenStreamRegistryOptions>;
   logger: Logger;
 }
 

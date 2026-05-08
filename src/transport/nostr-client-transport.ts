@@ -18,9 +18,6 @@ import {
   CTXVM_MESSAGES_KIND,
   DEFAULT_BOOTSTRAP_RELAY_URLS,
   DEFAULT_TIMEOUT_MS,
-  EPHEMERAL_GIFT_WRAP_KIND,
-  GIFT_WRAP_KIND,
-  decryptMessage,
   DEFAULT_LRU_SIZE,
   INITIALIZE_METHOD,
   NOSTR_TAGS,
@@ -32,7 +29,7 @@ import {
 } from './base-nostr-transport.js';
 import { getNostrEventTag } from '../core/utils/serializers.js';
 import { NostrEvent } from 'nostr-tools';
-import { verifyEvent } from 'nostr-tools/pure';
+
 import { LogLevel } from '../core/utils/logger.js';
 
 import {
@@ -43,7 +40,7 @@ import {
 import { parseServerIdentity } from './nostr-client/server-identity.js';
 import { resolveOperationalRelays } from './nostr-client/relay-resolution.js';
 import { StatelessModeHandler } from './nostr-client/stateless-mode-handler.js';
-import { queryTags, withTimeout } from '../core/utils/utils.js';
+import { queryTags } from '../core/utils/utils.js';
 import {
   OversizedTransferReceiver,
   type TransferPolicy,

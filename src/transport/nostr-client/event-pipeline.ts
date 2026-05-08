@@ -8,7 +8,7 @@ import { withTimeout } from '../../core/utils/utils.js';
 
 export interface ClientEventPipelineDeps {
   signer: NostrSigner;
-  seenEventIds: LruCache<string, true>;
+  seenEventIds: LruCache<true>;
   serverPubkey: string;
   giftWrapMode: GiftWrapMode;
   logger: Logger;
