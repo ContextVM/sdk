@@ -9,6 +9,9 @@ import { type Logger } from '../../core/utils/logger.js';
 import { OpenStreamReceiver } from '../open-stream/index.js';
 import { OversizedTransferReceiver } from '../oversized-transfer/index.js';
 
+/**
+ * Dependencies for the ClientInboundNotificationDispatcher.
+ */
 export interface ClientInboundNotificationDispatcherDeps {
   openStreamReceiver: OpenStreamReceiver;
   oversizedReceiver: OversizedTransferReceiver;
@@ -18,6 +21,9 @@ export interface ClientInboundNotificationDispatcherDeps {
   onerror?: (error: Error) => void;
 }
 
+/**
+ * Intercepts incoming transport-level notifications (CEP-22, CEP-41) for the client.
+ */
 export class ClientInboundNotificationDispatcher {
   constructor(private deps: ClientInboundNotificationDispatcherDeps) {}
 

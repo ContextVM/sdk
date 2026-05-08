@@ -70,6 +70,7 @@ import type { OpenStreamTransportPolicy } from './open-stream-policy.js';
 import { InboundNotificationDispatcher } from './nostr-server/inbound-notification-dispatcher.js';
 import { OutboundResponseRouter } from './nostr-server/outbound-response-router.js';
 import { ServerOpenStreamFactory } from './nostr-server/open-stream-factory.js';
+import { ServerEventPipeline } from './nostr-server/event-pipeline.js';
 
 /**
  * Options for configuring the NostrServerTransport.
@@ -222,9 +223,6 @@ export class NostrServerTransport
   /** Receives inbound oversized-transfer frames from clients (client→server requests). */
   private readonly oversizedReceiver: OversizedTransferReceiver;
 
-  /** Receives inbound open-stream frames from clients (client→server notifications). */
-  private readonly openStreamReceiver: OpenStreamReceiver;
-
   // Oversized-transfer sender settings (for server→client responses)
   private readonly oversizedEnabled: boolean;
   private readonly oversizedThreshold: number;
@@ -232,6 +230,7 @@ export class NostrServerTransport
   private readonly openStreamEnabled: boolean;
   private readonly capabilityNegotiator: ServerCapabilityNegotiator;
   private readonly openStreamFactory: ServerOpenStreamFactory;
+  private readonly eventPipeline: ServerEventPipeline;
   private readonly inboundNotificationDispatcher: InboundNotificationDispatcher;
   private readonly outboundResponseRouter: OutboundResponseRouter;
 
@@ -339,59 +338,6 @@ export class NostrServerTransport
       this.logger,
     );
     this.openStreamEnabled = options.openStream?.enabled ?? false;
-    this.openStreamReceiver = new OpenStreamReceiver({
-      maxConcurrentStreams: options.openStream?.policy?.maxConcurrentStreams,
-      maxBufferedChunksPerStream:
-        options.openStream?.policy?.maxBufferedChunksPerStream,
-      maxBufferedBytesPerStream:
-        options.openStream?.policy?.maxBufferedBytesPerStream,
-      idleTimeoutMs: options.openStream?.policy?.idleTimeoutMs,
-      probeTimeoutMs: options.openStream?.policy?.probeTimeoutMs,
-      closeGracePeriodMs: options.openStream?.policy?.closeGracePeriodMs,
-      getSessionOptions: (progressToken) => {
-        let progress = 0;
-
-        return {
-          sendPing: async (nonce: string): Promise<void> => {
-            progress += 1;
-            await this.sendNotification(progressToken, {
-              jsonrpc: '2.0',
-              method: 'notifications/progress',
-              params: buildOpenStreamPingFrame({
-                progressToken,
-                progress,
-                nonce,
-              }),
-            });
-          },
-          sendPong: async (nonce: string): Promise<void> => {
-            progress += 1;
-            await this.sendNotification(progressToken, {
-              jsonrpc: '2.0',
-              method: 'notifications/progress',
-              params: buildOpenStreamPongFrame({
-                progressToken,
-                progress,
-                nonce,
-              }),
-            });
-          },
-          sendAbort: async (reason?: string): Promise<void> => {
-            progress += 1;
-            await this.sendNotification(progressToken, {
-              jsonrpc: '2.0',
-              method: 'notifications/progress',
-              params: buildOpenStreamAbortFrame({
-                progressToken,
-                progress,
-                reason,
-              }),
-            });
-          },
-        };
-      },
-      logger: this.logger,
-    });
 
     // Advertise CEP-22 support so clients can skip the accept handshake.
     const internalCommonTags: string[][] = [];
@@ -418,12 +364,15 @@ export class NostrServerTransport
       handleResponse: async (response) => {
         await this.outboundResponseRouter.route(response);
       },
+      correlationStore: this.correlationStore,
+      policy: options.openStream?.policy,
+      logger: this.logger,
     });
 
     this.inboundNotificationDispatcher = new InboundNotificationDispatcher({
-      openStreamReceiver: this.openStreamReceiver,
+      openStreamReceiver: this.openStreamFactory.getReceiver(),
       oversizedReceiver: this.oversizedReceiver,
-      openStreamWriters: this.openStreamFactory.getWritersMap(),
+      openStreamFactory: this.openStreamFactory,
       correlationStore: this.correlationStore,
       sendNotification: this.sendNotification.bind(this),
       handleIncomingRequest: this.handleIncomingRequest.bind(this),
@@ -439,8 +388,7 @@ export class NostrServerTransport
       correlationStore: this.correlationStore,
       sessionStore: this.sessionStore,
       announcementManager: this.announcementManager,
-      openStreamWriters: this.openStreamFactory.getWritersMap(),
-      pendingOpenStreamResponses: this.openStreamFactory.getPendingResponsesMap(),
+      openStreamFactory: this.openStreamFactory,
       oversizedConfig: {
         enabled: this.oversizedEnabled,
         threshold: this.oversizedThreshold,
@@ -451,6 +399,15 @@ export class NostrServerTransport
       createResponseTags: this.createResponseTags.bind(this),
       chooseGiftWrapKind: this.capabilityNegotiator.chooseOutboundGiftWrapKind.bind(this.capabilityNegotiator),
       sendMcpMessage: this.sendMcpMessage.bind(this),
+      logger: this.logger,
+      onerror: (error) => this.onerror?.(error),
+    });
+
+    this.eventPipeline = new ServerEventPipeline({
+      signer: this.signer,
+      seenEventIds: this.seenEventIds,
+      encryptionMode: this.encryptionMode,
+      giftWrapMode: this.giftWrapMode,
       logger: this.logger,
       onerror: (error) => this.onerror?.(error),
     });
@@ -561,9 +518,8 @@ export class NostrServerTransport
       this.correlationStore.clear();
       this.seenEventIds.clear();
       this.oversizedReceiver.clear();
-      this.openStreamReceiver.clear();
-      this.openStreamFactory.getPendingResponsesMap().clear();
-      this.openStreamFactory.getWritersMap().clear();
+      this.openStreamFactory.getReceiver().clear();
+      this.openStreamFactory.clear();
       this.onclose?.();
     } catch (error) {
       this.onerror?.(error instanceof Error ? error : new Error(String(error)));
@@ -875,122 +831,14 @@ export class NostrServerTransport
    * @param event The incoming Nostr event.
    */
   private async processIncomingEvent(event: NostrEvent): Promise<void> {
-    try {
-      if (
-        event.kind === GIFT_WRAP_KIND ||
-        event.kind === EPHEMERAL_GIFT_WRAP_KIND
-      ) {
-        if (!this.isGiftWrapKindAllowed(event.kind)) {
-          this.logger.debug('Skipping gift wrap due to GiftWrapMode policy', {
-            eventId: event.id,
-            kind: event.kind,
-          });
-          return;
-        }
-
-        // Deduplicate gift-wrap envelopes before any expensive decryption.
-        if (this.seenEventIds.has(event.id)) {
-          this.logger.debug('Skipping duplicate gift-wrapped event', {
-            eventId: event.id,
-          });
-          return;
-        }
-        this.seenEventIds.set(event.id, true);
-
-        await this.handleEncryptedEvent(event);
-      } else {
-        await this.handleUnencryptedEvent(event);
-      }
-    } catch (error) {
-      this.logger.error('Error in processIncomingEvent', {
-        error: error instanceof Error ? error.message : String(error),
-        stack: error instanceof Error ? error.stack : undefined,
-        eventId: event.id,
-        eventKind: event.kind,
-      });
-      this.onerror?.(error instanceof Error ? error : new Error(String(error)));
-    }
-  }
-
-  /**
-   * Handles encrypted (gift-wrapped) events.
-   * @param event The incoming gift-wrapped Nostr event.
-   */
-  private async handleEncryptedEvent(event: NostrEvent): Promise<void> {
-    if (this.encryptionMode === EncryptionMode.DISABLED) {
-      this.logger.error(
-        `Received encrypted message from ${event.pubkey} but encryption is disabled. Ignoring.`,
-      );
-      return;
-    }
-    try {
-      const decryptedJson = await withTimeout(
-        decryptMessage(event, this.signer),
-        DEFAULT_TIMEOUT_MS,
-        'Decrypt message timed out',
-      );
-      const currentEvent = JSON.parse(decryptedJson) as NostrEvent;
-
-      // Verify the inner event's cryptographic signature to prevent identity
-      // forgery. Without this check an attacker can place any pubkey inside
-      // the plaintext and bypass allowlists. (Fixes #64)
-      if (!verifyEvent(currentEvent)) {
-        this.logger.error(
-          'Rejecting decrypted inner event with invalid signature',
-          {
-            innerEventId: currentEvent.id,
-            innerPubkey: currentEvent.pubkey,
-            outerEventId: event.id,
-          },
-        );
-        return;
-      }
-
-      // Deduplicate decrypted inner events before authorization and dispatch.
-      if (this.seenEventIds.has(currentEvent.id)) {
-        this.logger.debug('Skipping duplicate decrypted inner event', {
-          outerEventId: event.id,
-          innerEventId: currentEvent.id,
-        });
-        return;
-      }
-      this.seenEventIds.set(currentEvent.id, true);
-
-      await this.authorizeAndProcessEvent(currentEvent, true, event.kind);
-    } catch (error) {
-      this.logger.error('Failed to handle encrypted Nostr event', {
-        error: error instanceof Error ? error.message : String(error),
-        stack: error instanceof Error ? error.stack : undefined,
-        eventId: event.id,
-        pubkey: event.pubkey,
-      });
-      this.onerror?.(
-        error instanceof Error
-          ? error
-          : new Error('Failed to handle encrypted Nostr event'),
+    const unwrapped = await this.eventPipeline.unwrap(event);
+    if (unwrapped) {
+      await this.authorizeAndProcessEvent(
+        unwrapped.event,
+        unwrapped.isEncrypted,
+        unwrapped.wrapKind,
       );
     }
-  }
-
-  /**
-   * Handles unencrypted events.
-   * @param event The incoming Nostr event.
-   */
-  private async handleUnencryptedEvent(event: NostrEvent): Promise<void> {
-    if (this.encryptionMode === EncryptionMode.REQUIRED) {
-      this.logger.error(
-        `Received unencrypted message from ${event.pubkey} but encryption is required. Ignoring.`,
-      );
-      return;
-    }
-    if (!verifyEvent(event)) {
-      this.logger.error('Rejecting unencrypted event with invalid signature', {
-        eventId: event.id,
-        pubkey: event.pubkey,
-      });
-      return;
-    }
-    await this.authorizeAndProcessEvent(event, false);
   }
 
   /**
@@ -1193,7 +1041,7 @@ export class NostrServerTransport
       sessionStore: this.sessionStore,
       correlationStore: this.correlationStore,
       oversizedReceiver: this.oversizedReceiver,
-      openStreamReceiver: this.openStreamReceiver,
+      openStreamReceiver: this.openStreamFactory.getReceiver(),
     };
   }
 }

@@ -6,6 +6,9 @@ import { queryTags } from '../core/utils/utils.js';
 
 const NON_DISCOVERY_TAG_NAMES = new Set<string>(['e', 'p']);
 
+/**
+ * Result of parsing peer discovery tags.
+ */
 export interface DiscoveredPeerCapabilities {
   discoveryTags: string[][];
   supportsEncryption: boolean;
@@ -14,6 +17,9 @@ export interface DiscoveredPeerCapabilities {
   supportsOpenStream: boolean;
 }
 
+/**
+ * Capability flags derived from peer discovery tags.
+ */
 export interface PeerCapabilities {
   supportsEncryption: boolean;
   supportsEphemeralEncryption: boolean;
@@ -25,6 +31,9 @@ function cloneTag(tag: readonly string[]): string[] {
   return [...tag];
 }
 
+/**
+ * Checks if a set of tags contains a specific single-element tag.
+ */
 export function hasSingleTag(
   tags: readonly (readonly string[])[],
   tag: string,
@@ -32,6 +41,9 @@ export function hasSingleTag(
   return tags.some((t) => t.length === 1 && t[0] === tag);
 }
 
+/**
+ * Checks if an event contains a specific single-element tag.
+ */
 export function hasEventTag(
   event: NostrEvent | undefined,
   tag: string,
@@ -39,6 +51,9 @@ export function hasEventTag(
   return Array.isArray(event?.tags) && hasSingleTag(event.tags, tag);
 }
 
+/**
+ * Extracts capability discovery tags (omitting routing/correlation tags).
+ */
 export function getDiscoveryTags(tags: readonly string[][]): string[][] {
   return tags
     .filter((tag) => {
@@ -48,6 +63,9 @@ export function getDiscoveryTags(tags: readonly string[][]): string[][] {
     .map((tag) => cloneTag(tag));
 }
 
+/**
+ * Parses raw tags into discovery tags and capability flags.
+ */
 export function parseDiscoveredPeerCapabilities(
   tags: readonly string[][],
 ): DiscoveredPeerCapabilities {
@@ -60,6 +78,9 @@ export function parseDiscoveredPeerCapabilities(
   };
 }
 
+/**
+ * Determines capability flags from a list of tags.
+ */
 export function learnPeerCapabilities(
   eventTags: readonly (readonly string[])[],
 ): PeerCapabilities {
@@ -71,6 +92,9 @@ export function learnPeerCapabilities(
   };
 }
 
+/**
+ * Manages capability discovery and negotiation for the server transport.
+ */
 export class ServerCapabilityNegotiator {
   constructor(
     private deps: {
@@ -84,6 +108,9 @@ export class ServerCapabilityNegotiator {
     },
   ) {}
 
+  /**
+   * Gets pending discovery tags to attach to the next outbound event for a session.
+   */
   public takePendingDiscoveryTags(session: ClientSession): string[][] {
     if (session.hasSentCommonTags) {
       return [];
@@ -92,6 +119,9 @@ export class ServerCapabilityNegotiator {
     return this.deps.getCommonTags();
   }
 
+  /**
+   * Composes complete outbound tags including base tags, pending discovery, and negotiation tags.
+   */
   public buildOutboundTags(params: {
     baseTags: readonly string[][];
     session: ClientSession;
@@ -106,6 +136,9 @@ export class ServerCapabilityNegotiator {
     });
   }
 
+  /**
+   * Determines the appropriate gift-wrap kind (persistent or ephemeral) based on peer capabilities and policy.
+   */
   public chooseOutboundGiftWrapKind(params: {
     session: ClientSession;
     fallbackWrapKind?: number;
@@ -120,6 +153,9 @@ export class ServerCapabilityNegotiator {
   }
 }
 
+/**
+ * Manages capability discovery and negotiation for the client transport.
+ */
 export class ClientCapabilityNegotiator {
   private hasSentDiscoveryTags = false;
   private clientPmis?: readonly string[];
@@ -140,6 +176,9 @@ export class ClientCapabilityNegotiator {
     },
   ) {}
 
+  /**
+   * Sets Package Manifest Identifiers (PMIs) to include in capability negotiation.
+   */
   public setClientPmis(pmis: readonly string[]): void {
     this.clientPmis = pmis;
   }
@@ -161,6 +200,9 @@ export class ClientCapabilityNegotiator {
     this._serverInitializeEvent = event;
   }
 
+  /**
+   * Gets the base capability tags supported by this client.
+   */
   public getCapabilityTags(): string[][] {
     const tags: string[][] = [];
     if (this.deps.encryptionMode !== EncryptionMode.DISABLED) {
@@ -178,6 +220,9 @@ export class ClientCapabilityNegotiator {
     return tags;
   }
 
+  /**
+   * Gets negotiation tags (like PMIs) to include in outbound discovery.
+   */
   public getNegotiationTags(): string[][] {
     const tags: string[][] = [];
     if (this.clientPmis) {
@@ -186,10 +231,16 @@ export class ClientCapabilityNegotiator {
     return tags;
   }
 
+  /**
+   * Gets capability discovery tags if they haven't been sent yet.
+   */
   public getPendingDiscoveryTags(): string[][] {
     return this.hasSentDiscoveryTags ? [] : this.getCapabilityTags();
   }
 
+  /**
+   * Composes outbound tags for a request, optionally including discovery.
+   */
   public buildOutboundTags(params: {
     baseTags: readonly string[][];
     includeDiscovery: boolean;
@@ -202,12 +253,18 @@ export class ClientCapabilityNegotiator {
     });
   }
 
+  /**
+   * Marks discovery tags as sent to prevent re-sending.
+   */
   public markDiscoveryTagsSent(): void {
     if (this.getPendingDiscoveryTags().length > 0) {
       this.hasSentDiscoveryTags = true;
     }
   }
 
+  /**
+   * Chooses the appropriate gift-wrap kind based on learned server capabilities.
+   */
   public chooseOutboundGiftWrapKind(): number {
     if (this.deps.giftWrapMode === GiftWrapMode.PERSISTENT) return GIFT_WRAP_KIND;
     if (this.deps.giftWrapMode === GiftWrapMode.EPHEMERAL) return EPHEMERAL_GIFT_WRAP_KIND;

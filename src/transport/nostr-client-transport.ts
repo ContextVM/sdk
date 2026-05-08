@@ -67,6 +67,7 @@ import {
   ClientCapabilityNegotiator,
 } from './capability-negotiator.js';
 import { ClientInboundNotificationDispatcher } from './nostr-client/inbound-notification-dispatcher.js';
+import { ClientEventPipeline } from './nostr-client/event-pipeline.js';
 import {
   DEFAULT_CHUNK_SIZE,
   DEFAULT_OVERSIZED_THRESHOLD,
@@ -181,6 +182,7 @@ export class NostrClientTransport
 
   private readonly capabilityNegotiator: ClientCapabilityNegotiator;
   private readonly inboundNotificationDispatcher: ClientInboundNotificationDispatcher;
+  private readonly eventPipeline: ClientEventPipeline;
 
   // Oversized-transfer sender settings
   private readonly oversizedEnabled: boolean;
@@ -309,6 +311,15 @@ export class NostrClientTransport
       oversizedReceiver: this.oversizedReceiver,
       handleResponse: this.handleResponse.bind(this),
       handleNotification: this.handleNotification.bind(this),
+      logger: this.logger,
+      onerror: (error) => this.onerror?.(error),
+    });
+
+    this.eventPipeline = new ClientEventPipeline({
+      signer: this.signer,
+      seenEventIds: this.seenEventIds,
+      serverPubkey: this.serverPubkey,
+      giftWrapMode: this.giftWrapMode,
       logger: this.logger,
       onerror: (error) => this.onerror?.(error),
     });
@@ -686,95 +697,11 @@ export class NostrClientTransport
    */
   private async processIncomingEvent(event: NostrEvent): Promise<void> {
     try {
-      let nostrEvent = event;
-
-      if (
-        event.kind === GIFT_WRAP_KIND ||
-        event.kind === EPHEMERAL_GIFT_WRAP_KIND
-      ) {
-        if (!this.isGiftWrapKindAllowed(event.kind)) {
-          this.logger.debug('Skipping gift wrap due to GiftWrapMode policy', {
-            eventId: event.id,
-            kind: event.kind,
-          });
-          return;
-        }
-
-        // Deduplicate gift-wrap envelopes before any expensive decryption.
-        if (this.seenEventIds.has(event.id)) {
-          this.logger.debug('Skipping duplicate gift-wrapped event', {
-            eventId: event.id,
-          });
-          return;
-        }
-        this.seenEventIds.set(event.id, true);
-
-        try {
-          const decryptedContent = await withTimeout(
-            decryptMessage(event, this.signer),
-            DEFAULT_TIMEOUT_MS,
-            'Decrypt message timed out',
-          );
-          nostrEvent = JSON.parse(decryptedContent) as NostrEvent;
-
-          // Verify the inner event's cryptographic signature to prevent
-          // identity forgery. Without this check an attacker can place the
-          // server's pubkey inside the plaintext and spoof responses. (Fixes #64)
-          if (!verifyEvent(nostrEvent)) {
-            this.logger.error(
-              'Rejecting decrypted inner event with invalid signature',
-              {
-                innerEventId: nostrEvent.id,
-                innerPubkey: nostrEvent.pubkey,
-                outerEventId: event.id,
-              },
-            );
-            return;
-          }
-        } catch (decryptError) {
-          this.logger.error('Failed to decrypt gift-wrapped event', {
-            error:
-              decryptError instanceof Error
-                ? decryptError.message
-                : String(decryptError),
-            stack:
-              decryptError instanceof Error ? decryptError.stack : undefined,
-            eventId: event.id,
-            pubkey: event.pubkey,
-          });
-          this.onerror?.(
-            decryptError instanceof Error
-              ? decryptError
-              : new Error('Failed to decrypt gift-wrapped event'),
-          );
-          return;
-        }
-      }
-
-      if (nostrEvent.pubkey !== this.serverPubkey) {
-        this.logger.debug('Skipping event from unexpected server pubkey:', {
-          receivedPubkey: nostrEvent.pubkey,
-          expectedPubkey: this.serverPubkey,
-          eventId: nostrEvent.id,
-        });
+      const unwrapped = await this.eventPipeline.unwrap(event);
+      if (!unwrapped) {
         return;
       }
-
-      if (
-        event.kind !== GIFT_WRAP_KIND &&
-        event.kind !== EPHEMERAL_GIFT_WRAP_KIND
-      ) {
-        if (!verifyEvent(nostrEvent)) {
-          this.logger.error(
-            'Rejecting unencrypted event with invalid signature',
-            {
-              eventId: nostrEvent.id,
-              pubkey: nostrEvent.pubkey,
-            },
-          );
-          return;
-        }
-      }
+      const nostrEvent = unwrapped.event;
 
       this.learnServerDiscovery(nostrEvent);
 

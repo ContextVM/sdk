@@ -18,10 +18,13 @@ import { type ClientSession } from './session-store.js';
 import { sendAcceptFrame } from './oversized-server-handler.js';
 import { injectClientPubkey, injectRequestEventId } from '../../core/utils/utils.js';
 
+/**
+ * Dependencies for the Server InboundNotificationDispatcher.
+ */
 export interface InboundNotificationDispatcherDeps {
   openStreamReceiver: OpenStreamReceiver;
   oversizedReceiver: OversizedTransferReceiver;
-  openStreamWriters: Map<string, OpenStreamWriter>;
+  openStreamFactory: { getWriter: (eventId: string) => OpenStreamWriter | undefined };
   correlationStore: CorrelationStore;
   sendNotification: (clientPubkey: string, notification: JSONRPCMessage) => Promise<void>;
   handleIncomingRequest: (
@@ -39,6 +42,9 @@ export interface InboundNotificationDispatcherDeps {
   onerror?: (error: Error) => void;
 }
 
+/**
+ * Intercepts incoming transport-level notifications (CEP-22, CEP-41) for the server.
+ */
 export class InboundNotificationDispatcher {
   constructor(private deps: InboundNotificationDispatcherDeps) {}
 
@@ -69,7 +75,7 @@ export class InboundNotificationDispatcher {
       if (frame?.frameType === 'abort') {
         const progressToken = String(inboundMessage.params?.progressToken ?? '');
         const eventId = this.deps.correlationStore.getEventIdByProgressToken(progressToken);
-        const writer = eventId ? this.deps.openStreamWriters.get(eventId) : undefined;
+        const writer = eventId ? this.deps.openStreamFactory.getWriter(eventId) : undefined;
 
         if (writer) {
           void writer.abort(frame.reason).catch((err: unknown) => {
@@ -89,7 +95,7 @@ export class InboundNotificationDispatcher {
         const progressToken = String(inboundMessage.params?.progressToken ?? '');
         const nonce = 'nonce' in frame && typeof frame.nonce === 'string' ? frame.nonce : '';
         const eventId = this.deps.correlationStore.getEventIdByProgressToken(progressToken);
-        const writer = eventId ? this.deps.openStreamWriters.get(eventId) : undefined;
+        const writer = eventId ? this.deps.openStreamFactory.getWriter(eventId) : undefined;
 
         if (writer) {
           void writer.pong(nonce).catch((err: unknown) => {

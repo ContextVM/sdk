@@ -18,12 +18,14 @@ import { type OpenStreamWriter } from '../open-stream/index.js';
 import { CTXVM_MESSAGES_KIND } from '../../core/constants.js';
 import { sendOversizedServerResponse } from './oversized-server-handler.js';
 
+/**
+ * Dependencies for the OutboundResponseRouter.
+ */
 export interface OutboundResponseRouterDeps {
   correlationStore: CorrelationStore;
   sessionStore: SessionStore;
   announcementManager: AnnouncementManager;
-  openStreamWriters: Map<string, OpenStreamWriter>;
-  pendingOpenStreamResponses: Map<string, JSONRPCResponse>;
+  openStreamFactory: { deferIfStreamActive: (eventId: string, response: JSONRPCResponse) => boolean };
   oversizedConfig: { enabled: boolean; threshold: number; chunkSize: number };
   applyListToolsResultTransformers: (result: ListToolsResult) => ListToolsResult;
   buildOutboundTags: (params: { baseTags: readonly string[][]; session: ClientSession }) => string[][];
@@ -42,9 +44,15 @@ export interface OutboundResponseRouterDeps {
   onerror?: (error: Error) => void;
 }
 
+/**
+ * Routes outbound JSON-RPC responses back to the original client.
+ */
 export class OutboundResponseRouter {
   constructor(private deps: OutboundResponseRouterDeps) {}
 
+  /**
+   * Routes a response, handling oversized transfer and stream deferral.
+   */
   public async route(
     response: JSONRPCResponse | JSONRPCErrorResponse,
   ): Promise<void> {
@@ -62,9 +70,7 @@ export class OutboundResponseRouter {
 
     // Find the event route using O(1) lookup
     const nostrEventId = response.id as string;
-    const existingOpenStreamWriter = this.deps.openStreamWriters.get(nostrEventId);
-    if (existingOpenStreamWriter && existingOpenStreamWriter.isActive) {
-      this.deps.pendingOpenStreamResponses.set(nostrEventId, response);
+    if (this.deps.openStreamFactory.deferIfStreamActive(nostrEventId, response)) {
       return;
     }
 
