@@ -6,6 +6,7 @@ import { type Logger } from '../../core/utils/logger.js';
 import { decryptMessage, DEFAULT_TIMEOUT_MS, EPHEMERAL_GIFT_WRAP_KIND, GIFT_WRAP_KIND } from '../../core/index.js';
 import { withTimeout } from '../../core/utils/utils.js';
 
+/** Dependencies for the server-side event decryption and verification pipeline. */
 export interface ServerEventPipelineDeps {
   signer: NostrSigner;
   seenEventIds: LruCache<true>;
@@ -15,12 +16,14 @@ export interface ServerEventPipelineDeps {
   onerror?: (error: Error) => void;
 }
 
+/** Result of successfully unwrapping an inbound Nostr event. */
 export interface UnwrappedEvent {
   event: NostrEvent;
   isEncrypted: boolean;
   wrapKind?: number;
 }
 
+/** Handles gift-wrap decryption, signature verification, and dedup for the server transport. */
 export class ServerEventPipeline {
   constructor(private deps: ServerEventPipelineDeps) {}
 

@@ -46,25 +46,16 @@ import {
   type TransferPolicy,
 } from './oversized-transfer/index.js';
 import {
-  OpenStreamReceiver,
   OpenStreamSession,
-  buildOpenStreamAbortFrame,
-  buildOpenStreamPingFrame,
-  buildOpenStreamPongFrame,
 } from './open-stream/index.js';
-import {
-  DEFAULT_OPEN_STREAM_CLOSE_GRACE_PERIOD_MS,
-  DEFAULT_OPEN_STREAM_IDLE_TIMEOUT_MS,
-  DEFAULT_OPEN_STREAM_PROBE_TIMEOUT_MS,
-  DEFAULT_MAX_BUFFERED_BYTES_PER_STREAM,
-  DEFAULT_MAX_BUFFERED_CHUNKS_PER_STREAM,
-} from './open-stream/constants.js';
+
 import {
   parseDiscoveredPeerCapabilities,
   ClientCapabilityNegotiator,
 } from './capability-negotiator.js';
 import { ClientInboundNotificationDispatcher } from './nostr-client/inbound-notification-dispatcher.js';
 import { ClientEventPipeline } from './nostr-client/event-pipeline.js';
+import { ClientOpenStreamFactory } from './nostr-client/open-stream-factory.js';
 import {
   DEFAULT_CHUNK_SIZE,
   DEFAULT_OVERSIZED_THRESHOLD,
@@ -187,13 +178,11 @@ export class NostrClientTransport
   private readonly oversizedChunkSize: number;
   private readonly oversizedAcceptTimeoutMs: number;
   private readonly openStreamEnabled: boolean;
-  private readonly openStreamPolicy: OpenStreamTransportPolicy | undefined;
+
+  private readonly openStreamFactory: ClientOpenStreamFactory;
 
   /** Receives inbound oversized-transfer frames from the server (server→client responses). */
   private readonly oversizedReceiver: OversizedTransferReceiver;
-
-  /** Receives inbound open-stream frames from the server (server→client notifications). */
-  private readonly openStreamReceiver: OpenStreamReceiver;
 
   /**
    * Deduplicate inbound events to avoid redundant work.
@@ -240,59 +229,12 @@ export class NostrClientTransport
       this.logger,
     );
     this.openStreamEnabled = options.openStream?.enabled ?? false;
-    this.openStreamPolicy = options.openStream?.policy;
-    this.openStreamReceiver = new OpenStreamReceiver({
-      maxConcurrentStreams: options.openStream?.policy?.maxConcurrentStreams,
-      maxBufferedChunksPerStream:
-        options.openStream?.policy?.maxBufferedChunksPerStream,
-      maxBufferedBytesPerStream:
-        options.openStream?.policy?.maxBufferedBytesPerStream,
-      idleTimeoutMs: options.openStream?.policy?.idleTimeoutMs,
-      probeTimeoutMs: options.openStream?.policy?.probeTimeoutMs,
-      closeGracePeriodMs: options.openStream?.policy?.closeGracePeriodMs,
-      getSessionOptions: (progressToken) => {
-        let progress = 0;
-
-        return {
-          sendPing: async (nonce: string): Promise<void> => {
-            progress += 1;
-            await this.send({
-              jsonrpc: '2.0',
-              method: 'notifications/progress',
-              params: buildOpenStreamPingFrame({
-                progressToken,
-                progress,
-                nonce,
-              }),
-            });
-          },
-          sendPong: async (nonce: string): Promise<void> => {
-            progress += 1;
-            await this.send({
-              jsonrpc: '2.0',
-              method: 'notifications/progress',
-              params: buildOpenStreamPongFrame({
-                progressToken,
-                progress,
-                nonce,
-              }),
-            });
-          },
-          sendAbort: async (reason?: string): Promise<void> => {
-            progress += 1;
-            await this.send({
-              jsonrpc: '2.0',
-              method: 'notifications/progress',
-              params: buildOpenStreamAbortFrame({
-                progressToken,
-                progress,
-                reason,
-              }),
-            });
-          },
-        };
-      },
+    this.openStreamFactory = new ClientOpenStreamFactory({
+      openStreamEnabled: this.openStreamEnabled,
+      policy: options.openStream?.policy,
+      send: this.send.bind(this),
       logger: this.logger,
+      onerror: (error) => this.onerror?.(error),
     });
 
     this.capabilityNegotiator = new ClientCapabilityNegotiator({
@@ -304,7 +246,7 @@ export class NostrClientTransport
     });
 
     this.inboundNotificationDispatcher = new ClientInboundNotificationDispatcher({
-      openStreamReceiver: this.openStreamReceiver,
+      openStreamReceiver: this.openStreamFactory.getReceiver(),
       oversizedReceiver: this.oversizedReceiver,
       handleResponse: this.handleResponse.bind(this),
       handleNotification: this.handleNotification.bind(this),
@@ -377,7 +319,7 @@ export class NostrClientTransport
       this.correlationStore.clear();
       this.seenEventIds.clear();
       this.oversizedReceiver.clear();
-      this.openStreamReceiver.clear();
+      this.openStreamFactory.getReceiver().clear();
       this.onclose?.();
     } catch (error) {
       this.onerror?.(error instanceof Error ? error : new Error(String(error)));
@@ -584,7 +526,7 @@ export class NostrClientTransport
   public getOrCreateOpenStreamSession(
     progressToken: string,
   ): OpenStreamSession {
-    return this.openStreamReceiver.getOrCreateSession(progressToken);
+    return this.openStreamFactory.getOrCreateSession(progressToken);
   }
 
   /**
@@ -594,66 +536,7 @@ export class NostrClientTransport
   public createOutboundOpenStreamSession(
     progressToken: string,
   ): OpenStreamSession {
-    const existing = this.openStreamReceiver.getSession(progressToken);
-    if (existing) {
-      return existing;
-    }
-
-    let progress = 0;
-    return this.openStreamReceiver.createSession({
-      progressToken,
-      maxBufferedChunks:
-        this.openStreamPolicy?.maxBufferedChunksPerStream ??
-        DEFAULT_MAX_BUFFERED_CHUNKS_PER_STREAM,
-      maxBufferedBytes:
-        this.openStreamPolicy?.maxBufferedBytesPerStream ??
-        DEFAULT_MAX_BUFFERED_BYTES_PER_STREAM,
-      idleTimeoutMs:
-        this.openStreamPolicy?.idleTimeoutMs ??
-        DEFAULT_OPEN_STREAM_IDLE_TIMEOUT_MS,
-      probeTimeoutMs:
-        this.openStreamPolicy?.probeTimeoutMs ??
-        DEFAULT_OPEN_STREAM_PROBE_TIMEOUT_MS,
-      closeGracePeriodMs:
-        this.openStreamPolicy?.closeGracePeriodMs ??
-        DEFAULT_OPEN_STREAM_CLOSE_GRACE_PERIOD_MS,
-      sendPing: async (nonce: string): Promise<void> => {
-        progress += 1;
-        await this.send({
-          jsonrpc: '2.0',
-          method: 'notifications/progress',
-          params: buildOpenStreamPingFrame({
-            progressToken,
-            progress,
-            nonce,
-          }),
-        });
-      },
-      sendPong: async (nonce: string): Promise<void> => {
-        progress += 1;
-        await this.send({
-          jsonrpc: '2.0',
-          method: 'notifications/progress',
-          params: buildOpenStreamPongFrame({
-            progressToken,
-            progress,
-            nonce,
-          }),
-        });
-      },
-      sendAbort: async (reason?: string): Promise<void> => {
-        progress += 1;
-        await this.send({
-          jsonrpc: '2.0',
-          method: 'notifications/progress',
-          params: buildOpenStreamAbortFrame({
-            progressToken,
-            progress,
-            reason,
-          }),
-        });
-      },
-    });
+    return this.openStreamFactory.createOutboundSession(progressToken);
   }
 
   /**
@@ -662,7 +545,7 @@ export class NostrClientTransport
   public getOpenStreamSession(
     progressToken: string,
   ): OpenStreamSession | undefined {
-    return this.openStreamReceiver.getSession(progressToken);
+    return this.openStreamFactory.getSession(progressToken);
   }
 
   /**
@@ -1088,7 +971,7 @@ export class NostrClientTransport
       serverResourceTemplatesListEvent: this.serverResourceTemplatesListEvent,
       serverPromptsListEvent: this.serverPromptsListEvent,
       oversizedReceiver: this.oversizedReceiver,
-      openStreamReceiver: this.openStreamReceiver,
+      openStreamReceiver: this.openStreamFactory.getReceiver(),
     };
   }
 }
