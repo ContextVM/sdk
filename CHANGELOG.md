@@ -1,5 +1,32 @@
 # @contextvm/sdk
 
+## 0.11.0
+
+### Minor Changes
+
+- a9e0433: Add CEP-41 open-ended stream transfer support over ContextVM transport.
+
+  This introduces open-stream framing over MCP [`notifications/progress`](docs/cep-41.md:10) using the request `progressToken` as the stream identifier, with support for `start`, `accept`, `chunk`, `ping`, `pong`, `close`, and `abort` frames.
+
+  It also adds SDK support for:
+  - client and server open-stream transport handling
+  - stream session lifecycle management, buffering, and keepalive timeouts
+  - ergonomic tool streaming via [`callToolStream()`](src/transport/call-tool-stream.ts:28)
+  - CEP-41 coverage across unit and end-to-end transport tests
+
+### Patch Changes
+
+- cda331b: fix(transport): ensure session cleanup and proper ordering in open streams
+  - Fix registry to remove sessions even when onClose/onAbort callbacks throw
+  - Add queuedBytes tracking to count unread chunks against buffer limits
+  - Release queued byte budget when chunks are consumed by iterator
+  - Add operation queue to writer to serialize concurrent writes before close
+  - Add tests for concurrent chunk/close processing and callback error handling
+
+- 109f1dc: refactor(relay): process relay pings individually with proper cleanup
+
+  Refactor the ping mechanism to process each relay separately instead of using a merged stream. Each relay now gets a unique ping ID and its own subscription that is properly cleaned up with a CLOSE message in a finally block. This ensures better isolation between relay pings and prevents potential race conditions when multiple relays respond.
+
 ## 0.10.0
 
 ### Minor Changes
