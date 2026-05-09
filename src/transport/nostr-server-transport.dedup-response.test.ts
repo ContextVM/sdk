@@ -129,9 +129,12 @@ describe.serial('NostrServerTransport duplicate response prevention', () => {
       progressToken: 'token-1',
       wrapKind: undefined,
     });
-    expect(state.correlationStore.getEventIdByProgressToken('token-1')).toBe(
-      'event1',
-    );
+    expect(
+      state.correlationStore.getEventIdByProgressToken(
+        'c'.repeat(64),
+        'token-1',
+      ),
+    ).toBe('event1');
 
     await expect(
       transport.send({
@@ -144,7 +147,10 @@ describe.serial('NostrServerTransport duplicate response prevention', () => {
     expect(counter.publishCalls).toBe(2);
     expect(state.correlationStore.getEventRoute('event1')).toBeUndefined();
     expect(
-      state.correlationStore.getEventIdByProgressToken('token-1'),
+      state.correlationStore.getEventIdByProgressToken(
+        'c'.repeat(64),
+        'token-1',
+      ),
     ).toBeUndefined();
   });
 

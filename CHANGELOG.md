@@ -1,5 +1,17 @@
 # @contextvm/sdk
 
+## 0.11.1
+
+### Patch Changes
+
+- refactor(transport): delegate progress-token generation to upstream MCP SDK
+
+  Improve CEP-41 open-stream tool calls by delegating progress-token generation to the upstream MCP SDK instead of manually injecting tokens in the client helper. This enables proper timeout reset behavior during long-running streamed tool calls and keeps the transport aligned with the SDK's `onprogress` flow.
+
+  Harden server-side progress-token correlation by scoping lookups to the originating client pubkey, preventing collisions when different clients reuse the same SDK-generated token. Update the transport routing and regression coverage accordingly.
+
+  Tighten the client open-stream bridge so pending outbound stream session preparation rejects cleanly if the transport closes before the SDK-generated progress token is observed.
+
 ## 0.11.0
 
 ### Minor Changes

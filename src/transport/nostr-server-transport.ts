@@ -749,6 +749,22 @@ export class NostrServerTransport
     await this.handleResponse(pendingResponse);
   }
 
+  private findEventIdByProgressToken(
+    progressToken: string,
+  ): string | undefined {
+    for (const [clientPubkey] of this.sessionStore.getAllSessions()) {
+      const eventId = this.correlationStore.getEventIdByProgressToken(
+        clientPubkey,
+        progressToken,
+      );
+      if (eventId) {
+        return eventId;
+      }
+    }
+
+    return undefined;
+  }
+
   /**
    * Cleans up request correlation for a request that was dropped by middleware.
    */
@@ -960,9 +976,7 @@ export class NostrServerTransport
       ) {
         const token = String(notification.params.progressToken);
 
-        // Use O(1) lookup for progress token routing
-        const nostrEventId =
-          this.correlationStore.getEventIdByProgressToken(token);
+        const nostrEventId = this.findEventIdByProgressToken(token);
 
         if (nostrEventId) {
           const route = this.correlationStore.getEventRoute(nostrEventId);
@@ -1346,8 +1360,10 @@ export class NostrServerTransport
             const progressToken = String(
               inboundMessage.params?.progressToken ?? '',
             );
-            const eventId =
-              this.correlationStore.getEventIdByProgressToken(progressToken);
+            const eventId = this.correlationStore.getEventIdByProgressToken(
+              event.pubkey,
+              progressToken,
+            );
             const writer = eventId
               ? this.openStreamWriters.get(eventId)
               : undefined;
@@ -1379,8 +1395,10 @@ export class NostrServerTransport
               'nonce' in frame && typeof frame.nonce === 'string'
                 ? frame.nonce
                 : '';
-            const eventId =
-              this.correlationStore.getEventIdByProgressToken(progressToken);
+            const eventId = this.correlationStore.getEventIdByProgressToken(
+              event.pubkey,
+              progressToken,
+            );
             const writer = eventId
               ? this.openStreamWriters.get(eventId)
               : undefined;
