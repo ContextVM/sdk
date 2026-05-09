@@ -1244,6 +1244,12 @@ export class NostrClientTransport
             });
             this.onerror?.(err instanceof Error ? err : new Error(String(err)));
           });
+
+        this.onmessage?.(mcpMessage);
+        this.onmessageWithContext?.(mcpMessage, {
+          eventId,
+          correlatedEventId,
+        });
         return;
       }
 

@@ -1,5 +1,17 @@
 # @contextvm/sdk
 
+## 0.11.2
+
+### Patch Changes
+
+- feat(transport): forward open-stream progress notifications to upstream handlers
+
+  Add support for forwarding progress notifications from open-stream sessions to
+  upstream transport handlers. The NostrClientTransport now invokes onmessage and
+  onmessageWithContext callbacks for progress notifications, and the callToolStream
+  function accepts a custom onprogress handler to allow consumers to receive and
+  handle progress updates.
+
 ## 0.11.1
 
 ### Patch Changes

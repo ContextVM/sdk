@@ -39,6 +39,7 @@ import {
 } from '../__mocks__/test-relay-helpers.js';
 import { MockRelayHub } from '../__mocks__/mock-relay-handler.js';
 import { waitFor } from '../core/utils/test.utils.js';
+import { buildOpenStreamPingFrame } from './open-stream/frames.js';
 
 describe.serial('NostrClientTransport', () => {
   let relay: MockRelayInstance;
@@ -450,6 +451,89 @@ describe.serial('NostrClientTransport', () => {
       jsonrpc: '2.0',
       method: 'notifications/payment_required',
     });
+
+    await clientTransport.close();
+  }, 10000);
+
+  test('forwards open-stream progress notifications to the upstream transport handlers', async () => {
+    const clientPrivateKey = bytesToHex(generateSecretKey());
+    const clientPublicKey = getPublicKey(hexToBytes(clientPrivateKey));
+
+    const clientTransport = new NostrClientTransport({
+      signer: new PrivateKeySigner(clientPrivateKey),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      serverPubkey: serverPublicKey,
+      encryptionMode: EncryptionMode.DISABLED,
+    });
+
+    const received: unknown[] = [];
+    const receivedWithContext: Array<{
+      message: unknown;
+      context: { eventId: string; correlatedEventId?: string };
+    }> = [];
+
+    clientTransport.onmessage = (msg) => {
+      received.push(msg);
+    };
+    clientTransport.onmessageWithContext = (message, context) => {
+      receivedWithContext.push({ message, context });
+    };
+
+    await clientTransport.start();
+
+    const knownEventId = '2'.repeat(64);
+    clientTransport
+      .getInternalStateForTesting()
+      .correlationStore.registerRequest(knownEventId, {
+        originalRequestId: 2,
+        isInitialize: false,
+      });
+
+    const notification = {
+      jsonrpc: '2.0',
+      method: 'notifications/progress',
+      params: buildOpenStreamPingFrame({
+        progressToken: '2',
+        progress: 1,
+        nonce: '2:1',
+      }),
+    } as const;
+
+    const unsignedEvent = {
+      kind: CTXVM_MESSAGES_KIND,
+      content: JSON.stringify(notification),
+      created_at: Math.floor(Date.now() / 1000),
+      pubkey: serverPublicKey,
+      tags: [
+        ['p', clientPublicKey],
+        ['e', knownEventId],
+      ],
+    };
+
+    const signedEvent = await new PrivateKeySigner(serverPrivateKey).signEvent(
+      unsignedEvent,
+    );
+    await clientTransport['relayHandler'].publish(signedEvent);
+
+    await waitFor({
+      produce: () => {
+        return received.length === 1 && receivedWithContext.length === 1
+          ? true
+          : undefined;
+      },
+      timeoutMs: 5_000,
+    });
+
+    expect(received).toEqual([notification]);
+    expect(receivedWithContext).toEqual([
+      {
+        message: notification,
+        context: {
+          eventId: signedEvent.id,
+          correlatedEventId: knownEventId,
+        },
+      },
+    ]);
 
     await clientTransport.close();
   }, 10000);

@@ -8,6 +8,7 @@ export interface CallToolStreamParams {
   transport: NostrClientTransport;
   name: CallToolRequest['params']['name'];
   arguments?: CallToolRequest['params']['arguments'];
+  onprogress?: (progress: unknown) => void;
 }
 
 export interface ToolStreamCall<TResult = unknown> {
@@ -23,7 +24,13 @@ export interface ToolStreamCall<TResult = unknown> {
 export async function callToolStream<TResult = unknown>(
   params: CallToolStreamParams,
 ): Promise<ToolStreamCall<TResult>> {
-  const { client, transport, name, arguments: toolArguments } = params;
+  const {
+    client,
+    transport,
+    name,
+    arguments: toolArguments,
+    onprogress,
+  } = params;
   const pendingStream = transport.prepareOutboundOpenStreamSession();
 
   const result = client.callTool(
@@ -33,7 +40,7 @@ export async function callToolStream<TResult = unknown>(
     } satisfies CallToolRequest['params'],
     undefined,
     {
-      onprogress: () => undefined,
+      onprogress: onprogress ?? (() => undefined),
       resetTimeoutOnProgress: true,
     },
   ) as Promise<TResult>;
