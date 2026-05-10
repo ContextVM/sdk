@@ -1,5 +1,13 @@
 # @contextvm/sdk
 
+## 0.11.4
+
+### Patch Changes
+
+- fix(transport): flush pending open-stream responses on probe-timeout eviction
+
+  Refactors session eviction logic for CEP-41 open streams to immediately remove the session while retaining enough state to flush pending responses. Adds an evicted client pubkeys set to prevent new notifications while allowing deferred final responses to be sent. Includes test coverage for the flush behavior.
+
 ## 0.11.3
 
 ### Patch Changes

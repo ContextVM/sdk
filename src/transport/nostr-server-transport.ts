@@ -235,11 +235,14 @@ export class NostrServerTransport
     JSONRPCResponse
   >();
 
-  /** Sessions to evict after a deferred CEP-41 final response has been flushed. */
+  /** Sessions logically evicted after CEP-41 probe timeout, retained only to flush deferred finals. */
   private readonly pendingOpenStreamSessionEvictions = new Map<
     string,
-    string
+    { clientPubkey: string; session: ClientSession }
   >();
+
+  /** Client pubkeys that should no longer receive new notifications. */
+  private readonly evictedOpenStreamClientPubkeys = new Set<string>();
 
   /** Active server-side CEP-41 writers keyed by inbound request event id. */
   private readonly openStreamWriters = new Map<string, OpenStreamWriter>();
@@ -761,27 +764,35 @@ export class NostrServerTransport
     reason?: string,
   ): Promise<void> {
     if (reason === 'Probe timeout') {
-      this.pendingOpenStreamSessionEvictions.set(eventId, clientPubkey);
+      const session = this.sessionStore.getSession(clientPubkey);
+      if (session) {
+        this.pendingOpenStreamSessionEvictions.set(eventId, {
+          clientPubkey,
+          session: { ...session },
+        });
+        this.evictedOpenStreamClientPubkeys.add(clientPubkey);
+      }
+
+      const removed = this.sessionStore.removeSession(clientPubkey);
+      if (removed || session) {
+        this.logger.info('Removed session after open-stream probe timeout', {
+          clientPubkey,
+          eventId,
+        });
+      }
     }
 
     await this.flushPendingOpenStreamResponse(eventId);
   }
 
   private finalizePendingOpenStreamSessionEviction(eventId: string): void {
-    const clientPubkey = this.pendingOpenStreamSessionEvictions.get(eventId);
-    if (!clientPubkey) {
+    const pendingEviction = this.pendingOpenStreamSessionEvictions.get(eventId);
+    if (!pendingEviction) {
       return;
     }
 
     this.pendingOpenStreamSessionEvictions.delete(eventId);
-
-    const removed = this.sessionStore.removeSession(clientPubkey);
-    if (removed) {
-      this.logger.info('Removed session after open-stream probe timeout', {
-        clientPubkey,
-        eventId,
-      });
-    }
+    this.evictedOpenStreamClientPubkeys.delete(pendingEviction.clientPubkey);
   }
 
   private findEventIdByProgressToken(
@@ -879,7 +890,11 @@ export class NostrServerTransport
       return;
     }
 
-    const session = this.sessionStore.getSession(route.clientPubkey);
+    const pendingEviction =
+      this.pendingOpenStreamSessionEvictions.get(nostrEventId);
+    const session =
+      this.sessionStore.getSession(route.clientPubkey) ??
+      pendingEviction?.session;
     if (!session) {
       this.onerror?.(
         new Error(`No session found for client: ${route.clientPubkey}`),
@@ -1074,6 +1089,10 @@ export class NostrServerTransport
     notification: JSONRPCMessage,
     correlatedEventId?: string,
   ): Promise<void> {
+    if (this.evictedOpenStreamClientPubkeys.has(clientPubkey)) {
+      throw new Error(`No active session found for client: ${clientPubkey}`);
+    }
+
     const session = this.sessionStore.getSession(clientPubkey);
     if (!session) {
       throw new Error(`No active session found for client: ${clientPubkey}`);
@@ -1611,6 +1630,8 @@ export class NostrServerTransport
       correlationStore: this.correlationStore,
       oversizedReceiver: this.oversizedReceiver,
       openStreamReceiver: this.openStreamReceiver,
+      pendingOpenStreamResponses: this.pendingOpenStreamResponses,
+      pendingOpenStreamSessionEvictions: this.pendingOpenStreamSessionEvictions,
       openStreamWriters: this.openStreamWriters,
     };
   }
