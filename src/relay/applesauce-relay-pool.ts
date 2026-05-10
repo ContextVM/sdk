@@ -57,6 +57,7 @@ export class ApplesauceRelayPool implements RelayHandler {
   private readonly relayUrls: string[];
   private relayGroup: RelayGroup;
   private readonly subscriptions = new Map<string, SubscriptionState>();
+  private relayGeneration = 0;
 
   // Outbound publish policy
   private static readonly PUBLISH_ATTEMPT_TIMEOUT_MS = 10_000;
@@ -318,6 +319,7 @@ export class ApplesauceRelayPool implements RelayHandler {
         throw new Error('Publish aborted');
       }
       attempt += 1;
+      const publishGeneration = this.relayGeneration;
       try {
         const responses = await this.relayGroup.publish(event, {
           timeout: ApplesauceRelayPool.PUBLISH_ATTEMPT_TIMEOUT_MS,
@@ -329,6 +331,30 @@ export class ApplesauceRelayPool implements RelayHandler {
         for (const response of responses) {
           if (response.ok) successCount += 1;
           else failedCount += 1;
+        }
+
+        const rebuildDisruptedAttempt =
+          publishGeneration !== this.relayGeneration ||
+          this.rebuildInFlight !== undefined;
+
+        if (successCount === 0 && rebuildDisruptedAttempt) {
+          logger.warn(
+            'Publish acknowledgement ambiguous during relay rebuild',
+            {
+              eventId: event.id,
+              kind: event.kind,
+              attempt,
+              publishGeneration,
+              currentGeneration: this.relayGeneration,
+            },
+          );
+
+          if (this.rebuildInFlight) {
+            await this.rebuildInFlight.catch(() => undefined);
+          }
+
+          await sleep(ApplesauceRelayPool.PUBLISH_RETRY_INTERVAL_MS);
+          continue;
         }
 
         if (successCount === 0) throw new Error('Failed to publish event');
@@ -643,6 +669,7 @@ export class ApplesauceRelayPool implements RelayHandler {
     if (this.rebuildInFlight) return;
 
     this.rebuildInFlight = (async () => {
+      this.relayGeneration += 1;
       logger.info('Rebuilding relay pool', { reason });
 
       // Pause ping monitor during rebuild to avoid redundant checks

@@ -235,6 +235,12 @@ export class NostrServerTransport
     JSONRPCResponse
   >();
 
+  /** Sessions to evict after a deferred CEP-41 final response has been flushed. */
+  private readonly pendingOpenStreamSessionEvictions = new Map<
+    string,
+    string
+  >();
+
   /** Active server-side CEP-41 writers keyed by inbound request event id. */
   private readonly openStreamWriters = new Map<string, OpenStreamWriter>();
 
@@ -728,8 +734,8 @@ export class NostrServerTransport
         onClose: async (): Promise<void> => {
           await this.flushPendingOpenStreamResponse(eventId);
         },
-        onAbort: async (): Promise<void> => {
-          await this.flushPendingOpenStreamResponse(eventId);
+        onAbort: async (reason?: string): Promise<void> => {
+          await this.handleOpenStreamWriterAbort(clientPubkey, eventId, reason);
         },
       });
 
@@ -747,6 +753,35 @@ export class NostrServerTransport
     }
 
     await this.handleResponse(pendingResponse);
+  }
+
+  private async handleOpenStreamWriterAbort(
+    clientPubkey: string,
+    eventId: string,
+    reason?: string,
+  ): Promise<void> {
+    if (reason === 'Probe timeout') {
+      this.pendingOpenStreamSessionEvictions.set(eventId, clientPubkey);
+    }
+
+    await this.flushPendingOpenStreamResponse(eventId);
+  }
+
+  private finalizePendingOpenStreamSessionEviction(eventId: string): void {
+    const clientPubkey = this.pendingOpenStreamSessionEvictions.get(eventId);
+    if (!clientPubkey) {
+      return;
+    }
+
+    this.pendingOpenStreamSessionEvictions.delete(eventId);
+
+    const removed = this.sessionStore.removeSession(clientPubkey);
+    if (removed) {
+      this.logger.info('Removed session after open-stream probe timeout', {
+        clientPubkey,
+        eventId,
+      });
+    }
   }
 
   private findEventIdByProgressToken(
@@ -956,6 +991,8 @@ export class NostrServerTransport
         route.wrapKind,
       );
       throw error;
+    } finally {
+      this.finalizePendingOpenStreamSessionEviction(nostrEventId);
     }
   }
 
@@ -1574,6 +1611,7 @@ export class NostrServerTransport
       correlationStore: this.correlationStore,
       oversizedReceiver: this.oversizedReceiver,
       openStreamReceiver: this.openStreamReceiver,
+      openStreamWriters: this.openStreamWriters,
     };
   }
 }

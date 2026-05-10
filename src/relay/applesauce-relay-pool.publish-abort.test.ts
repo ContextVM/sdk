@@ -53,4 +53,69 @@ describe('ApplesauceRelayPool publish cancellation (regression)', () => {
     // If the retry loop kept running in the background, this number would increase.
     expect(publishAttemptCount).toBe(attemptsAtAbort);
   }, 10_000);
+
+  test('publish() treats zero acknowledgements during rebuild as ambiguous and retries', async () => {
+    const pool = new ApplesauceRelayPool(['ws://example.invalid']);
+
+    let publishAttemptCount = 0;
+    let rebuildResolved = false;
+    let resolveRebuild!: () => void;
+    const rebuildPromise = new Promise<void>((resolve) => {
+      resolveRebuild = (): void => {
+        rebuildResolved = true;
+        resolve();
+      };
+    });
+
+    (
+      pool as unknown as {
+        relayGeneration: number;
+        rebuildInFlight?: Promise<void>;
+        relayGroup: {
+          publish: (event: NostrEvent) => Promise<Array<{ ok: boolean }>>;
+        };
+      }
+    ).relayGroup = {
+      publish: async (_event: NostrEvent) => {
+        publishAttemptCount += 1;
+        if (publishAttemptCount === 1) {
+          (
+            pool as unknown as {
+              relayGeneration: number;
+            }
+          ).relayGeneration += 1;
+          (
+            pool as unknown as {
+              rebuildInFlight?: Promise<void>;
+            }
+          ).rebuildInFlight = rebuildPromise;
+          setTimeout(() => {
+            (
+              pool as unknown as {
+                rebuildInFlight?: Promise<void>;
+              }
+            ).rebuildInFlight = undefined;
+            resolveRebuild();
+          }, 20);
+          return [];
+        }
+
+        return [{ ok: true }];
+      },
+    };
+
+    const event = {
+      id: 'a'.repeat(64),
+      pubkey: 'p'.repeat(64),
+      created_at: Math.floor(Date.now() / 1000),
+      kind: 1,
+      tags: [],
+      content: 'test',
+      sig: 's'.repeat(128),
+    } as unknown as NostrEvent;
+
+    await expect(pool.publish(event)).resolves.toBeUndefined();
+    expect(rebuildResolved).toBe(true);
+    expect(publishAttemptCount).toBe(2);
+  });
 });

@@ -1,5 +1,13 @@
 # @contextvm/sdk
 
+## 0.11.3
+
+### Patch Changes
+
+- fix(relay): handle ambiguous publish acknowledgements during relay rebuild
+
+  When a relay rebuild occurs during a publish attempt, the zero acknowledgements received could be ambiguous - either the publish failed or the relays were temporarily unavailable. This change introduces a generation counter to track relay rebuilds and retries the publish if it was interrupted by a rebuild, ensuring reliable event publication.
+
 ## 0.11.2
 
 ### Patch Changes
