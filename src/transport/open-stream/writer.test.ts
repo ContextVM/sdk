@@ -128,6 +128,8 @@ describe('OpenStreamWriter', () => {
 
     await abortWriter.abort('done');
 
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+
     expect(frames[frames.length - 1]).toMatchObject({
       cvm: {
         type: 'open-stream',
@@ -136,6 +138,37 @@ describe('OpenStreamWriter', () => {
       },
     });
     expect(lifecycle).toEqual(['close', 'abort:done']);
+  });
+
+  test('abort deactivates and runs local cleanup without waiting for a stuck write', async () => {
+    let releaseChunkPublish: (() => void) | undefined;
+    const lifecycle: string[] = [];
+    const writer = new OpenStreamWriter({
+      progressToken: 'token-stuck-abort',
+      publishFrame: async (frame): Promise<string | undefined> => {
+        if (frame.cvm.frameType === 'chunk') {
+          await new Promise<void>((resolve) => {
+            releaseChunkPublish = resolve;
+          });
+        }
+
+        return undefined;
+      },
+      onAbort: async (reason?: string): Promise<void> => {
+        lifecycle.push(`abort:${reason ?? ''}`);
+      },
+    });
+
+    const writePromise = writer.write('hello');
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+    await writer.abort('stuck publish');
+
+    expect(writer.isActive).toBe(false);
+    expect(lifecycle).toEqual(['abort:stuck publish']);
+
+    releaseChunkPublish?.();
+    await writePromise;
   });
 
   test('serializes concurrent writes before close', async () => {

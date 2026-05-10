@@ -36,6 +36,7 @@ export class OpenStreamWriter {
   private started = false;
   private active = true;
   private operationQueue: Promise<void> = Promise.resolve();
+  private abortPromise?: Promise<void>;
 
   constructor(options: OpenStreamWriterOptions) {
     this.progressToken = options.progressToken;
@@ -127,21 +128,35 @@ export class OpenStreamWriter {
   }
 
   public async abort(reason?: string): Promise<void> {
-    await this.enqueue(async () => {
-      if (!this.active) {
-        return;
-      }
+    if (this.abortPromise) {
+      await this.abortPromise;
+      return;
+    }
 
-      this.active = false;
-      await this.publishFrame(
-        buildOpenStreamAbortFrame({
-          progressToken: this.progressToken,
-          progress: this.nextProgress(),
-          reason,
-        }),
-      );
-      await this.onAbort?.(reason);
-    });
+    if (!this.active) {
+      return;
+    }
+
+    this.active = false;
+    const progress = this.nextProgress();
+
+    this.abortPromise = (async (): Promise<void> => {
+      try {
+        await this.onAbort?.(reason);
+      } finally {
+        void this.enqueue(async () => {
+          await this.publishFrame(
+            buildOpenStreamAbortFrame({
+              progressToken: this.progressToken,
+              progress,
+              reason,
+            }),
+          );
+        }).catch(() => undefined);
+      }
+    })();
+
+    await this.abortPromise;
   }
 
   private async startInternal(): Promise<void> {

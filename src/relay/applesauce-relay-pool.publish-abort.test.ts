@@ -118,4 +118,77 @@ describe('ApplesauceRelayPool publish cancellation (regression)', () => {
     expect(rebuildResolved).toBe(true);
     expect(publishAttemptCount).toBe(2);
   });
+
+  test('publish() treats duplicate relay responses as success-equivalent', async () => {
+    const pool = new ApplesauceRelayPool(['ws://example.invalid']);
+
+    let publishAttemptCount = 0;
+
+    (
+      pool as unknown as {
+        relayGroup: {
+          publish: (event: NostrEvent) => Promise<Array<{ ok: boolean }>>;
+        };
+      }
+    ).relayGroup = {
+      publish: async (_event: NostrEvent) => {
+        publishAttemptCount += 1;
+        return [
+          {
+            ok: false,
+            message: 'duplicate: already have this event',
+          },
+        ];
+      },
+    };
+
+    const event = {
+      id: 'b'.repeat(64),
+      pubkey: 'p'.repeat(64),
+      created_at: Math.floor(Date.now() / 1000),
+      kind: 1,
+      tags: [],
+      content: 'test',
+      sig: 's'.repeat(128),
+    } as unknown as NostrEvent;
+
+    await expect(pool.publish(event)).resolves.toBeUndefined();
+    expect(publishAttemptCount).toBe(1);
+  });
+
+  test('publish() retries when acknowledgements are missing and no success-equivalent response is returned', async () => {
+    const pool = new ApplesauceRelayPool(['ws://example.invalid']);
+
+    let publishAttemptCount = 0;
+
+    (
+      pool as unknown as {
+        relayGroup: {
+          publish: (event: NostrEvent) => Promise<Array<{ ok: boolean }>>;
+        };
+      }
+    ).relayGroup = {
+      publish: async (_event: NostrEvent) => {
+        publishAttemptCount += 1;
+        if (publishAttemptCount === 1) {
+          return [];
+        }
+
+        return [{ ok: true }];
+      },
+    };
+
+    const event = {
+      id: 'c'.repeat(64),
+      pubkey: 'p'.repeat(64),
+      created_at: Math.floor(Date.now() / 1000),
+      kind: 1,
+      tags: [],
+      content: 'test',
+      sig: 's'.repeat(128),
+    } as unknown as NostrEvent;
+
+    await expect(pool.publish(event)).resolves.toBeUndefined();
+    expect(publishAttemptCount).toBe(2);
+  });
 });

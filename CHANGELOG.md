@@ -1,5 +1,11 @@
 # @contextvm/sdk
 
+## 0.11.5
+
+### Patch Changes
+
+- fix(relay): treat duplicate publish responses as success-equivalent
+
 ## 0.11.4
 
 ### Patch Changes

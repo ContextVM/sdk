@@ -329,9 +329,19 @@ export class ApplesauceRelayPool implements RelayHandler {
         let successCount = 0;
         let failedCount = 0;
         for (const response of responses) {
-          if (response.ok) successCount += 1;
+          if (this.isPublishSuccessEquivalent(response)) successCount += 1;
           else failedCount += 1;
         }
+
+        logger.debug('Publish attempt completed', {
+          eventId: event.id,
+          kind: event.kind,
+          attempt,
+          responseCount: responses.length,
+          successCount,
+          failedCount,
+          responses,
+        });
 
         const rebuildDisruptedAttempt =
           publishGeneration !== this.relayGeneration ||
@@ -390,6 +400,26 @@ export class ApplesauceRelayPool implements RelayHandler {
         await sleep(ApplesauceRelayPool.PUBLISH_RETRY_INTERVAL_MS);
       }
     }
+  }
+
+  private isPublishSuccessEquivalent(response: {
+    ok: boolean;
+    message?: string;
+  }): boolean {
+    if (response.ok) {
+      return true;
+    }
+
+    const message = response.message?.toLowerCase();
+    if (!message) {
+      return false;
+    }
+
+    return (
+      message.includes('already have this event') ||
+      message.includes('duplicate') ||
+      message.includes('already exists')
+    );
   }
 
   /**
