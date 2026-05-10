@@ -19,6 +19,7 @@ import {
 } from 'rxjs';
 
 const logger = createLogger('applesauce-relay');
+const RELAY_REJECTED_PUBLISH_ERROR = 'Relay rejected publish';
 
 /** Dummy filter that returns no results, used for liveness ping */
 export const PING_FILTER: Filter = {
@@ -326,11 +327,22 @@ export class ApplesauceRelayPool implements RelayHandler {
           retries: 0,
         });
 
-        let successCount = 0;
-        let failedCount = 0;
+        const connectedRelayUrls = new Set(
+          this.relays
+            .filter((relay) => relay.connected)
+            .map((relay) => relay.url),
+        );
+        let acceptedCount = 0;
+        let connectedFailureCount = 0;
         for (const response of responses) {
-          if (this.isPublishSuccessEquivalent(response)) successCount += 1;
-          else failedCount += 1;
+          if (response.ok) {
+            acceptedCount += 1;
+          } else if (
+            response.from === undefined ||
+            connectedRelayUrls.has(response.from)
+          ) {
+            connectedFailureCount += 1;
+          }
         }
 
         logger.debug('Publish attempt completed', {
@@ -338,8 +350,9 @@ export class ApplesauceRelayPool implements RelayHandler {
           kind: event.kind,
           attempt,
           responseCount: responses.length,
-          successCount,
-          failedCount,
+          acceptedCount,
+          connectedFailureCount,
+          connectedRelayUrls: Array.from(connectedRelayUrls),
           responses,
         });
 
@@ -347,7 +360,11 @@ export class ApplesauceRelayPool implements RelayHandler {
           publishGeneration !== this.relayGeneration ||
           this.rebuildInFlight !== undefined;
 
-        if (successCount === 0 && rebuildDisruptedAttempt) {
+        if (
+          acceptedCount === 0 &&
+          responses.length === 0 &&
+          rebuildDisruptedAttempt
+        ) {
           logger.warn(
             'Publish acknowledgement ambiguous during relay rebuild',
             {
@@ -367,22 +384,30 @@ export class ApplesauceRelayPool implements RelayHandler {
           continue;
         }
 
-        if (successCount === 0) throw new Error('Failed to publish event');
-
-        if (failedCount > 0) {
-          logger.debug(
-            'Best-effort publish completed; some relays did not acknowledge',
-            {
+        if (responses.length > 0) {
+          if (acceptedCount > 0) {
+            logger.debug('Event published successfully', {
               eventId: event.id,
-              failedCount,
-              successCount,
-            },
-          );
-        } else {
-          logger.debug('Event published successfully', { eventId: event.id });
+              acceptedCount,
+              connectedFailureCount,
+            });
+            return;
+          }
+
+          if (connectedFailureCount > 0) {
+            throw new Error(RELAY_REJECTED_PUBLISH_ERROR);
+          }
         }
-        return;
+
+        throw new Error('Failed to publish event');
       } catch (error) {
+        if (
+          error instanceof Error &&
+          error.message === RELAY_REJECTED_PUBLISH_ERROR
+        ) {
+          throw error;
+        }
+
         const now = Date.now();
         if (
           now - lastLogAt >=
@@ -400,26 +425,6 @@ export class ApplesauceRelayPool implements RelayHandler {
         await sleep(ApplesauceRelayPool.PUBLISH_RETRY_INTERVAL_MS);
       }
     }
-  }
-
-  private isPublishSuccessEquivalent(response: {
-    ok: boolean;
-    message?: string;
-  }): boolean {
-    if (response.ok) {
-      return true;
-    }
-
-    const message = response.message?.toLowerCase();
-    if (!message) {
-      return false;
-    }
-
-    return (
-      message.includes('already have this event') ||
-      message.includes('duplicate') ||
-      message.includes('already exists')
-    );
   }
 
   /**

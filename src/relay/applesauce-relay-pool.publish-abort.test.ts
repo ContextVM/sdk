@@ -119,10 +119,16 @@ describe('ApplesauceRelayPool publish cancellation (regression)', () => {
     expect(publishAttemptCount).toBe(2);
   });
 
-  test('publish() treats duplicate relay responses as success-equivalent', async () => {
+  test('publish() does not retry duplicate relay responses once a relay answered', async () => {
     const pool = new ApplesauceRelayPool(['ws://example.invalid']);
 
     let publishAttemptCount = 0;
+
+    (
+      pool as unknown as {
+        relays: Array<{ url: string; connected: boolean }>;
+      }
+    ).relays = [{ url: 'ws://example.invalid', connected: true }];
 
     (
       pool as unknown as {
@@ -136,6 +142,7 @@ describe('ApplesauceRelayPool publish cancellation (regression)', () => {
         return [
           {
             ok: false,
+            from: 'ws://example.invalid',
             message: 'duplicate: already have this event',
           },
         ];
@@ -152,11 +159,102 @@ describe('ApplesauceRelayPool publish cancellation (regression)', () => {
       sig: 's'.repeat(128),
     } as unknown as NostrEvent;
 
-    await expect(pool.publish(event)).resolves.toBeUndefined();
+    await expect(pool.publish(event)).rejects.toThrow('Relay rejected publish');
     expect(publishAttemptCount).toBe(1);
   });
 
-  test('publish() retries when acknowledgements are missing and no success-equivalent response is returned', async () => {
+  test('publish() does not retry terminal relay rejections like mute', async () => {
+    const pool = new ApplesauceRelayPool(['ws://example.invalid']);
+    let publishAttemptCount = 0;
+
+    (
+      pool as unknown as {
+        relays: Array<{ url: string; connected: boolean }>;
+      }
+    ).relays = [{ url: 'ws://example.invalid', connected: true }];
+
+    (
+      pool as unknown as {
+        relayGroup: {
+          publish: (
+            event: NostrEvent,
+          ) => Promise<Array<{ ok: boolean; message?: string }>>;
+        };
+      }
+    ).relayGroup = {
+      publish: async (_event: NostrEvent) => {
+        publishAttemptCount += 1;
+        return [
+          {
+            ok: false,
+            from: 'ws://example.invalid',
+            message:
+              'mute: no one was listening to your ephemeral event and it was ignored',
+          },
+        ];
+      },
+    };
+
+    const event = {
+      id: 'd'.repeat(64),
+      pubkey: 'p'.repeat(64),
+      created_at: Math.floor(Date.now() / 1000),
+      kind: 1,
+      tags: [],
+      content: 'test',
+      sig: 's'.repeat(128),
+    } as unknown as NostrEvent;
+
+    await expect(pool.publish(event)).rejects.toThrow('Relay rejected publish');
+    expect(publishAttemptCount).toBe(1);
+  });
+
+  test('publish() does not retry unknown negative responses once a connected relay answered', async () => {
+    const pool = new ApplesauceRelayPool(['ws://example.invalid']);
+    let publishAttemptCount = 0;
+
+    (
+      pool as unknown as {
+        relays: Array<{ url: string; connected: boolean }>;
+      }
+    ).relays = [{ url: 'ws://example.invalid', connected: true }];
+
+    (
+      pool as unknown as {
+        relayGroup: {
+          publish: (
+            event: NostrEvent,
+          ) => Promise<Array<{ ok: boolean; message?: string }>>;
+        };
+      }
+    ).relayGroup = {
+      publish: async (_event: NostrEvent) => {
+        publishAttemptCount += 1;
+        return [
+          {
+            ok: false,
+            from: 'ws://example.invalid',
+            message: 'temporarily unavailable',
+          },
+        ];
+      },
+    };
+
+    const event = {
+      id: 'e'.repeat(64),
+      pubkey: 'p'.repeat(64),
+      created_at: Math.floor(Date.now() / 1000),
+      kind: 1,
+      tags: [],
+      content: 'test',
+      sig: 's'.repeat(128),
+    } as unknown as NostrEvent;
+
+    await expect(pool.publish(event)).rejects.toThrow('Relay rejected publish');
+    expect(publishAttemptCount).toBe(1);
+  });
+
+  test('publish() retries when acknowledgements are missing and no relay answered', async () => {
     const pool = new ApplesauceRelayPool(['ws://example.invalid']);
 
     let publishAttemptCount = 0;

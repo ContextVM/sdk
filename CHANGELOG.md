@@ -1,5 +1,17 @@
 # @contextvm/sdk
 
+## 0.11.6
+
+### Patch Changes
+
+- fix(relay): improve publish retry logic for different relay response types
+  - Don't treat duplicate relay responses as success-equivalent
+  - Don't retry terminal relay rejections like "mute"
+  - Don't retry unknown negative responses once a connected relay answered
+  - Throw specific error for relay-rejected publishes vs ambiguous failures
+  - Update tests to match new behavior
+  - Fix subscription to return early on EOSE instead of continuing to process
+
 ## 0.11.5
 
 ### Patch Changes
