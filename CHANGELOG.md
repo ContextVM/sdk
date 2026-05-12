@@ -1,5 +1,11 @@
 # @contextvm/sdk
 
+## 0.11.8
+
+### Patch Changes
+
+- fix(transport): publish abort frame before running abort hook
+
 ## 0.11.7
 
 ### Patch Changes

@@ -141,19 +141,14 @@ export class OpenStreamWriter {
     const progress = this.nextProgress();
 
     this.abortPromise = (async (): Promise<void> => {
-      try {
-        await this.onAbort?.(reason);
-      } finally {
-        void this.enqueue(async () => {
-          await this.publishFrame(
-            buildOpenStreamAbortFrame({
-              progressToken: this.progressToken,
-              progress,
-              reason,
-            }),
-          );
-        }).catch(() => undefined);
-      }
+      await this.publishFrame(
+        buildOpenStreamAbortFrame({
+          progressToken: this.progressToken,
+          progress,
+          reason,
+        }),
+      );
+      await this.onAbort?.(reason);
     })();
 
     await this.abortPromise;
