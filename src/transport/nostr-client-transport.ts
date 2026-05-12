@@ -701,14 +701,14 @@ export class NostrClientTransport
     }
   }
 
-  private buildOutboundClientTags(params: {
+  protected buildOutboundClientTags(params: {
     baseTags: readonly string[][];
-    includeDiscovery?: boolean;
+    includeDiscovery: boolean;
   }): string[][] {
     return this.capabilityNegotiator.buildOutboundTags(params);
   }
 
-  private chooseOutboundGiftWrapKind(): number {
+  protected chooseOutboundGiftWrapKind(): number {
     return this.capabilityNegotiator.chooseOutboundGiftWrapKind();
   }
 
