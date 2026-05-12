@@ -1,10 +1,12 @@
 export const OVERSIZED_TRANSFER_TYPE = 'oversized-transfer';
 
-// Default per-chunk data size. Conservative: leaves ~16 KiB headroom for 64KiB Nostr event relay threshold
+// Default per-chunk logical data size fallback. The transport now derives a
+// safer per-frame chunk budget from the final published Nostr event envelope.
 
 export const DEFAULT_CHUNK_SIZE = 48_000;
 
-// Byte length at which the sender proactively switches to oversized transfer.
+// Byte length budget for the final published Nostr event at which the sender
+// proactively switches to oversized transfer.
 export const DEFAULT_OVERSIZED_THRESHOLD = 48_000;
 
 // Prefix for SHA-256 digest values.

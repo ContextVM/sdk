@@ -278,6 +278,8 @@ export class NostrClientTransport
       ),
       getOriginalRequestContext: this.getOriginalRequestContext.bind(this),
       resolvePendingOpenStream: this.resolvePendingOutboundOpenStream.bind(this),
+      measurePublishedMcpMessageSize: this.measurePublishedMcpMessageSize.bind(this),
+      resolveSafeOversizedChunkSize: this.resolveSafeOversizedChunkSize.bind(this),
       logger: this.logger,
     });
   }
@@ -387,6 +389,7 @@ export class NostrClientTransport
       });
     }
   }
+
 
   private getOriginalRequestContext(
     message: JSONRPCMessage,
@@ -696,6 +699,17 @@ export class NostrClientTransport
           : new Error('Failed to handle incoming notification'),
       );
     }
+  }
+
+  private buildOutboundClientTags(params: {
+    baseTags: readonly string[][];
+    includeDiscovery?: boolean;
+  }): string[][] {
+    return this.capabilityNegotiator.buildOutboundTags(params);
+  }
+
+  private chooseOutboundGiftWrapKind(): number {
+    return this.capabilityNegotiator.chooseOutboundGiftWrapKind();
   }
 
   /**

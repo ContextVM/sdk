@@ -1,6 +1,6 @@
 {
   "name": "@contextvm/sdk",
-  "version": "0.11.6",
+  "version": "0.11.7",
   "description": "ContextVM SDK for JavaScript/TypeScript",
   "license": "LGPL-3.0-1",
   "author": "ContextVM",

@@ -415,6 +415,8 @@ export class NostrServerTransport
       createResponseTags: this.createResponseTags.bind(this),
       chooseGiftWrapKind: this.capabilityNegotiator.chooseOutboundGiftWrapKind.bind(this.capabilityNegotiator),
       sendMcpMessage: this.sendMcpMessage.bind(this),
+      measurePublishedMcpMessageSize: this.measurePublishedMcpMessageSize.bind(this),
+      resolveSafeOversizedChunkSize: this.resolveSafeOversizedChunkSize.bind(this),
       logger: this.logger,
       onerror: (error) => this.onerror?.(error),
     });

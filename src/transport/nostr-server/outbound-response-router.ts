@@ -45,6 +45,25 @@ export interface OutboundResponseRouterDeps {
     onCreateEvent?: (eventId: string) => void,
     giftWrapKind?: number,
   ) => Promise<string>;
+  measurePublishedMcpMessageSize: (
+    message: JSONRPCMessage,
+    recipientPublicKey: string,
+    kind: number,
+    tags?: string[][],
+    isEncrypted?: boolean,
+    giftWrapKind?: number,
+  ) => Promise<number>;
+  resolveSafeOversizedChunkSize: (params: {
+    desiredChunkSizeBytes: number;
+    maxPublishedEventBytes: number;
+    recipientPublicKey: string;
+    kind: number;
+    progressToken: string;
+    progress: number;
+    tags?: string[][];
+    isEncrypted?: boolean;
+    giftWrapKind?: number;
+  }) => Promise<number>;
   logger: Logger;
   onerror?: (error: Error) => void;
 }
@@ -123,23 +142,42 @@ export class OutboundResponseRouter {
       route.progressToken &&
       session.supportsOversizedTransfer
     ) {
-      // Serialize after restoring the original request id so oversized transfer uses the correct id.
-      const serialized = JSON.stringify(responseToSend);
-      const byteLength = new TextEncoder().encode(serialized).byteLength;
-      if (byteLength > this.deps.oversizedConfig.threshold) {
-        const continuationFrameTags = this.deps.createResponseTags(
-          route.clientPubkey,
-          nostrEventId,
-        );
-        const startFrameTags = this.deps.buildOutboundTags({
-          baseTags: continuationFrameTags,
-          session,
-        });
-        const giftWrapKind = this.deps.chooseGiftWrapKind({
-          session,
-          fallbackWrapKind: route.wrapKind,
+      const continuationFrameTags = this.deps.createResponseTags(
+        route.clientPubkey,
+        nostrEventId,
+      );
+      const startFrameTags = this.deps.buildOutboundTags({
+        baseTags: continuationFrameTags,
+        session,
+      });
+      const giftWrapKind = this.deps.chooseGiftWrapKind({
+        session,
+        fallbackWrapKind: route.wrapKind,
+      });
+
+      const publishedEventSize = await this.deps.measurePublishedMcpMessageSize(
+        responseToSend,
+        route.clientPubkey,
+        CTXVM_MESSAGES_KIND,
+        startFrameTags,
+        session.isEncrypted,
+        giftWrapKind,
+      );
+
+      if (publishedEventSize > this.deps.oversizedConfig.threshold) {
+        const chunkSizeBytes = await this.deps.resolveSafeOversizedChunkSize({
+          desiredChunkSizeBytes: this.deps.oversizedConfig.chunkSize,
+          maxPublishedEventBytes: this.deps.oversizedConfig.threshold,
+          recipientPublicKey: route.clientPubkey,
+          kind: CTXVM_MESSAGES_KIND,
+          progressToken: route.progressToken,
+          progress: 2,
+          tags: continuationFrameTags,
+          isEncrypted: session.isEncrypted,
+          giftWrapKind,
         });
 
+        const serialized = JSON.stringify(responseToSend);
         await sendOversizedServerResponse(
           {
             serialized,
@@ -151,7 +189,7 @@ export class OutboundResponseRouter {
             giftWrapKind,
           },
           {
-            chunkSizeBytes: this.deps.oversizedConfig.chunkSize,
+            chunkSizeBytes,
           },
           {
             sendMcpMessage: this.deps.sendMcpMessage,

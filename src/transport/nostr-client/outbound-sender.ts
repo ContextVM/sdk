@@ -33,6 +33,25 @@ export interface ClientOutboundSenderDeps {
   waitForAccept: (token: string, timeoutMs: number) => Promise<void>;
   getOriginalRequestContext: (msg: JSONRPCMessage) => OriginalRequestContext | undefined;
   resolvePendingOpenStream: (progressToken: string) => void;
+  measurePublishedMcpMessageSize: (
+    message: JSONRPCMessage,
+    recipientPublicKey: string,
+    kind: number,
+    tags?: string[][],
+    isEncrypted?: boolean,
+    giftWrapKind?: number,
+  ) => Promise<number>;
+  resolveSafeOversizedChunkSize: (params: {
+    desiredChunkSizeBytes: number;
+    maxPublishedEventBytes: number;
+    recipientPublicKey: string;
+    kind: number;
+    progressToken: string;
+    progress: number;
+    tags?: string[][];
+    isEncrypted?: boolean;
+    giftWrapKind?: number;
+  }) => Promise<number>;
   logger: Logger;
 }
 
@@ -52,13 +71,27 @@ export class ClientOutboundSender {
     if (this.deps.oversizedEnabled && isRequest) {
       const progressToken = message.params?._meta?.progressToken;
       if (progressToken !== undefined) {
-        const serialized = JSON.stringify(message);
-        const byteLength = new TextEncoder().encode(serialized).byteLength;
-        if (byteLength > this.deps.oversizedThreshold) {
+        const tags = this.deps.capabilityNegotiator.buildOutboundTags({
+          baseTags: this.deps.createRecipientTags(this.deps.serverPubkey),
+          includeDiscovery: isRequest,
+        });
+
+        const giftWrapKind = this.deps.capabilityNegotiator.chooseOutboundGiftWrapKind();
+
+        const publishedEventSize = await this.deps.measurePublishedMcpMessageSize(
+          message,
+          this.deps.serverPubkey,
+          CTXVM_MESSAGES_KIND,
+          tags,
+          undefined,
+          giftWrapKind,
+        );
+
+        if (publishedEventSize > this.deps.oversizedThreshold) {
           await this.sendOversizedRequest(
             message,
-            serialized,
             String(progressToken),
+            giftWrapKind,
           );
           return 'oversized-transfer';
         }
@@ -116,24 +149,36 @@ export class ClientOutboundSender {
       JSONRPCMessage,
       { id: string | number; method: string }
     >,
-    serialized: string,
     progressToken: string,
+    giftWrapKind: number,
   ): Promise<void> {
     const frameRecipientTags = this.deps.createRecipientTags(this.deps.serverPubkey);
     const startFrameTags = this.deps.capabilityNegotiator.buildOutboundTags({
       baseTags: frameRecipientTags,
       includeDiscovery: true,
     });
+    const chunkSizeBytes = await this.deps.resolveSafeOversizedChunkSize({
+      desiredChunkSizeBytes: this.deps.oversizedChunkSize,
+      maxPublishedEventBytes: this.deps.oversizedThreshold,
+      recipientPublicKey: this.deps.serverPubkey,
+      kind: CTXVM_MESSAGES_KIND,
+      progressToken,
+      progress: this.deps.serverSupportsOversizedTransfer() ? 2 : 3,
+      tags: frameRecipientTags,
+      giftWrapKind,
+    });
+
+    const serialized = JSON.stringify(originalMessage);
     const endFrameEventId = await sendOversizedClientRequest(
       serialized,
       progressToken,
       {
-        chunkSizeBytes: this.deps.oversizedChunkSize,
+        chunkSizeBytes,
         acceptTimeoutMs: this.deps.oversizedAcceptTimeoutMs,
         serverPubkey: this.deps.serverPubkey,
         serverSupportsOversizedTransfer:
           this.deps.serverSupportsOversizedTransfer(),
-        giftWrapKind: this.deps.capabilityNegotiator.chooseOutboundGiftWrapKind(),
+        giftWrapKind,
         startFrameTags,
         continuationFrameTags: frameRecipientTags,
       },

@@ -364,4 +364,52 @@ describe.serial('NostrServerTransport duplicate response prevention', () => {
 
     expect(session.hasSentCommonTags).toBe(true);
   });
+
+  it('proactively switches to oversized transfer based on final published event size', async () => {
+    const publishedEvents: NostrEvent[] = [];
+
+    const transport = new NostrServerTransport({
+      signer: new PrivateKeySigner('1'.repeat(64)),
+      relayHandler: makeCapturingRelayHandler(publishedEvents),
+      encryptionMode: EncryptionMode.DISABLED,
+      oversizedTransfer: {
+        enabled: true,
+        thresholdBytes: 260,
+        chunkSizeBytes: 512,
+      },
+    });
+
+    const state = transport.getInternalStateForTesting();
+    const [session] = state.sessionStore.getOrCreateSession(
+      'c'.repeat(64),
+      false,
+    );
+    session.supportsOversizedTransfer = true;
+    state.correlationStore.registerEventRoute(
+      'event2',
+      'c'.repeat(64),
+      456,
+      'token-final-size',
+    );
+
+    const response: JSONRPCResponse = {
+      jsonrpc: '2.0',
+      id: 'event2',
+      result: {
+        payload: 'x'.repeat(80),
+      },
+    };
+
+    await transport.send(response);
+
+    expect(publishedEvents.length).toBeGreaterThanOrEqual(3);
+    expect(JSON.parse(publishedEvents[0]!.content)).toMatchObject({
+      method: 'notifications/progress',
+      params: {
+        cvm: {
+          frameType: 'start',
+        },
+      },
+    });
+  });
 });
