@@ -54,8 +54,23 @@ describe('CorrelationStore', () => {
       const store = new CorrelationStore();
       store.registerEventRoute('event1', 'client1', 'req1', 'token1');
 
-      expect(store.getEventIdByProgressToken('token1')).toBe('event1');
-      expect(store.hasProgressToken('token1')).toBe(true);
+      expect(store.getEventIdByProgressToken('client1', 'token1')).toBe(
+        'event1',
+      );
+      expect(store.hasProgressToken('client1', 'token1')).toBe(true);
+    });
+
+    it('scopes identical progress tokens by client pubkey', () => {
+      const store = new CorrelationStore();
+      store.registerEventRoute('event1', 'client1', 'req1', 'shared');
+      store.registerEventRoute('event2', 'client2', 'req2', 'shared');
+
+      expect(store.getEventIdByProgressToken('client1', 'shared')).toBe(
+        'event1',
+      );
+      expect(store.getEventIdByProgressToken('client2', 'shared')).toBe(
+        'event2',
+      );
     });
 
     it('registers the inbound request event when provided', () => {
@@ -111,7 +126,7 @@ describe('CorrelationStore', () => {
 
       // Route + token mapping should be gone.
       expect(store.hasEventRoute('event1')).toBe(false);
-      expect(store.hasProgressToken('token1')).toBe(false);
+      expect(store.hasProgressToken('client1', 'token1')).toBe(false);
 
       // Second pop is a no-op.
       expect(store.popEventRoute('event1')).toBeUndefined();
@@ -121,7 +136,9 @@ describe('CorrelationStore', () => {
   describe('getEventIdByProgressToken', () => {
     it('returns undefined for unknown token', () => {
       const store = new CorrelationStore();
-      expect(store.getEventIdByProgressToken('unknown')).toBeUndefined();
+      expect(
+        store.getEventIdByProgressToken('client1', 'unknown'),
+      ).toBeUndefined();
     });
 
     it('returns correct event id for token', () => {
@@ -129,8 +146,12 @@ describe('CorrelationStore', () => {
       store.registerEventRoute('event1', 'client1', 'req1', 'token1');
       store.registerEventRoute('event2', 'client2', 'req2', 'token2');
 
-      expect(store.getEventIdByProgressToken('token1')).toBe('event1');
-      expect(store.getEventIdByProgressToken('token2')).toBe('event2');
+      expect(store.getEventIdByProgressToken('client1', 'token1')).toBe(
+        'event1',
+      );
+      expect(store.getEventIdByProgressToken('client2', 'token2')).toBe(
+        'event2',
+      );
     });
   });
 
@@ -202,8 +223,8 @@ describe('CorrelationStore', () => {
 
       store.removeRoutesForClient('client1');
 
-      expect(store.hasProgressToken('token1')).toBe(false);
-      expect(store.hasProgressToken('token2')).toBe(false);
+      expect(store.hasProgressToken('client1', 'token1')).toBe(false);
+      expect(store.hasProgressToken('client1', 'token2')).toBe(false);
     });
 
     it('removes client from index after cleanup', () => {
@@ -233,12 +254,12 @@ describe('CorrelationStore', () => {
     it('returns true for existing token', () => {
       const store = new CorrelationStore();
       store.registerEventRoute('event1', 'client1', 'req1', 'token1');
-      expect(store.hasProgressToken('token1')).toBe(true);
+      expect(store.hasProgressToken('client1', 'token1')).toBe(true);
     });
 
     it('returns false for unknown token', () => {
       const store = new CorrelationStore();
-      expect(store.hasProgressToken('unknown')).toBe(false);
+      expect(store.hasProgressToken('client1', 'unknown')).toBe(false);
     });
   });
 
@@ -331,8 +352,8 @@ describe('CorrelationStore', () => {
       store.registerEventRoute('event1', 'client1', 'req1', 'token1');
       store.registerEventRoute('event2', 'client1', 'req2', 'token2');
 
-      expect(store.hasProgressToken('token1')).toBe(false);
-      expect(store.hasProgressToken('token2')).toBe(true);
+      expect(store.hasProgressToken('client1', 'token1')).toBe(false);
+      expect(store.hasProgressToken('client1', 'token2')).toBe(true);
     });
 
     it('cleans up client index on eviction', () => {
@@ -368,7 +389,7 @@ describe('CorrelationStore', () => {
       store.clear();
 
       expect(store.progressTokenCount).toBe(0);
-      expect(store.hasProgressToken('token1')).toBe(false);
+      expect(store.hasProgressToken('client1', 'token1')).toBe(false);
     });
 
     it('cleans up client index', () => {
@@ -401,21 +422,26 @@ describe('CorrelationStore', () => {
       store.popEventRoute('c1e1');
 
       expect(store.hasActiveRoutesForClient('client1')).toBe(true);
-      expect(store.hasProgressToken('t1')).toBe(false);
-      expect(store.hasProgressToken('t2')).toBe(true);
+      expect(store.hasProgressToken('client1', 't1')).toBe(false);
+      expect(store.hasProgressToken('client1', 't2')).toBe(true);
     });
 
     it('handles route replacement with same progress token', () => {
-      // Note: This tests edge case where same token might be reused
-      // In practice, tokens should be unique per request
       const store = new CorrelationStore();
 
       store.registerEventRoute('event1', 'client1', 'req1', 'token1');
-      expect(store.getEventIdByProgressToken('token1')).toBe('event1');
+      expect(store.getEventIdByProgressToken('client1', 'token1')).toBe(
+        'event1',
+      );
 
-      // Register new route with same token (overwrites mapping)
       store.registerEventRoute('event2', 'client1', 'req2', 'token1');
-      expect(store.getEventIdByProgressToken('token1')).toBe('event2');
+
+      expect(store.getEventIdByProgressToken('client1', 'token1')).toBe(
+        'event2',
+      );
+      expect(
+        store.getEventIdByProgressToken('client2', 'token1'),
+      ).toBeUndefined();
     });
 
     it('maintains consistency through mixed operations', () => {
@@ -438,10 +464,10 @@ describe('CorrelationStore', () => {
       expect(store.hasEventRoute('e3')).toBe(true);
       expect(store.hasEventRoute('e4')).toBe(true);
 
-      expect(store.hasProgressToken('t1')).toBe(true);
-      expect(store.hasProgressToken('t2')).toBe(false);
-      expect(store.hasProgressToken('t3')).toBe(true);
-      expect(store.hasProgressToken('t4')).toBe(true);
+      expect(store.hasProgressToken('c1', 't1')).toBe(true);
+      expect(store.hasProgressToken('c1', 't2')).toBe(false);
+      expect(store.hasProgressToken('c2', 't3')).toBe(true);
+      expect(store.hasProgressToken('c2', 't4')).toBe(true);
 
       expect(store.hasActiveRoutesForClient('c1')).toBe(true);
       expect(store.hasActiveRoutesForClient('c2')).toBe(true);

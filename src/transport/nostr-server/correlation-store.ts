@@ -77,7 +77,9 @@ export class CorrelationStore {
       (eventId, route) => {
         // Clean up progress token mapping when event route is evicted
         if (route.progressToken) {
-          this.progressTokenToEventId.delete(route.progressToken);
+          this.progressTokenToEventId.delete(
+            this.getProgressTokenKey(route.clientPubkey, route.progressToken),
+          );
         }
         // Clean up client index when event route is evicted
         const clientSet = this.clientEventIds.get(route.clientPubkey);
@@ -93,9 +95,18 @@ export class CorrelationStore {
     );
   }
 
+  private getProgressTokenKey(
+    clientPubkey: string,
+    progressToken: string,
+  ): string {
+    return `${clientPubkey}:${progressToken}`;
+  }
+
   private removeRoute(eventId: string, route: EventRoute): void {
     if (route.progressToken) {
-      this.progressTokenToEventId.delete(route.progressToken);
+      this.progressTokenToEventId.delete(
+        this.getProgressTokenKey(route.clientPubkey, route.progressToken),
+      );
     }
 
     const clientSet = this.clientEventIds.get(route.clientPubkey);
@@ -145,7 +156,10 @@ export class CorrelationStore {
     clientSet.add(eventId);
 
     if (progressToken) {
-      this.progressTokenToEventId.set(progressToken, eventId);
+      this.progressTokenToEventId.set(
+        this.getProgressTokenKey(clientPubkey, progressToken),
+        eventId,
+      );
     }
   }
 
@@ -188,11 +202,17 @@ export class CorrelationStore {
   /**
    * Gets the event ID for a given progress token.
    *
+   * @param clientPubkey The client's public key
    * @param progressToken The progress token
    * @returns The event ID, or undefined if not found
    */
-  getEventIdByProgressToken(progressToken: string): string | undefined {
-    return this.progressTokenToEventId.get(progressToken);
+  getEventIdByProgressToken(
+    clientPubkey: string,
+    progressToken: string,
+  ): string | undefined {
+    return this.progressTokenToEventId.get(
+      this.getProgressTokenKey(clientPubkey, progressToken),
+    );
   }
 
   /**
@@ -241,8 +261,10 @@ export class CorrelationStore {
    * @param progressToken The progress token
    * @returns true if the mapping exists, false otherwise
    */
-  hasProgressToken(progressToken: string): boolean {
-    return this.progressTokenToEventId.has(progressToken);
+  hasProgressToken(clientPubkey: string, progressToken: string): boolean {
+    return this.progressTokenToEventId.has(
+      this.getProgressTokenKey(clientPubkey, progressToken),
+    );
   }
 
   /**

@@ -269,4 +269,70 @@ describe('OpenStreamRegistry', () => {
     );
     expect(registry.getSession('token-orphan-accept')).toBeUndefined();
   });
+
+  test('removes sessions even when onClose callback throws', async () => {
+    const registry = new OpenStreamRegistry({
+      maxConcurrentStreams: 1,
+      maxBufferedChunksPerStream: 4,
+      maxBufferedBytesPerStream: 128,
+      logger: createLogger('test', { level: 'silent' }),
+    });
+
+    const session = registry.createSession({
+      progressToken: 'token-close-throws',
+      onClose: async (): Promise<void> => {
+        throw new Error('close failed');
+      },
+    });
+
+    await session.processFrame(1, {
+      type: 'open-stream',
+      frameType: 'start',
+    });
+
+    await session.processFrame(2, {
+      type: 'open-stream',
+      frameType: 'close',
+    });
+    await expect(session.closed).resolves.toBeUndefined();
+
+    expect(registry.getSession('token-close-throws')).toBeUndefined();
+    expect(registry.size).toBe(0);
+  });
+
+  test('removes sessions even when onAbort callback throws', async () => {
+    const registry = new OpenStreamRegistry({
+      maxConcurrentStreams: 1,
+      maxBufferedChunksPerStream: 4,
+      maxBufferedBytesPerStream: 128,
+      logger: createLogger('test', { level: 'silent' }),
+    });
+
+    const session = registry.createSession({
+      progressToken: 'token-abort-throws',
+      onAbort: async (): Promise<void> => {
+        throw new Error('abort failed');
+      },
+    });
+
+    await session.processFrame(1, {
+      type: 'open-stream',
+      frameType: 'start',
+    });
+
+    const closed = session.closed.catch((error: unknown) => error);
+
+    await expect(
+      session.processFrame(2, {
+        type: 'open-stream',
+        frameType: 'abort',
+        reason: 'boom',
+      }),
+    ).rejects.toThrow('abort failed');
+
+    expect(await closed).toBeInstanceOf(Error);
+
+    expect(registry.getSession('token-abort-throws')).toBeUndefined();
+    expect(registry.size).toBe(0);
+  });
 });

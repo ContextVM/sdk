@@ -35,6 +35,8 @@ export class OpenStreamWriter {
   private controlNonce = 0;
   private started = false;
   private active = true;
+  private operationQueue: Promise<void> = Promise.resolve();
+  private abortPromise?: Promise<void>;
 
   constructor(options: OpenStreamWriterOptions) {
     this.progressToken = options.progressToken;
@@ -49,6 +51,115 @@ export class OpenStreamWriter {
   }
 
   public async start(): Promise<void> {
+    await this.enqueue(async () => {
+      await this.startInternal();
+    });
+  }
+
+  public async write(data: string): Promise<void> {
+    await this.enqueue(async () => {
+      await this.startInternal();
+      if (!this.active) {
+        return;
+      }
+
+      await this.publishFrame(
+        buildOpenStreamChunkFrame({
+          progressToken: this.progressToken,
+          progress: this.nextProgress(),
+          chunkIndex: this.chunkIndex,
+          data,
+        }),
+      );
+      this.chunkIndex += 1;
+    });
+  }
+
+  public async ping(): Promise<void> {
+    await this.enqueue(async () => {
+      if (!this.active) {
+        return;
+      }
+
+      const progress = this.nextProgress();
+      await this.publishFrame(
+        buildOpenStreamPingFrame({
+          progressToken: this.progressToken,
+          progress,
+          nonce: this.nextControlNonce(),
+        }),
+      );
+    });
+  }
+
+  public async pong(nonce: string): Promise<void> {
+    await this.enqueue(async () => {
+      if (!this.active) {
+        return;
+      }
+
+      await this.publishFrame(
+        buildOpenStreamPongFrame({
+          progressToken: this.progressToken,
+          progress: this.nextProgress(),
+          nonce,
+        }),
+      );
+    });
+  }
+
+  public async close(): Promise<void> {
+    await this.enqueue(async () => {
+      await this.startInternal();
+      if (!this.active) {
+        return;
+      }
+
+      this.active = false;
+      await this.publishFrame(
+        buildOpenStreamCloseFrame({
+          progressToken: this.progressToken,
+          progress: this.nextProgress(),
+          lastChunkIndex: this.chunkIndex > 0 ? this.chunkIndex - 1 : undefined,
+        }),
+      );
+      await this.onClose?.();
+    });
+  }
+
+  public async abort(reason?: string): Promise<void> {
+    if (this.abortPromise) {
+      await this.abortPromise;
+      return;
+    }
+
+    if (!this.active) {
+      return;
+    }
+
+    this.active = false;
+    const progress = this.nextProgress();
+
+    this.abortPromise = (async (): Promise<void> => {
+      try {
+        await this.onAbort?.(reason);
+      } finally {
+        void this.enqueue(async () => {
+          await this.publishFrame(
+            buildOpenStreamAbortFrame({
+              progressToken: this.progressToken,
+              progress,
+              reason,
+            }),
+          );
+        }).catch(() => undefined);
+      }
+    })();
+
+    await this.abortPromise;
+  }
+
+  private async startInternal(): Promise<void> {
     if (this.started || !this.active) {
       return;
     }
@@ -63,83 +174,10 @@ export class OpenStreamWriter {
     );
   }
 
-  public async write(data: string): Promise<void> {
-    await this.start();
-    if (!this.active) {
-      return;
-    }
-
-    await this.publishFrame(
-      buildOpenStreamChunkFrame({
-        progressToken: this.progressToken,
-        progress: this.nextProgress(),
-        chunkIndex: this.chunkIndex,
-        data,
-      }),
-    );
-    this.chunkIndex += 1;
-  }
-
-  public async ping(): Promise<void> {
-    if (!this.active) {
-      return;
-    }
-
-    const progress = this.nextProgress();
-    await this.publishFrame(
-      buildOpenStreamPingFrame({
-        progressToken: this.progressToken,
-        progress,
-        nonce: this.nextControlNonce(),
-      }),
-    );
-  }
-
-  public async pong(nonce: string): Promise<void> {
-    if (!this.active) {
-      return;
-    }
-
-    await this.publishFrame(
-      buildOpenStreamPongFrame({
-        progressToken: this.progressToken,
-        progress: this.nextProgress(),
-        nonce,
-      }),
-    );
-  }
-
-  public async close(): Promise<void> {
-    if (!this.active) {
-      return;
-    }
-
-    await this.start();
-    this.active = false;
-    await this.publishFrame(
-      buildOpenStreamCloseFrame({
-        progressToken: this.progressToken,
-        progress: this.nextProgress(),
-        lastChunkIndex: this.chunkIndex > 0 ? this.chunkIndex - 1 : undefined,
-      }),
-    );
-    await this.onClose?.();
-  }
-
-  public async abort(reason?: string): Promise<void> {
-    if (!this.active) {
-      return;
-    }
-
-    this.active = false;
-    await this.publishFrame(
-      buildOpenStreamAbortFrame({
-        progressToken: this.progressToken,
-        progress: this.nextProgress(),
-        reason,
-      }),
-    );
-    await this.onAbort?.(reason);
+  private async enqueue(operation: () => Promise<void>): Promise<void> {
+    const pending = this.operationQueue.then(operation);
+    this.operationQueue = pending.catch(() => undefined);
+    await pending;
   }
 
   private nextProgress(): number {

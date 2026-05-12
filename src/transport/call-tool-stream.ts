@@ -8,7 +8,7 @@ export interface CallToolStreamParams {
   transport: NostrClientTransport;
   name: CallToolRequest['params']['name'];
   arguments?: CallToolRequest['params']['arguments'];
-  progressToken?: string;
+  onprogress?: (progress: unknown) => void;
 }
 
 export interface ToolStreamCall<TResult = unknown> {
@@ -18,27 +18,34 @@ export interface ToolStreamCall<TResult = unknown> {
   abort(reason?: string): Promise<void>;
 }
 
-function createProgressToken(): string {
-  return `open-stream-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
 /**
  * Calls an MCP tool with a CEP-41 progress token and returns the paired stream handle.
  */
 export async function callToolStream<TResult = unknown>(
   params: CallToolStreamParams,
 ): Promise<ToolStreamCall<TResult>> {
-  const { client, transport, name, arguments: toolArguments } = params;
-  const progressToken = params.progressToken ?? createProgressToken();
-  const stream = transport.createOutboundOpenStreamSession(progressToken);
-
-  const result = client.callTool({
+  const {
+    client,
+    transport,
     name,
     arguments: toolArguments,
-    _meta: {
-      progressToken,
+    onprogress,
+  } = params;
+  const pendingStream = transport.prepareOutboundOpenStreamSession();
+
+  const result = client.callTool(
+    {
+      name,
+      arguments: toolArguments,
+    } satisfies CallToolRequest['params'],
+    undefined,
+    {
+      onprogress: onprogress ?? (() => undefined),
+      resetTimeoutOnProgress: true,
     },
-  } satisfies CallToolRequest['params']) as Promise<TResult>;
+  ) as Promise<TResult>;
+
+  const { progressToken, stream } = await pendingStream;
 
   return {
     progressToken,

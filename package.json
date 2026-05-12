@@ -1,6 +1,6 @@
 {
   "name": "@contextvm/sdk",
-  "version": "0.10.0",
+  "version": "0.11.6",
   "description": "ContextVM SDK for JavaScript/TypeScript",
   "license": "LGPL-3.0-1",
   "author": "ContextVM",
@@ -96,7 +96,7 @@
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-import": "^2.32.0",
     "prettier": "^3.8.3",
-    "typescript-eslint": "^8.59.0"
+    "typescript-eslint": "^8.59.2"
   },
   "peerDependencies": {
     "typescript": "^5.9.3"
@@ -110,6 +110,6 @@
     "pino": "^10.3.1",
     "rxjs": "^7.8.2",
     "ws": "^8.20.0",
-    "zod": "^4.3.6"
+    "zod": "^4.4.3"
   }
 }

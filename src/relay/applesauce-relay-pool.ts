@@ -14,12 +14,12 @@ import {
   Subject,
   filter,
   take,
-  merge,
   firstValueFrom,
   NEVER,
 } from 'rxjs';
 
 const logger = createLogger('applesauce-relay');
+const RELAY_REJECTED_PUBLISH_ERROR = 'Relay rejected publish';
 
 /** Dummy filter that returns no results, used for liveness ping */
 export const PING_FILTER: Filter = {
@@ -58,6 +58,7 @@ export class ApplesauceRelayPool implements RelayHandler {
   private readonly relayUrls: string[];
   private relayGroup: RelayGroup;
   private readonly subscriptions = new Map<string, SubscriptionState>();
+  private relayGeneration = 0;
 
   // Outbound publish policy
   private static readonly PUBLISH_ATTEMPT_TIMEOUT_MS = 10_000;
@@ -319,35 +320,94 @@ export class ApplesauceRelayPool implements RelayHandler {
         throw new Error('Publish aborted');
       }
       attempt += 1;
+      const publishGeneration = this.relayGeneration;
       try {
         const responses = await this.relayGroup.publish(event, {
           timeout: ApplesauceRelayPool.PUBLISH_ATTEMPT_TIMEOUT_MS,
           retries: 0,
         });
 
-        let successCount = 0;
-        let failedCount = 0;
+        const connectedRelayUrls = new Set(
+          this.relays
+            .filter((relay) => relay.connected)
+            .map((relay) => relay.url),
+        );
+        let acceptedCount = 0;
+        let connectedFailureCount = 0;
         for (const response of responses) {
-          if (response.ok) successCount += 1;
-          else failedCount += 1;
+          if (response.ok) {
+            acceptedCount += 1;
+          } else if (
+            response.from === undefined ||
+            connectedRelayUrls.has(response.from)
+          ) {
+            connectedFailureCount += 1;
+          }
         }
 
-        if (successCount === 0) throw new Error('Failed to publish event');
+        logger.debug('Publish attempt completed', {
+          eventId: event.id,
+          kind: event.kind,
+          attempt,
+          responseCount: responses.length,
+          acceptedCount,
+          connectedFailureCount,
+          connectedRelayUrls: Array.from(connectedRelayUrls),
+          responses,
+        });
 
-        if (failedCount > 0) {
-          logger.debug(
-            'Best-effort publish completed; some relays did not acknowledge',
+        const rebuildDisruptedAttempt =
+          publishGeneration !== this.relayGeneration ||
+          this.rebuildInFlight !== undefined;
+
+        if (
+          acceptedCount === 0 &&
+          responses.length === 0 &&
+          rebuildDisruptedAttempt
+        ) {
+          logger.warn(
+            'Publish acknowledgement ambiguous during relay rebuild',
             {
               eventId: event.id,
-              failedCount,
-              successCount,
+              kind: event.kind,
+              attempt,
+              publishGeneration,
+              currentGeneration: this.relayGeneration,
             },
           );
-        } else {
-          logger.debug('Event published successfully', { eventId: event.id });
+
+          if (this.rebuildInFlight) {
+            await this.rebuildInFlight.catch(() => undefined);
+          }
+
+          await sleep(ApplesauceRelayPool.PUBLISH_RETRY_INTERVAL_MS);
+          continue;
         }
-        return;
+
+        if (responses.length > 0) {
+          if (acceptedCount > 0) {
+            logger.debug('Event published successfully', {
+              eventId: event.id,
+              acceptedCount,
+              connectedFailureCount,
+            });
+            return;
+          }
+
+          if (connectedFailureCount > 0) {
+            throw new Error(RELAY_REJECTED_PUBLISH_ERROR);
+          }
+        }
+
+        throw new Error('Failed to publish event');
       } catch (error) {
+        if (
+          error instanceof Error &&
+          error.message === RELAY_REJECTED_PUBLISH_ERROR
+        ) {
+          throw error;
+        }
+
         const now = Date.now();
         if (
           now - lastLogAt >=
@@ -597,33 +657,34 @@ export class ApplesauceRelayPool implements RelayHandler {
       return;
     }
 
-    const pingId = `ping:${Date.now()}`;
-
     try {
-      // Send pings to all connected relays using the internal send method
-      // Cast to Relay to access the non-interface send method
-      for (const relay of connectedRelays) {
-        try {
-          (relay as Relay).send(['REQ', pingId, PING_FILTER]);
-        } catch (error) {
-          // If send fails immediately, log but continue - timeout will catch it
-          logger.debug('Failed to send ping to relay', {
-            url: relay.url,
-            error,
-          });
-        }
-      }
+      await Promise.all(
+        connectedRelays.map(async (relay, index) => {
+          const pingId = `ping:${Date.now()}:${index}`;
 
-      // Wait for any response with timeout using raw message stream
-      await lastValueFrom(
-        merge(...connectedRelays.map((relay) => relay.message$)).pipe(
-          filter(
-            (msg) =>
-              Array.isArray(msg) && msg[0] === 'EOSE' && msg[1] === pingId,
-          ),
-          take(1),
-          timeout(this.pingTimeoutMs),
-        ),
+          try {
+            relay.send(['REQ', pingId, PING_FILTER]);
+
+            await lastValueFrom(
+              relay.message$.pipe(
+                filter(
+                  (msg) =>
+                    Array.isArray(msg) &&
+                    msg[0] === 'EOSE' &&
+                    msg[1] === pingId,
+                ),
+                take(1),
+                timeout(this.pingTimeoutMs),
+              ),
+            );
+          } finally {
+            try {
+              relay.send(['CLOSE', pingId]);
+            } catch {
+              // best-effort cleanup
+            }
+          }
+        }),
       );
     } catch (error) {
       if (error instanceof Error && error.name === 'TimeoutError') {
@@ -643,6 +704,7 @@ export class ApplesauceRelayPool implements RelayHandler {
     if (this.rebuildInFlight) return;
 
     this.rebuildInFlight = (async () => {
+      this.relayGeneration += 1;
       logger.info('Rebuilding relay pool', { reason });
 
       // Pause ping monitor during rebuild to avoid redundant checks

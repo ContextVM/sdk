@@ -128,6 +128,8 @@ describe('OpenStreamWriter', () => {
 
     await abortWriter.abort('done');
 
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+
     expect(frames[frames.length - 1]).toMatchObject({
       cvm: {
         type: 'open-stream',
@@ -136,5 +138,90 @@ describe('OpenStreamWriter', () => {
       },
     });
     expect(lifecycle).toEqual(['close', 'abort:done']);
+  });
+
+  test('abort deactivates and runs local cleanup without waiting for a stuck write', async () => {
+    let releaseChunkPublish: (() => void) | undefined;
+    const lifecycle: string[] = [];
+    const writer = new OpenStreamWriter({
+      progressToken: 'token-stuck-abort',
+      publishFrame: async (frame): Promise<string | undefined> => {
+        if (frame.cvm.frameType === 'chunk') {
+          await new Promise<void>((resolve) => {
+            releaseChunkPublish = resolve;
+          });
+        }
+
+        return undefined;
+      },
+      onAbort: async (reason?: string): Promise<void> => {
+        lifecycle.push(`abort:${reason ?? ''}`);
+      },
+    });
+
+    const writePromise = writer.write('hello');
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+    await writer.abort('stuck publish');
+
+    expect(writer.isActive).toBe(false);
+    expect(lifecycle).toEqual(['abort:stuck publish']);
+
+    releaseChunkPublish?.();
+    await writePromise;
+  });
+
+  test('serializes concurrent writes before close', async () => {
+    const frames: OpenStreamProgress[] = [];
+    const writer = new OpenStreamWriter({
+      progressToken: 'token-concurrent-writes',
+      publishFrame: async (frame): Promise<string | undefined> => {
+        await new Promise((resolve) =>
+          setTimeout(resolve, frame.cvm.frameType === 'chunk' ? 5 : 0),
+        );
+        frames.push(frame);
+        return undefined;
+      },
+    });
+
+    await Promise.all([
+      writer.write('hello'),
+      writer.write('world'),
+      writer.close(),
+    ]);
+
+    expect(frames).toHaveLength(4);
+    expect(frames.map((frame) => frame.cvm.frameType)).toEqual([
+      'start',
+      'chunk',
+      'chunk',
+      'close',
+    ]);
+    expect(frames[1]).toMatchObject({
+      progress: 2,
+      cvm: {
+        type: 'open-stream',
+        frameType: 'chunk',
+        chunkIndex: 0,
+        data: 'hello',
+      },
+    });
+    expect(frames[2]).toMatchObject({
+      progress: 3,
+      cvm: {
+        type: 'open-stream',
+        frameType: 'chunk',
+        chunkIndex: 1,
+        data: 'world',
+      },
+    });
+    expect(frames[3]).toMatchObject({
+      progress: 4,
+      cvm: {
+        type: 'open-stream',
+        frameType: 'close',
+        lastChunkIndex: 1,
+      },
+    });
   });
 });

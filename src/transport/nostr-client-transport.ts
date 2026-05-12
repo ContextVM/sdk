@@ -125,6 +125,14 @@ export class NostrClientTransport
   extends BaseNostrTransport
   implements Transport
 {
+  private readonly pendingOutboundOpenStreamResolvers: Array<{
+    resolve: (value: {
+      progressToken: string;
+      stream: OpenStreamSession;
+    }) => void;
+    reject: (error: Error) => void;
+  }> = [];
+
   /** Public event handlers required by the Transport interface */
   public onmessage?: (message: JSONRPCMessage) => void;
   public onmessageWithContext:
@@ -316,6 +324,12 @@ export class NostrClientTransport
       await this.taskQueue.shutdown();
       this.unsubscribeAll();
       await this.disconnect();
+      const pendingOpenStreamError = new Error(
+        'Transport closed before outbound open-stream session was created',
+      );
+      for (const pending of this.pendingOutboundOpenStreamResolvers.splice(0)) {
+        pending.reject(pendingOpenStreamError);
+      }
       this.correlationStore.clear();
       this.seenEventIds.clear();
       this.oversizedReceiver.clear();
@@ -415,6 +429,23 @@ export class NostrClientTransport
             progressToken !== undefined ? String(progressToken) : undefined,
           originalRequestContext,
         });
+
+        if (
+          isRequest &&
+          message.method === 'tools/call' &&
+          progressToken !== undefined
+        ) {
+          const pending = this.pendingOutboundOpenStreamResolvers.shift();
+          if (pending) {
+            const normalizedProgressToken = String(progressToken);
+            pending.resolve({
+              progressToken: normalizedProgressToken,
+              stream: this.createOutboundOpenStreamSession(
+                normalizedProgressToken,
+              ),
+            });
+          }
+        }
       },
       giftWrapKind,
     );
@@ -537,6 +568,18 @@ export class NostrClientTransport
     progressToken: string,
   ): OpenStreamSession {
     return this.openStreamFactory.createOutboundSession(progressToken);
+  }
+
+  /**
+   * Resolves the next outbound CEP-41 session created from an SDK-generated progress token.
+   */
+  public prepareOutboundOpenStreamSession(): Promise<{
+    progressToken: string;
+    stream: OpenStreamSession;
+  }> {
+    return new Promise((resolve, reject) => {
+      this.pendingOutboundOpenStreamResolvers.push({ resolve, reject });
+    });
   }
 
   /**

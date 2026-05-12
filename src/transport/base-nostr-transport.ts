@@ -309,18 +309,7 @@ export abstract class BaseNostrTransport {
    */
   protected async publishEvent(event: NostrEvent): Promise<void> {
     try {
-      const controller = new AbortController();
-      try {
-        await withTimeout(
-          this.relayHandler.publish(event, {
-            abortSignal: controller.signal,
-          }),
-          DEFAULT_TIMEOUT_MS,
-          'Publish event timed out',
-        );
-      } finally {
-        controller.abort();
-      }
+      await this.relayHandler.publish(event);
       this.logger.debug('Published Nostr event', {
         eventId: event.id,
         kind: event.kind,

@@ -1,5 +1,90 @@
 # @contextvm/sdk
 
+## 0.11.6
+
+### Patch Changes
+
+- fix(relay): improve publish retry logic for different relay response types
+  - Don't treat duplicate relay responses as success-equivalent
+  - Don't retry terminal relay rejections like "mute"
+  - Don't retry unknown negative responses once a connected relay answered
+  - Throw specific error for relay-rejected publishes vs ambiguous failures
+  - Update tests to match new behavior
+  - Fix subscription to return early on EOSE instead of continuing to process
+
+## 0.11.5
+
+### Patch Changes
+
+- fix(relay): treat duplicate publish responses as success-equivalent
+
+## 0.11.4
+
+### Patch Changes
+
+- fix(transport): flush pending open-stream responses on probe-timeout eviction
+
+  Refactors session eviction logic for CEP-41 open streams to immediately remove the session while retaining enough state to flush pending responses. Adds an evicted client pubkeys set to prevent new notifications while allowing deferred final responses to be sent. Includes test coverage for the flush behavior.
+
+## 0.11.3
+
+### Patch Changes
+
+- fix(relay): handle ambiguous publish acknowledgements during relay rebuild
+
+  When a relay rebuild occurs during a publish attempt, the zero acknowledgements received could be ambiguous - either the publish failed or the relays were temporarily unavailable. This change introduces a generation counter to track relay rebuilds and retries the publish if it was interrupted by a rebuild, ensuring reliable event publication.
+
+## 0.11.2
+
+### Patch Changes
+
+- feat(transport): forward open-stream progress notifications to upstream handlers
+
+  Add support for forwarding progress notifications from open-stream sessions to
+  upstream transport handlers. The NostrClientTransport now invokes onmessage and
+  onmessageWithContext callbacks for progress notifications, and the callToolStream
+  function accepts a custom onprogress handler to allow consumers to receive and
+  handle progress updates.
+
+## 0.11.1
+
+### Patch Changes
+
+- refactor(transport): delegate progress-token generation to upstream MCP SDK
+
+  Improve CEP-41 open-stream tool calls by delegating progress-token generation to the upstream MCP SDK instead of manually injecting tokens in the client helper. This enables proper timeout reset behavior during long-running streamed tool calls and keeps the transport aligned with the SDK's `onprogress` flow.
+
+  Harden server-side progress-token correlation by scoping lookups to the originating client pubkey, preventing collisions when different clients reuse the same SDK-generated token. Update the transport routing and regression coverage accordingly.
+
+  Tighten the client open-stream bridge so pending outbound stream session preparation rejects cleanly if the transport closes before the SDK-generated progress token is observed.
+
+## 0.11.0
+
+### Minor Changes
+
+- a9e0433: Add CEP-41 open-ended stream transfer support over ContextVM transport.
+
+  This introduces open-stream framing over MCP [`notifications/progress`](docs/cep-41.md:10) using the request `progressToken` as the stream identifier, with support for `start`, `accept`, `chunk`, `ping`, `pong`, `close`, and `abort` frames.
+
+  It also adds SDK support for:
+  - client and server open-stream transport handling
+  - stream session lifecycle management, buffering, and keepalive timeouts
+  - ergonomic tool streaming via [`callToolStream()`](src/transport/call-tool-stream.ts:28)
+  - CEP-41 coverage across unit and end-to-end transport tests
+
+### Patch Changes
+
+- cda331b: fix(transport): ensure session cleanup and proper ordering in open streams
+  - Fix registry to remove sessions even when onClose/onAbort callbacks throw
+  - Add queuedBytes tracking to count unread chunks against buffer limits
+  - Release queued byte budget when chunks are consumed by iterator
+  - Add operation queue to writer to serialize concurrent writes before close
+  - Add tests for concurrent chunk/close processing and callback error handling
+
+- 109f1dc: refactor(relay): process relay pings individually with proper cleanup
+
+  Refactor the ping mechanism to process each relay separately instead of using a merged stream. Each relay now gets a unique ping ID and its own subscription that is properly cleaned up with a CLOSE message in a finally block. This ensures better isolation between relay pings and prevents potential race conditions when multiple relays respond.
+
 ## 0.10.0
 
 ### Minor Changes

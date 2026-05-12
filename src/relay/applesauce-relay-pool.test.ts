@@ -729,9 +729,10 @@ describe('ApplesauceRelayPool Integration', () => {
           next: (response) => {
             if (response === 'EOSE') {
               onEose?.();
-            } else {
-              onEvent(response);
+              return;
             }
+
+            onEvent(response);
           },
           error: () => {},
         });

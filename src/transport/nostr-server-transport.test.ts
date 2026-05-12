@@ -39,6 +39,7 @@ import {
 import {
   isJSONRPCRequest,
   JSONRPCMessage,
+  JSONRPCResponse,
 } from '@modelcontextprotocol/sdk/types.js';
 import { withServerPayments } from '../payments/server-transport-payments.js';
 
@@ -1597,6 +1598,155 @@ describe.serial('NostrServerTransport', () => {
     await server.close();
     await relayPool.disconnect();
   }, 15000);
+
+  test('removes the client session after an open-stream probe timeout abort', async () => {
+    const serverPrivateKey = bytesToHex(generateSecretKey());
+    const clientPublicKey = getPublicKey(generateSecretKey());
+
+    const serverTransport = new NostrServerTransport({
+      signer: new PrivateKeySigner(serverPrivateKey),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      encryptionMode: EncryptionMode.DISABLED,
+      openStream: { enabled: true },
+    });
+
+    const internalState = serverTransport.getInternalStateForTesting();
+    internalState.sessionStore.getOrCreateSession(clientPublicKey, false);
+
+    (
+      serverTransport as unknown as {
+        handleIncomingRequest: (
+          event: NostrEvent,
+          eventId: string,
+          request: {
+            id: string;
+            params?: { _meta?: { progressToken?: string } };
+          },
+          clientPubkey: string,
+          wrapKind?: number,
+        ) => void;
+      }
+    ).handleIncomingRequest(
+      {
+        id: 'b'.repeat(64),
+        pubkey: clientPublicKey,
+        created_at: Math.floor(Date.now() / 1000),
+        kind: 1,
+        tags: [],
+        content: '',
+        sig: 'c'.repeat(128),
+      } as NostrEvent,
+      'a'.repeat(64),
+      {
+        id: 'request-1',
+        params: {
+          _meta: {
+            progressToken: 'progress-1',
+          },
+        },
+      },
+      clientPublicKey,
+    );
+
+    const writer = internalState.openStreamWriters.get('a'.repeat(64));
+    expect(writer).toBeDefined();
+
+    await writer!.abort('Probe timeout');
+
+    expect(internalState.sessionStore.hasSession(clientPublicKey)).toBe(false);
+    expect(internalState.openStreamWriters.has('a'.repeat(64))).toBe(false);
+  });
+
+  test('flushes pending open-stream responses after probe-timeout session eviction', async () => {
+    const serverPrivateKey = bytesToHex(generateSecretKey());
+    const clientPublicKey = getPublicKey(generateSecretKey());
+
+    const serverTransport = new NostrServerTransport({
+      signer: new PrivateKeySigner(serverPrivateKey),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      encryptionMode: EncryptionMode.DISABLED,
+      openStream: { enabled: true },
+    });
+
+    const internalState = serverTransport.getInternalStateForTesting() as {
+      sessionStore: {
+        getOrCreateSession: (
+          clientPubkey: string,
+          isEncrypted: boolean,
+        ) => unknown;
+        hasSession: (clientPubkey: string) => boolean;
+      };
+      pendingOpenStreamResponses: Map<string, JSONRPCResponse>;
+      openStreamWriters: Map<
+        string,
+        { abort: (reason?: string) => Promise<void> }
+      >;
+    };
+    internalState.sessionStore.getOrCreateSession(clientPublicKey, false);
+
+    const handledResponses: JSONRPCResponse[] = [];
+    (
+      serverTransport as unknown as {
+        handleResponse: (response: JSONRPCResponse) => Promise<void>;
+      }
+    ).handleResponse = async (response: JSONRPCResponse): Promise<void> => {
+      handledResponses.push(response);
+    };
+
+    (
+      serverTransport as unknown as {
+        handleIncomingRequest: (
+          event: NostrEvent,
+          eventId: string,
+          request: {
+            id: string;
+            params?: { _meta?: { progressToken?: string } };
+          },
+          clientPubkey: string,
+          wrapKind?: number,
+        ) => void;
+      }
+    ).handleIncomingRequest(
+      {
+        id: 'b'.repeat(64),
+        pubkey: clientPublicKey,
+        created_at: Math.floor(Date.now() / 1000),
+        kind: 1,
+        tags: [],
+        content: '',
+        sig: 'c'.repeat(128),
+      } as NostrEvent,
+      'a'.repeat(64),
+      {
+        id: 'request-1',
+        params: {
+          _meta: {
+            progressToken: 'progress-1',
+          },
+        },
+      },
+      clientPublicKey,
+    );
+
+    internalState.pendingOpenStreamResponses.set('a'.repeat(64), {
+      jsonrpc: '2.0',
+      id: 'request-1',
+      result: {
+        content: [{ type: 'text', text: 'done' }],
+      },
+    });
+
+    const writer = internalState.openStreamWriters.get('a'.repeat(64));
+    expect(writer).toBeDefined();
+
+    await writer!.abort('Probe timeout');
+
+    expect(internalState.sessionStore.hasSession(clientPublicKey)).toBe(false);
+    expect(handledResponses).toHaveLength(1);
+    expect(internalState.pendingOpenStreamResponses.has('a'.repeat(64))).toBe(
+      false,
+    );
+  });
 
   test.serial(
     'withCommonToolSchemas injects schema hashes into direct and announced tools/list payloads',

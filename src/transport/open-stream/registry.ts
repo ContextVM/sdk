@@ -133,12 +133,18 @@ export class OpenStreamRegistry {
       sendPong: sessionOptions.sendPong ?? derivedSessionOptions.sendPong,
       sendAbort: sessionOptions.sendAbort ?? derivedSessionOptions.sendAbort,
       onClose: async () => {
-        await sessionOptions.onClose?.();
-        this.sessions.delete(progressToken);
+        try {
+          await sessionOptions.onClose?.();
+        } finally {
+          this.sessions.delete(progressToken);
+        }
       },
       onAbort: async (reason?: string) => {
-        await sessionOptions.onAbort?.(reason);
-        this.sessions.delete(progressToken);
+        try {
+          await sessionOptions.onAbort?.(reason);
+        } finally {
+          this.sessions.delete(progressToken);
+        }
       },
     });
 
