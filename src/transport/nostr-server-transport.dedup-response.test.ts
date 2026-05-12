@@ -131,8 +131,8 @@ describe.serial('NostrServerTransport duplicate response prevention', () => {
     });
     expect(
       state.correlationStore.getEventIdByProgressToken(
-        'c'.repeat(64),
         'token-1',
+        'c'.repeat(64),
       ),
     ).toBe('event1');
 
@@ -148,8 +148,8 @@ describe.serial('NostrServerTransport duplicate response prevention', () => {
     expect(state.correlationStore.getEventRoute('event1')).toBeUndefined();
     expect(
       state.correlationStore.getEventIdByProgressToken(
-        'c'.repeat(64),
         'token-1',
+        'c'.repeat(64),
       ),
     ).toBeUndefined();
   });
