@@ -49,7 +49,8 @@ export class ClientInboundNotificationDispatcher {
           });
           this.deps.onerror?.(err instanceof Error ? err : new Error(String(err)));
         });
-      return true;
+      // Allow progress notifications to fall through to the user's onmessage handler
+      return false;
     }
 
     if (

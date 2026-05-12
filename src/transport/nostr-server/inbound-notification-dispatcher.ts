@@ -74,7 +74,10 @@ export class InboundNotificationDispatcher {
 
       if (frame?.frameType === 'abort') {
         const progressToken = String(inboundMessage.params?.progressToken ?? '');
-        const eventId = this.deps.correlationStore.getEventIdByProgressToken(progressToken);
+        const eventId = this.deps.correlationStore.getEventIdByProgressToken(
+          progressToken,
+          event.pubkey,
+        );
         const writer = eventId ? this.deps.openStreamFactory.getWriter(eventId) : undefined;
 
         if (writer) {
@@ -94,7 +97,10 @@ export class InboundNotificationDispatcher {
       if (frame?.frameType === 'ping') {
         const progressToken = String(inboundMessage.params?.progressToken ?? '');
         const nonce = 'nonce' in frame && typeof frame.nonce === 'string' ? frame.nonce : '';
-        const eventId = this.deps.correlationStore.getEventIdByProgressToken(progressToken);
+        const eventId = this.deps.correlationStore.getEventIdByProgressToken(
+          progressToken,
+          event.pubkey,
+        );
         const writer = eventId ? this.deps.openStreamFactory.getWriter(eventId) : undefined;
 
         if (writer) {

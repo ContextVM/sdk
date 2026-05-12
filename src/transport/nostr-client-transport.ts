@@ -1,33 +1,23 @@
 import {
-  InitializeResult,
-  InitializeResultSchema,
-  ListPromptsResultSchema,
-  ListResourcesResultSchema,
-  ListResourceTemplatesResultSchema,
-  ListToolsResultSchema,
+  type InitializeResult,
   NotificationSchema,
   type JSONRPCMessage,
   isJSONRPCRequest,
   isJSONRPCNotification,
-  isJSONRPCResultResponse,
-  isJSONRPCErrorResponse,
   type JSONRPCResponse,
 } from '@modelcontextprotocol/sdk/types.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import {
-  CTXVM_MESSAGES_KIND,
   DEFAULT_BOOTSTRAP_RELAY_URLS,
   DEFAULT_TIMEOUT_MS,
   DEFAULT_LRU_SIZE,
   INITIALIZE_METHOD,
-  NOSTR_TAGS,
 } from '../core/index.js';
 import { LruCache } from '../core/utils/lru-cache.js';
 import {
   BaseNostrTransport,
   BaseNostrTransportOptions,
 } from './base-nostr-transport.js';
-import { getNostrEventTag } from '../core/utils/serializers.js';
 import { NostrEvent } from 'nostr-tools';
 
 import { LogLevel } from '../core/utils/logger.js';
@@ -40,7 +30,6 @@ import {
 import { parseServerIdentity } from './nostr-client/server-identity.js';
 import { resolveOperationalRelays } from './nostr-client/relay-resolution.js';
 import { StatelessModeHandler } from './nostr-client/stateless-mode-handler.js';
-import { queryTags } from '../core/utils/utils.js';
 import {
   OversizedTransferReceiver,
   type TransferPolicy,
@@ -49,10 +38,10 @@ import {
   OpenStreamSession,
 } from './open-stream/index.js';
 
-import {
-  parseDiscoveredPeerCapabilities,
-  ClientCapabilityNegotiator,
-} from './capability-negotiator.js';
+import { ClientCapabilityNegotiator } from './capability-negotiator.js';
+import { ClientInboundCoordinator } from './nostr-client/inbound-coordinator.js';
+import { ServerMetadataStore } from './nostr-client/server-metadata-store.js';
+import { ClientOutboundSender } from './nostr-client/outbound-sender.js';
 import { ClientInboundNotificationDispatcher } from './nostr-client/inbound-notification-dispatcher.js';
 import { ClientEventPipeline } from './nostr-client/event-pipeline.js';
 import { ClientOpenStreamFactory } from './nostr-client/open-stream-factory.js';
@@ -60,7 +49,6 @@ import {
   DEFAULT_CHUNK_SIZE,
   DEFAULT_OVERSIZED_THRESHOLD,
 } from './oversized-transfer/constants.js';
-import { sendOversizedClientRequest } from './nostr-client/oversized-client-sender.js';
 import type { OpenStreamTransportPolicy } from './open-stream-policy.js';
 
 /**
@@ -158,27 +146,14 @@ export class NostrClientTransport
   private readonly discoveryRelayUrls: readonly string[];
   /** Optional non-authoritative operational relays used as a fast fallback. */
   private readonly fallbackOperationalRelayUrls: readonly string[];
-  /** The server's initialize event, if received */
-  private serverInitializeEvent: NostrEvent | undefined;
-
-  /** The latest server tools/list response event envelope, if received. */
-  private serverToolsListEvent: NostrEvent | undefined;
-  /** The latest server prompts/list response event envelope, if received. */
-  private serverPromptsListEvent: NostrEvent | undefined;
-  /** The latest server resources/list response event envelope, if received. */
-  private serverResourcesListEvent: NostrEvent | undefined;
-  /** The latest server resources/templates/list response event envelope, if received. */
-  private serverResourceTemplatesListEvent: NostrEvent | undefined;
-
-  /** Whether the server has advertised CEP-22 oversized transfer support. */
-  private serverSupportsOversizedTransfer: boolean = false;
-
-  /** Whether the server has advertised CEP-41 open stream support. */
-  private serverSupportsOpenStream: boolean = false;
+  /** Stores server discovery metadata learned from inbound events. */
+  private readonly metadataStore: ServerMetadataStore;
 
   private readonly capabilityNegotiator: ClientCapabilityNegotiator;
   private readonly inboundNotificationDispatcher: ClientInboundNotificationDispatcher;
   private readonly eventPipeline: ClientEventPipeline;
+  private readonly inboundCoordinator: ClientInboundCoordinator;
+  private readonly outboundSender: ClientOutboundSender;
 
   // Oversized-transfer sender settings
   private readonly oversizedEnabled: boolean;
@@ -226,6 +201,7 @@ export class NostrClientTransport
       },
     });
     this.statelessHandler = new StatelessModeHandler();
+    this.metadataStore = new ServerMetadataStore();
 
     const ot = options.oversizedTransfer;
     this.oversizedEnabled = ot?.enabled ?? true;
@@ -269,6 +245,40 @@ export class NostrClientTransport
       giftWrapMode: this.giftWrapMode,
       logger: this.logger,
       onerror: (error) => this.onerror?.(error),
+    });
+
+    this.inboundCoordinator = new ClientInboundCoordinator({
+      capabilityNegotiator: this.capabilityNegotiator,
+      correlationStore: this.correlationStore,
+      notificationDispatcher: this.inboundNotificationDispatcher,
+      metadataStore: this.metadataStore,
+      unwrapEvent: this.eventPipeline.unwrap.bind(this.eventPipeline),
+      convertNostrEventToMcpMessage:
+        this.convertNostrEventToMcpMessage.bind(this),
+      handleResponse: this.handleResponse.bind(this),
+      handleNotification: this.handleNotification.bind(this),
+      logger: this.logger,
+      onerror: (error: Error) => this.onerror?.(error),
+    });
+
+    this.outboundSender = new ClientOutboundSender({
+      serverPubkey: this.serverPubkey,
+      correlationStore: this.correlationStore,
+      capabilityNegotiator: this.capabilityNegotiator,
+      oversizedEnabled: this.oversizedEnabled,
+      oversizedThreshold: this.oversizedThreshold,
+      oversizedChunkSize: this.oversizedChunkSize,
+      oversizedAcceptTimeoutMs: this.oversizedAcceptTimeoutMs,
+      serverSupportsOversizedTransfer: () =>
+        this.metadataStore.getServerSupportsOversizedTransfer(),
+      createRecipientTags: this.createRecipientTags.bind(this),
+      sendMcpMessage: this.sendMcpMessage.bind(this),
+      waitForAccept: this.oversizedReceiver.waitForAccept.bind(
+        this.oversizedReceiver,
+      ),
+      getOriginalRequestContext: this.getOriginalRequestContext.bind(this),
+      resolvePendingOpenStream: this.resolvePendingOutboundOpenStream.bind(this),
+      logger: this.logger,
     });
   }
 
@@ -331,6 +341,7 @@ export class NostrClientTransport
         pending.reject(pendingOpenStreamError);
       }
       this.correlationStore.clear();
+      this.metadataStore.clear();
       this.seenEventIds.clear();
       this.oversizedReceiver.clear();
       this.openStreamFactory.getReceiver().clear();
@@ -360,7 +371,7 @@ export class NostrClientTransport
         return;
       }
 
-      await this.sendRequest(message);
+      await this.outboundSender.sendRequest(message);
     } catch (error) {
       this.onerror?.(error instanceof Error ? error : new Error(String(error)));
       this.logAndRethrowError('Error sending message', error, {
@@ -375,135 +386,6 @@ export class NostrClientTransport
             : undefined,
       });
     }
-  }
-
-  /**
-   * Sends a request and registers it for correlation tracking.
-   * @param message - The JSON-RPC message to send
-   * @returns The ID of the published Nostr event
-   */
-  private async sendRequest(message: JSONRPCMessage): Promise<string> {
-    const isRequest = isJSONRPCRequest(message);
-
-    // --- CEP-22 Oversized Transfer (proactive path) ---
-    if (this.oversizedEnabled && isRequest) {
-      const progressToken = message.params?._meta?.progressToken;
-      if (progressToken !== undefined) {
-        const serialized = JSON.stringify(message);
-        const byteLength = new TextEncoder().encode(serialized).byteLength;
-        if (byteLength > this.oversizedThreshold) {
-          await this.sendOversizedRequest(
-            message,
-            serialized,
-            String(progressToken),
-          );
-          return 'oversized-transfer';
-        }
-      }
-    }
-
-    const tags = this.capabilityNegotiator.buildOutboundTags({
-      baseTags: this.createRecipientTags(this.serverPubkey),
-      includeDiscovery: isRequest,
-    });
-
-    const giftWrapKind = this.capabilityNegotiator.chooseOutboundGiftWrapKind();
-
-    const eventId = await this.sendMcpMessage(
-      message,
-      this.serverPubkey,
-      CTXVM_MESSAGES_KIND,
-      tags,
-      undefined,
-      (eventId) => {
-        const progressToken = isRequest
-          ? message.params?._meta?.progressToken
-          : undefined;
-        const originalRequestContext = isRequest
-          ? this.getOriginalRequestContext(message)
-          : undefined;
-        this.correlationStore.registerRequest(eventId, {
-          originalRequestId: isRequest ? message.id : null,
-          isInitialize: isRequest && message.method === INITIALIZE_METHOD,
-          progressToken:
-            progressToken !== undefined ? String(progressToken) : undefined,
-          originalRequestContext,
-        });
-
-        if (
-          isRequest &&
-          message.method === 'tools/call' &&
-          progressToken !== undefined
-        ) {
-          const pending = this.pendingOutboundOpenStreamResolvers.shift();
-          if (pending) {
-            const normalizedProgressToken = String(progressToken);
-            pending.resolve({
-              progressToken: normalizedProgressToken,
-              stream: this.createOutboundOpenStreamSession(
-                normalizedProgressToken,
-              ),
-            });
-          }
-        }
-      },
-      giftWrapKind,
-    );
-
-    if (isRequest) {
-      this.capabilityNegotiator.markDiscoveryTagsSent();
-    }
-
-    return eventId;
-  }
-
-  //Splits an oversized request into CEP-22 transfer frames and sends them sequentially. Waits for an `accept` frame from the server when the server's support is not yet known.
-
-  private async sendOversizedRequest(
-    originalMessage: Extract<
-      JSONRPCMessage,
-      { id: string | number; method: string }
-    >,
-    serialized: string,
-    progressToken: string,
-  ): Promise<void> {
-    const frameRecipientTags = this.createRecipientTags(this.serverPubkey);
-    const startFrameTags = this.capabilityNegotiator.buildOutboundTags({
-      baseTags: frameRecipientTags,
-      includeDiscovery: true,
-    });
-    const endFrameEventId = await sendOversizedClientRequest(
-      serialized,
-      progressToken,
-      {
-        chunkSizeBytes: this.oversizedChunkSize,
-        acceptTimeoutMs: this.oversizedAcceptTimeoutMs,
-        serverPubkey: this.serverPubkey,
-        serverSupportsOversizedTransfer: this.serverSupportsOversizedTransfer,
-        giftWrapKind: this.capabilityNegotiator.chooseOutboundGiftWrapKind(),
-        startFrameTags,
-        continuationFrameTags: frameRecipientTags,
-      },
-      {
-        sendMcpMessage: this.sendMcpMessage.bind(this),
-        waitForAccept: this.oversizedReceiver.waitForAccept.bind(
-          this.oversizedReceiver,
-        ),
-        logger: this.logger,
-      },
-    );
-
-    // Register the original request for correlating the final response.
-    if (endFrameEventId) {
-      this.correlationStore.registerRequest(endFrameEventId, {
-        originalRequestId: originalMessage.id,
-        isInitialize: originalMessage.method === INITIALIZE_METHOD,
-        progressToken,
-        originalRequestContext: this.getOriginalRequestContext(originalMessage),
-      });
-    }
-
-    this.capabilityNegotiator.markDiscoveryTagsSent();
   }
 
   private getOriginalRequestContext(
@@ -582,6 +464,18 @@ export class NostrClientTransport
     });
   }
 
+  /** Resolves the next outbound open-stream placeholder with an active session. */
+  private resolvePendingOutboundOpenStream(progressToken: string): void {
+    const pending = this.pendingOutboundOpenStreamResolvers.shift();
+    if (!pending) {
+      return;
+    }
+    pending.resolve({
+      progressToken,
+      stream: this.createOutboundOpenStreamSession(progressToken),
+    });
+  }
+
   /**
    * Returns the CEP-41 stream session for a progress token when it already exists.
    */
@@ -619,115 +513,7 @@ export class NostrClientTransport
    * @param event - The incoming Nostr event
    */
   private async processIncomingEvent(event: NostrEvent): Promise<void> {
-    try {
-      const unwrapped = await this.eventPipeline.unwrap(event);
-      if (!unwrapped) {
-        return;
-      }
-      const nostrEvent = unwrapped.event;
-
-      this.learnServerDiscovery(nostrEvent);
-
-      const eTag = getNostrEventTag(nostrEvent.tags, 'e');
-
-      if (!this.serverInitializeEvent && eTag) {
-        try {
-          const content = JSON.parse(nostrEvent.content);
-          const parse = InitializeResultSchema.safeParse(content.result);
-          if (parse.success) {
-            this.serverInitializeEvent = nostrEvent;
-            this.logger.info('Received server initialize event', {
-              eventId: nostrEvent.id,
-            });
-          }
-        } catch {
-          this.logger.debug('Event is not a valid initialize response', {
-            eventId: nostrEvent.id,
-          });
-        }
-      }
-
-      const mcpMessage = this.convertNostrEventToMcpMessage(nostrEvent);
-
-      if (!mcpMessage) {
-        this.logger.error(
-          'Skipping invalid Nostr event with malformed JSON content',
-          { eventId: nostrEvent.id, pubkey: nostrEvent.pubkey },
-        );
-        return;
-      }
-
-      // Message classification MUST be based on JSON-RPC type, not on the presence of an `e` tag.
-      // CEP-8 notifications are correlated (include `e`) but are still notifications.
-      if (
-        isJSONRPCResultResponse(mcpMessage) ||
-        isJSONRPCErrorResponse(mcpMessage)
-      ) {
-        if (!eTag) {
-          this.logger.warn(
-            'Received JSON-RPC response without correlation `e` tag',
-            {
-              eventId: nostrEvent.id,
-            },
-          );
-          return;
-        }
-
-        if (!this.correlationStore.hasPendingRequest(eTag)) {
-          this.logger.warn('Received response for unknown/expired request', {
-            eventId: nostrEvent.id,
-            eTag,
-            reason:
-              'Request not found in pending set - may be duplicate or late response',
-          });
-          return;
-        }
-
-        // Capture outer Nostr event envelope for capability list JSON-RPC responses.
-        // This allows consumers to inspect Nostr tags (e.g. CEP-8 `cap` tags)
-        // that are not present in the JSON-RPC payload.
-        if (isJSONRPCResultResponse(mcpMessage)) {
-          const result = mcpMessage.result;
-          if (ListToolsResultSchema.safeParse(result).success) {
-            this.serverToolsListEvent = nostrEvent;
-          } else if (ListResourcesResultSchema.safeParse(result).success) {
-            this.serverResourcesListEvent = nostrEvent;
-          } else if (
-            ListResourceTemplatesResultSchema.safeParse(result).success
-          ) {
-            this.serverResourceTemplatesListEvent = nostrEvent;
-          } else if (ListPromptsResultSchema.safeParse(result).success) {
-            this.serverPromptsListEvent = nostrEvent;
-          }
-        }
-
-        this.handleResponse(eTag, mcpMessage);
-        return;
-      }
-
-      if (isJSONRPCNotification(mcpMessage)) {
-        this.handleNotification(nostrEvent.id, eTag ?? undefined, mcpMessage);
-        return;
-      }
-
-      this.logger.warn('Received unsupported JSON-RPC message type', {
-        eventId: nostrEvent.id,
-        hasETag: !!eTag,
-      });
-    } catch (error) {
-      this.logger.error('Error handling incoming Nostr event', {
-        error: error instanceof Error ? error.message : String(error),
-        stack: error instanceof Error ? error.stack : undefined,
-        eventId: event.id,
-        pubkey: event.pubkey,
-        kind: event.kind,
-      });
-      this.onerror?.(
-        error instanceof Error
-          ? error
-          : new Error('Failed to handle incoming Nostr event'),
-      );
-    }
+    await this.inboundCoordinator.processIncomingEvent(event);
   }
 
   /**
@@ -735,7 +521,7 @@ export class NostrClientTransport
    * @returns The server initialize event or undefined
    */
   public getServerInitializeEvent(): NostrEvent | undefined {
-    return this.serverInitializeEvent;
+    return this.metadataStore.getServerInitializeEvent();
   }
 
   /**
@@ -743,19 +529,7 @@ export class NostrClientTransport
    * @returns The parsed initialize result or undefined when unavailable or invalid
    */
   public getServerInitializeResult(): InitializeResult | undefined {
-    if (!this.serverInitializeEvent) {
-      return undefined;
-    }
-
-    try {
-      const content = JSON.parse(this.serverInitializeEvent.content) as {
-        result?: unknown;
-      };
-      const parse = InitializeResultSchema.safeParse(content.result);
-      return parse.success ? parse.data : undefined;
-    } catch {
-      return undefined;
-    }
+    return this.metadataStore.getServerInitializeResult();
   }
 
   /**
@@ -763,8 +537,7 @@ export class NostrClientTransport
    * @returns True when the initialize event contains the support_encryption tag
    */
   public serverSupportsEncryption(): boolean {
-    return queryTags(this.serverInitializeEvent, NOSTR_TAGS.SUPPORT_ENCRYPTION)
-      .isFlag;
+    return this.metadataStore.serverSupportsEncryption();
   }
 
   /**
@@ -772,10 +545,7 @@ export class NostrClientTransport
    * @returns True when the initialize event contains the support_encryption_ephemeral tag
    */
   public serverSupportsEphemeralEncryption(): boolean {
-    return queryTags(
-      this.serverInitializeEvent,
-      NOSTR_TAGS.SUPPORT_ENCRYPTION_EPHEMERAL,
-    ).isFlag;
+    return this.metadataStore.serverSupportsEphemeralEncryption();
   }
 
   /**
@@ -783,10 +553,7 @@ export class NostrClientTransport
    * @returns The name tag value or undefined
    */
   public getServerInitializeName(): string | undefined {
-    return getNostrEventTag(
-      this.serverInitializeEvent?.tags ?? [],
-      NOSTR_TAGS.NAME,
-    );
+    return this.metadataStore.getServerInitializeName();
   }
 
   /**
@@ -794,10 +561,7 @@ export class NostrClientTransport
    * @returns The about tag value or undefined
    */
   public getServerInitializeAbout(): string | undefined {
-    return getNostrEventTag(
-      this.serverInitializeEvent?.tags ?? [],
-      NOSTR_TAGS.ABOUT,
-    );
+    return this.metadataStore.getServerInitializeAbout();
   }
 
   /**
@@ -805,10 +569,7 @@ export class NostrClientTransport
    * @returns The website tag value or undefined
    */
   public getServerInitializeWebsite(): string | undefined {
-    return getNostrEventTag(
-      this.serverInitializeEvent?.tags ?? [],
-      NOSTR_TAGS.WEBSITE,
-    );
+    return this.metadataStore.getServerInitializeWebsite();
   }
 
   /**
@@ -816,82 +577,27 @@ export class NostrClientTransport
    * @returns The picture tag value or undefined
    */
   public getServerInitializePicture(): string | undefined {
-    return getNostrEventTag(
-      this.serverInitializeEvent?.tags ?? [],
-      NOSTR_TAGS.PICTURE,
-    );
+    return this.metadataStore.getServerInitializePicture();
   }
 
   /** Gets the server's most recently observed tools/list event envelope, if any. */
   public getServerToolsListEvent(): NostrEvent | undefined {
-    return this.serverToolsListEvent;
+    return this.metadataStore.getServerToolsListEvent();
   }
 
   /** Gets the server's most recently observed resources/list event envelope, if any. */
   public getServerResourcesListEvent(): NostrEvent | undefined {
-    return this.serverResourcesListEvent;
+    return this.metadataStore.getServerResourcesListEvent();
   }
 
   /** Gets the server's most recently observed resources/templates/list event envelope, if any. */
   public getServerResourceTemplatesListEvent(): NostrEvent | undefined {
-    return this.serverResourceTemplatesListEvent;
+    return this.metadataStore.getServerResourceTemplatesListEvent();
   }
 
   /** Gets the server's most recently observed prompts/list event envelope, if any. */
   public getServerPromptsListEvent(): NostrEvent | undefined {
-    return this.serverPromptsListEvent;
-  }
-
-  private learnServerDiscovery(event: NostrEvent): void {
-    if (!Array.isArray(event.tags)) {
-      return;
-    }
-
-    const discovered = parseDiscoveredPeerCapabilities(event.tags);
-    if (discovered.discoveryTags.length === 0) {
-      return;
-    }
-
-    this.capabilityNegotiator.learnServerCapabilities(discovered);
-    this.serverSupportsOversizedTransfer ||=
-      discovered.supportsOversizedTransfer;
-    this.serverSupportsOpenStream ||= discovered.supportsOpenStream;
-
-    if (!this.serverInitializeEvent) {
-      this.serverInitializeEvent = event;
-      this.capabilityNegotiator.setServerInitializeEvent(event);
-      this.logger.info('Learned server discovery tags from inbound event', {
-        eventId: event.id,
-      });
-      return;
-    }
-
-    const currentHasInitializeResult = InitializeResultSchema.safeParse(
-      this.getInitializeResultCandidate(event),
-    ).success;
-    const existingHasInitializeResult = InitializeResultSchema.safeParse(
-      this.getInitializeResultCandidate(this.serverInitializeEvent),
-    ).success;
-
-    if (!existingHasInitializeResult && currentHasInitializeResult) {
-      this.serverInitializeEvent = event;
-      this.capabilityNegotiator.setServerInitializeEvent(event);
-      this.logger.info(
-        'Upgraded learned server discovery event to initialize response',
-        {
-          eventId: event.id,
-        },
-      );
-    }
-  }
-
-  private getInitializeResultCandidate(event: NostrEvent): unknown {
-    try {
-      const content = JSON.parse(event.content) as { result?: unknown };
-      return content.result;
-    } catch {
-      return undefined;
-    }
+    return this.metadataStore.getServerPromptsListEvent();
   }
 
   private async resolveOperationalRelayHandler(): Promise<void> {
@@ -974,10 +680,6 @@ export class NostrClientTransport
         return;
       }
 
-      if (this.inboundNotificationDispatcher.tryIntercept(mcpMessage, eventId, correlatedEventId)) {
-        return;
-      }
-
       this.onmessage?.(mcpMessage);
       this.onmessageWithContext?.(mcpMessage, {
         eventId,
@@ -1008,11 +710,12 @@ export class NostrClientTransport
       discoveryRelayUrls: [...this.discoveryRelayUrls],
       fallbackOperationalRelayUrls: [...this.fallbackOperationalRelayUrls],
       relayUrls: this.relayHandler.getRelayUrls?.() ?? [],
-      serverInitializeEvent: this.serverInitializeEvent,
-      serverToolsListEvent: this.serverToolsListEvent,
-      serverResourcesListEvent: this.serverResourcesListEvent,
-      serverResourceTemplatesListEvent: this.serverResourceTemplatesListEvent,
-      serverPromptsListEvent: this.serverPromptsListEvent,
+      serverInitializeEvent: this.metadataStore.getServerInitializeEvent(),
+      serverToolsListEvent: this.metadataStore.getServerToolsListEvent(),
+      serverResourcesListEvent: this.metadataStore.getServerResourcesListEvent(),
+      serverResourceTemplatesListEvent:
+        this.metadataStore.getServerResourceTemplatesListEvent(),
+      serverPromptsListEvent: this.metadataStore.getServerPromptsListEvent(),
       oversizedReceiver: this.oversizedReceiver,
       openStreamReceiver: this.openStreamFactory.getReceiver(),
     };

@@ -202,17 +202,28 @@ export class CorrelationStore {
   /**
    * Gets the event ID for a given progress token.
    *
-   * @param clientPubkey The client's public key
    * @param progressToken The progress token
+   * @param clientPubkey Optional client pubkey for direct lookup
    * @returns The event ID, or undefined if not found
    */
   getEventIdByProgressToken(
-    clientPubkey: string,
     progressToken: string,
+    clientPubkey?: string,
   ): string | undefined {
-    return this.progressTokenToEventId.get(
-      this.getProgressTokenKey(clientPubkey, progressToken),
-    );
+    if (clientPubkey) {
+      return this.progressTokenToEventId.get(
+        this.getProgressTokenKey(clientPubkey, progressToken),
+      );
+    }
+
+    const suffix = `:${progressToken}`;
+    for (const [key, eventId] of this.progressTokenToEventId.entries()) {
+      if (key.endsWith(suffix)) {
+        return eventId;
+      }
+    }
+
+    return undefined;
   }
 
   /**

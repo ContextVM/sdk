@@ -1,9 +1,7 @@
 import {
   type ListToolsResult,
-  isJSONRPCRequest,
   isJSONRPCNotification,
   type JSONRPCMessage,
-  type JSONRPCRequest,
   type JSONRPCResponse,
   isJSONRPCResultResponse,
   isJSONRPCErrorResponse,
@@ -17,20 +15,12 @@ import {
 import {
   CTXVM_MESSAGES_KIND,
   DEFAULT_TIMEOUT_MS,
-  EPHEMERAL_GIFT_WRAP_KIND,
-  GIFT_WRAP_KIND,
   NOSTR_TAGS,
-  NOTIFICATIONS_INITIALIZED_METHOD,
   DEFAULT_LRU_SIZE,
 } from '../core/index.js';
-import { GiftWrapMode } from '../core/interfaces.js';
 import { NostrEvent } from 'nostr-tools';
 import { LogLevel } from '../core/utils/logger.js';
-import {
-  injectClientPubkey,
-  injectRequestEventId,
-  withTimeout,
-} from '../core/utils/utils.js';
+import { withTimeout } from '../core/utils/utils.js';
 import { CorrelationStore } from './nostr-server/correlation-store.js';
 import { ClientSession, SessionStore } from './nostr-server/session-store.js';
 import { LruCache } from '../core/utils/lru-cache.js';
@@ -50,22 +40,20 @@ import {
   type TransferPolicy,
 } from './oversized-transfer/index.js';
 import {
-  OpenStreamWriter,
-} from './open-stream/index.js';
-import {
   DEFAULT_CHUNK_SIZE,
   DEFAULT_OVERSIZED_THRESHOLD,
 } from './oversized-transfer/constants.js';
-import {
-  learnPeerCapabilities,
-  ServerCapabilityNegotiator,
-} from './capability-negotiator.js';
+import { ServerCapabilityNegotiator } from './capability-negotiator.js';
 import type { OpenStreamTransportPolicy } from './open-stream-policy.js';
 import { InboundNotificationDispatcher } from './nostr-server/inbound-notification-dispatcher.js';
 import { OutboundResponseRouter } from './nostr-server/outbound-response-router.js';
+import { OutboundNotificationBroadcaster } from './nostr-server/outbound-notification-broadcaster.js';
 import { ServerOpenStreamFactory } from './nostr-server/open-stream-factory.js';
 import { ServerEventPipeline } from './nostr-server/event-pipeline.js';
+import { ServerInboundCoordinator } from './nostr-server/inbound-coordinator.js';
+import type { InboundMiddlewareFn } from './middleware.js';
 
+export type { InboundMiddlewareFn } from './middleware.js';
 /**
  * Options for configuring the NostrServerTransport.
  */
@@ -165,11 +153,6 @@ export type ListToolsAnnouncementTagsProducer = (
   result: ListToolsResult,
 ) => string[][];
 
-export type InboundMiddlewareFn = (
-  message: JSONRPCMessage,
-  ctx: { clientPubkey: string; clientPmis?: readonly string[] },
-  forward: (message: JSONRPCMessage) => Promise<void>,
-) => Promise<void>;
 
 /**
  * A server-side transport layer for CTXVM that uses Nostr events for communication.
@@ -225,8 +208,10 @@ export class NostrServerTransport
   private readonly capabilityNegotiator: ServerCapabilityNegotiator;
   private readonly openStreamFactory: ServerOpenStreamFactory;
   private readonly eventPipeline: ServerEventPipeline;
+  private readonly inboundCoordinator: ServerInboundCoordinator;
   private readonly inboundNotificationDispatcher: InboundNotificationDispatcher;
   private readonly outboundResponseRouter: OutboundResponseRouter;
+  private readonly outboundNotificationBroadcaster: OutboundNotificationBroadcaster;
 
   constructor(options: NostrServerTransportOptions) {
     super('nostr-server-transport', options);
@@ -358,9 +343,35 @@ export class NostrServerTransport
       handleResponse: async (response) => {
         await this.outboundResponseRouter.route(response);
       },
+      sessionStore: this.sessionStore,
+      onClientSessionEvicted: this.onClientSessionEvicted,
       correlationStore: this.correlationStore,
       policy: options.openStream?.policy,
       logger: this.logger,
+    });
+
+    this.inboundCoordinator = new ServerInboundCoordinator({
+      sessionStore: this.sessionStore,
+      correlationStore: this.correlationStore,
+      authorizationPolicy: this.authorizationPolicy,
+      openStreamFactory: this.openStreamFactory,
+      inboundMiddlewares: this.inboundMiddlewares,
+      injectClientPubkey: this.injectClientPubkey,
+      shouldInjectRequestEventId: this.shouldInjectRequestEventId,
+      oversizedEnabled: this.oversizedEnabled,
+      openStreamEnabled: this.openStreamEnabled,
+      giftWrapMode: this.giftWrapMode,
+      sendMcpMessage: this.sendMcpMessage.bind(this),
+      createResponseTags: (clientPubkey, requestId) =>
+        this.createResponseTags(clientPubkey, String(requestId)),
+      getOrCreateClientSession: this.getOrCreateClientSession.bind(this),
+      forwardMessage: async (msg: JSONRPCMessage, clientPubkey: string) => {
+        this.onmessage?.(msg);
+        this.onmessageWithContext?.(msg, { clientPubkey });
+        return true;
+      },
+      logger: this.logger,
+      onerror: (error) => this.onerror?.(error),
     });
 
     this.inboundNotificationDispatcher = new InboundNotificationDispatcher({
@@ -369,14 +380,25 @@ export class NostrServerTransport
       openStreamFactory: this.openStreamFactory,
       correlationStore: this.correlationStore,
       sendNotification: this.sendNotification.bind(this),
-      handleIncomingRequest: this.handleIncomingRequest.bind(this),
-      handleIncomingNotification: this.handleIncomingNotification.bind(this),
-      cleanupDroppedRequest: this.cleanupDroppedRequest.bind(this),
+      handleIncomingRequest: this.inboundCoordinator.handleIncomingRequest.bind(
+        this.inboundCoordinator,
+      ),
+      handleIncomingNotification:
+        this.inboundCoordinator.handleIncomingNotification.bind(
+          this.inboundCoordinator,
+        ),
+      cleanupDroppedRequest: this.inboundCoordinator.cleanupDroppedRequest.bind(
+        this.inboundCoordinator,
+      ),
       shouldInjectRequestEventId: this.shouldInjectRequestEventId,
       injectClientPubkey: this.injectClientPubkey,
       logger: this.logger,
       onerror: (error) => this.onerror?.(error),
     });
+
+    this.inboundCoordinator.setNotificationDispatcher(this.inboundNotificationDispatcher);
+
+
 
     this.outboundResponseRouter = new OutboundResponseRouter({
       correlationStore: this.correlationStore,
@@ -393,6 +415,15 @@ export class NostrServerTransport
       createResponseTags: this.createResponseTags.bind(this),
       chooseGiftWrapKind: this.capabilityNegotiator.chooseOutboundGiftWrapKind.bind(this.capabilityNegotiator),
       sendMcpMessage: this.sendMcpMessage.bind(this),
+      logger: this.logger,
+      onerror: (error) => this.onerror?.(error),
+    });
+
+    this.outboundNotificationBroadcaster = new OutboundNotificationBroadcaster({
+      correlationStore: this.correlationStore,
+      sessionStore: this.sessionStore,
+      sendNotification: this.sendNotification.bind(this),
+      enqueueTask: this.taskQueue.add.bind(this.taskQueue),
       logger: this.logger,
       onerror: (error) => this.onerror?.(error),
     });
@@ -619,69 +650,7 @@ export class NostrServerTransport
     }
   }
 
-  /**
-   * Handles incoming requests with correlation tracking.
-   * @param eventId The Nostr event ID.
-   * @param request The request message.
-   * @param clientPubkey The client's public key.
-   */
-  private handleIncomingRequest(
-    event: NostrEvent,
-    eventId: string,
-    request: JSONRPCRequest,
-    clientPubkey: string,
-    wrapKind?: number,
-  ): void {
-    // Store the original request ID for later restoration
-    const originalRequestId = request.id;
-    // Use the unique Nostr event ID as the MCP request ID to avoid collisions
-    request.id = eventId;
 
-    // Register the event route in the correlation store
-    const progressToken = request.params?._meta?.progressToken;
-    this.correlationStore.registerEventRoute(
-      eventId,
-      clientPubkey,
-      originalRequestId,
-      progressToken ? String(progressToken) : undefined,
-      wrapKind,
-      this.shouldInjectRequestEventId ? event : undefined,
-    );
-
-    this.openStreamFactory.createWriterIfEnabled(
-      eventId,
-      clientPubkey,
-      progressToken ? String(progressToken) : undefined,
-    );
-  }
-
-  /**
-   * Cleans up request correlation for a request that was dropped by middleware.
-   */
-  private cleanupDroppedRequest(message: JSONRPCMessage): void {
-    if (!isJSONRPCRequest(message)) {
-      return;
-    }
-
-    this.correlationStore.popEventRoute(String(message.id));
-  }
-
-  /**
-   * Handles incoming notifications.
-   * @param clientPubkey The client's public key.
-   * @param notification The notification message.
-   */
-  private handleIncomingNotification(
-    clientPubkey: string,
-    notification: JSONRPCMessage,
-  ): void {
-    if (
-      isJSONRPCNotification(notification) &&
-      notification.method === NOTIFICATIONS_INITIALIZED_METHOD
-    ) {
-      this.sessionStore.markInitialized(clientPubkey);
-    }
-  }
 
   /**
    * Handles response messages by finding the original request and routing back to client.
@@ -715,66 +684,7 @@ export class NostrServerTransport
   private async handleNotification(
     notification: JSONRPCMessage,
   ): Promise<void> {
-    try {
-      // Special handling for progress notifications
-      // TODO: Add handling for `notifications/resources/updated`, as they need to be associated with an id
-      if (
-        isJSONRPCNotification(notification) &&
-        notification.method === 'notifications/progress' &&
-        notification.params?.progressToken
-      ) {
-        const token = String(notification.params.progressToken);
-
-        // Use O(1) lookup for progress token routing
-        const nostrEventId =
-          this.correlationStore.getEventIdByProgressToken(token);
-
-        if (nostrEventId) {
-          const route = this.correlationStore.getEventRoute(nostrEventId);
-          if (route) {
-            await this.sendNotification(
-              route.clientPubkey,
-              notification,
-              nostrEventId,
-            );
-            return;
-          }
-        }
-
-        const error = new Error(`No client found for progress token: ${token}`);
-        this.logger.error('Progress token not found', { token });
-        this.onerror?.(error);
-        return;
-      }
-
-      // Use TaskQueue for outbound notification broadcasting to prevent event loop blocking
-      for (const [
-        clientPubkey,
-        session,
-      ] of this.sessionStore.getAllSessions()) {
-        if (session.isInitialized) {
-          this.taskQueue.add(async () => {
-            try {
-              await this.sendNotification(clientPubkey, notification);
-            } catch (error) {
-              this.logger.error('Error sending notification', {
-                error: error instanceof Error ? error.message : String(error),
-                clientPubkey,
-                method: isJSONRPCNotification(notification)
-                  ? notification.method
-                  : 'unknown',
-              });
-            }
-          });
-        }
-      }
-    } catch (error) {
-      this.logger.error('Error in handleNotification', {
-        error: error instanceof Error ? error.message : String(error),
-        stack: error instanceof Error ? error.stack : undefined,
-      });
-      this.onerror?.(error instanceof Error ? error : new Error(String(error)));
-    }
+    await this.outboundNotificationBroadcaster.broadcast(notification);
   }
 
   /**
@@ -788,6 +698,10 @@ export class NostrServerTransport
     notification: JSONRPCMessage,
     correlatedEventId?: string,
   ): Promise<void> {
+    if (this.openStreamFactory.isClientEvicted(clientPubkey)) {
+      throw new Error(`No active session found for client: ${clientPubkey}`);
+    }
+
     const session = this.sessionStore.getSession(clientPubkey);
     if (!session) {
       throw new Error(`No active session found for client: ${clientPubkey}`);
@@ -827,204 +741,27 @@ export class NostrServerTransport
   private async processIncomingEvent(event: NostrEvent): Promise<void> {
     const unwrapped = await this.eventPipeline.unwrap(event);
     if (unwrapped) {
-      await this.authorizeAndProcessEvent(
+      const mcpMessage = this.convertNostrEventToMcpMessage(unwrapped.event);
+      if (!mcpMessage) {
+        this.logger.error(
+          'Skipping invalid Nostr event with malformed JSON content',
+          {
+            eventId: unwrapped.event.id,
+            pubkey: unwrapped.event.pubkey,
+            content: unwrapped.event.content,
+          },
+        );
+        return;
+      }
+      await this.inboundCoordinator.authorizeAndProcessEvent(
         unwrapped.event,
         unwrapped.isEncrypted,
+        mcpMessage,
         unwrapped.wrapKind,
       );
     }
   }
 
-  /**
-   * Authorizes and processes an incoming Nostr event, handling message validation,
-   * client authorization, session management, and optional client public key injection.
-   * @param event The Nostr event to process.
-   * @param isEncrypted Whether the original event was encrypted.
-   */
-  private async authorizeAndProcessEvent(
-    event: NostrEvent,
-    isEncrypted: boolean,
-    wrapKind?: number,
-  ): Promise<void> {
-    try {
-      const mcpMessage = this.convertNostrEventToMcpMessage(event);
-
-      if (!mcpMessage) {
-        this.logger.error(
-          'Skipping invalid Nostr event with malformed JSON content',
-          {
-            eventId: event.id,
-            pubkey: event.pubkey,
-            content: event.content,
-          },
-        );
-        return;
-      }
-
-      const inboundMessage: JSONRPCMessage = mcpMessage;
-
-      // Check authorization using the authorization policy
-      const authDecision = await this.authorizationPolicy.authorize(
-        event.pubkey,
-        mcpMessage,
-      );
-
-      if (!authDecision.allowed) {
-        this.logger.error(
-          `Unauthorized message from ${event.pubkey}, message: ${JSON.stringify(mcpMessage)}. Ignoring.`,
-        );
-
-        if (
-          'shouldReplyUnauthorized' in authDecision &&
-          authDecision.shouldReplyUnauthorized &&
-          isJSONRPCRequest(mcpMessage)
-        ) {
-          const errorResponse: JSONRPCErrorResponse = {
-            jsonrpc: '2.0',
-            id: mcpMessage.id,
-            error: {
-              code: -32000,
-              message: 'Unauthorized',
-            },
-          };
-
-          const tags = this.createResponseTags(event.pubkey, event.id);
-          this.sendMcpMessage(
-            errorResponse,
-            event.pubkey,
-            CTXVM_MESSAGES_KIND,
-            tags,
-            isEncrypted,
-            undefined,
-            isEncrypted
-              ? this.giftWrapMode === GiftWrapMode.EPHEMERAL
-                ? EPHEMERAL_GIFT_WRAP_KIND
-                : this.giftWrapMode === GiftWrapMode.PERSISTENT
-                  ? GIFT_WRAP_KIND
-                  : wrapKind
-              : undefined,
-          ).catch((err) => {
-            this.logger.error('Failed to send unauthorized response', {
-              error: err instanceof Error ? err.message : String(err),
-              pubkey: event.pubkey,
-              eventId: event.id,
-            });
-            this.onerror?.(
-              new Error(`Failed to send unauthorized response: ${err}`),
-            );
-          });
-        }
-        return;
-      }
-
-      const session = this.getOrCreateClientSession(event.pubkey, isEncrypted);
-      const hadLearnedOversizedSupport = session.supportsOversizedTransfer;
-      const discoveredCapabilities = learnPeerCapabilities(event.tags);
-      session.supportsEncryption ||= discoveredCapabilities.supportsEncryption;
-      session.supportsEphemeralEncryption ||=
-        discoveredCapabilities.supportsEphemeralEncryption;
-      session.supportsOversizedTransfer ||=
-        this.oversizedEnabled &&
-        discoveredCapabilities.supportsOversizedTransfer;
-      session.supportsOpenStream ||=
-        this.openStreamEnabled && discoveredCapabilities.supportsOpenStream;
-
-      const shouldSendAccept = !hadLearnedOversizedSupport;
-
-      const forward = async (msg: JSONRPCMessage): Promise<boolean> => {
-        this.onmessage?.(msg);
-        this.onmessageWithContext?.(msg, {
-          clientPubkey: event.pubkey,
-        });
-        return true;
-      };
-
-      const clientPmis = event.tags
-        .filter((tag) => tag[0] === 'pmi' && typeof tag[1] === 'string')
-        .map((tag) => tag[1] as string);
-      const ctx = {
-        clientPubkey: event.pubkey,
-        clientPmis: clientPmis.length > 0 ? clientPmis : undefined,
-      };
-      const middlewares = this.inboundMiddlewares;
-
-      const dispatch = async (
-        index: number,
-        msg: JSONRPCMessage,
-      ): Promise<boolean> => {
-        const mw = middlewares[index];
-        if (!mw) {
-          return await forward(msg);
-        }
-        let forwarded = false;
-        await mw(msg, ctx, async (nextMsg) => {
-          forwarded = await dispatch(index + 1, nextMsg);
-        });
-        return forwarded;
-      };
-
-      if (isJSONRPCRequest(inboundMessage)) {
-        this.handleIncomingRequest(
-          event,
-          event.id,
-          inboundMessage,
-          event.pubkey,
-          wrapKind,
-        );
-
-        if (this.shouldInjectRequestEventId) {
-          injectRequestEventId(inboundMessage, event.id);
-        }
-
-        if (this.injectClientPubkey) {
-          injectClientPubkey(inboundMessage, event.pubkey);
-        }
-
-        const openStreamWriter = this.openStreamFactory.getWriter(event.id);
-        if (openStreamWriter) {
-          const params = inboundMessage.params ?? {};
-          inboundMessage.params = params;
-          const meta = params._meta ?? {};
-          params._meta = meta;
-          (meta as { stream?: OpenStreamWriter }).stream = openStreamWriter;
-        }
-      } else if (isJSONRPCNotification(inboundMessage)) {
-        this.handleIncomingNotification(event.pubkey, inboundMessage);
-
-        const intercepted = this.inboundNotificationDispatcher.tryIntercept(
-          inboundMessage,
-          { event, session, shouldSendAccept, wrapKind },
-          (msg) => dispatch(0, msg),
-        );
-        if (intercepted) return;
-      }
-
-      void dispatch(0, inboundMessage)
-        .then((forwarded) => {
-          if (!forwarded) {
-            this.cleanupDroppedRequest(inboundMessage);
-          }
-        })
-        .catch((err: unknown) => {
-          this.logger.error('Error in inboundMiddleware chain', {
-            error: err instanceof Error ? err.message : String(err),
-            eventId: event.id,
-            pubkey: event.pubkey,
-          });
-          this.onerror?.(
-            err instanceof Error ? err : new Error('inboundMiddleware failed'),
-          );
-        });
-    } catch (error) {
-      this.logger.error('Error in authorizeAndProcessEvent', {
-        error: error instanceof Error ? error.message : String(error),
-        stack: error instanceof Error ? error.stack : undefined,
-        eventId: event.id,
-        pubkey: event.pubkey,
-      });
-      this.onerror?.(error instanceof Error ? error : new Error(String(error)));
-    }
-  }
 
   /**
    * Test-only accessor for internal state.
@@ -1036,6 +773,8 @@ export class NostrServerTransport
       correlationStore: this.correlationStore,
       oversizedReceiver: this.oversizedReceiver,
       openStreamReceiver: this.openStreamFactory.getReceiver(),
+      openStreamWriters: this.openStreamFactory.getWritersMap(),
+      pendingOpenStreamResponses: this.openStreamFactory.getPendingResponsesMap(),
     };
   }
 }

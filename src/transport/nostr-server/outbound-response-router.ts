@@ -25,7 +25,12 @@ export interface OutboundResponseRouterDeps {
   correlationStore: CorrelationStore;
   sessionStore: SessionStore;
   announcementManager: AnnouncementManager;
-  openStreamFactory: { deferIfStreamActive: (eventId: string, response: JSONRPCResponse) => boolean };
+  openStreamFactory: {
+    deferIfStreamActive: (eventId: string, response: JSONRPCResponse) => boolean;
+    takePendingEviction: (
+      eventId: string,
+    ) => { clientPubkey: string; session: ClientSession } | undefined;
+  };
   oversizedConfig: { enabled: boolean; threshold: number; chunkSize: number };
   applyListToolsResultTransformers: (result: ListToolsResult) => ListToolsResult;
   buildOutboundTags: (params: { baseTags: readonly string[][]; session: ClientSession }) => string[][];
@@ -83,7 +88,12 @@ export class OutboundResponseRouter {
       return;
     }
 
-    const session = this.deps.sessionStore.getSession(route.clientPubkey);
+    const pendingEviction =
+      this.deps.openStreamFactory.takePendingEviction(nostrEventId);
+    const session =
+      this.deps.sessionStore.getSession(route.clientPubkey) ??
+      pendingEviction?.session;
+
     if (!session) {
       this.deps.onerror?.(
         new Error(`No session found for client: ${route.clientPubkey}`),

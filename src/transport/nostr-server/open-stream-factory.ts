@@ -2,6 +2,7 @@ import { OpenStreamWriter, OpenStreamReceiver, buildOpenStreamPingFrame, buildOp
 import { type OpenStreamRegistryOptions } from '../open-stream/registry.js';
 import { type Logger } from '../../core/utils/logger.js';
 import { type CorrelationStore } from './correlation-store.js';
+import { type ClientSession, type SessionStore } from './session-store.js';
 import { type JSONRPCMessage, type JSONRPCResponse } from '@modelcontextprotocol/sdk/types.js';
 
 /**
@@ -11,6 +12,12 @@ export interface ServerOpenStreamFactoryDeps {
   openStreamEnabled: boolean;
   sendNotification: (clientPubkey: string, notification: JSONRPCMessage) => Promise<void>;
   handleResponse: (response: JSONRPCResponse) => Promise<void>;
+  sessionStore: SessionStore;
+  onClientSessionEvicted?: (ctx: {
+    clientPubkey: string;
+    session: ClientSession;
+  }) => void | Promise<void>;
+  onAbort?: (clientPubkey: string, eventId: string, reason?: string) => Promise<void>;
   correlationStore: CorrelationStore;
   policy?: Partial<OpenStreamRegistryOptions>;
   logger: Logger;
@@ -23,6 +30,11 @@ export class ServerOpenStreamFactory {
   private readonly writers = new Map<string, OpenStreamWriter>();
   private readonly pendingResponses = new Map<string, JSONRPCResponse>();
   private readonly receiver: OpenStreamReceiver;
+  private readonly pendingSessionEvictions = new Map<
+    string,
+    { clientPubkey: string; session: ClientSession }
+  >();
+  private readonly evictedClientPubkeys = new Set<string>();
 
   constructor(private deps: ServerOpenStreamFactoryDeps) {
     this.receiver = new OpenStreamReceiver({
@@ -111,6 +123,29 @@ export class ServerOpenStreamFactory {
   public clear(): void {
     this.writers.clear();
     this.pendingResponses.clear();
+    this.pendingSessionEvictions.clear();
+    this.evictedClientPubkeys.clear();
+  }
+
+  /** Returns true if the client is currently marked as evicted. */
+  public isClientEvicted(clientPubkey: string): boolean {
+    return this.evictedClientPubkeys.has(clientPubkey);
+  }
+
+  /**
+   * Takes and clears a pending eviction entry keyed by the request event id.
+   */
+  public takePendingEviction(
+    eventId: string,
+  ): { clientPubkey: string; session: ClientSession } | undefined {
+    const pendingEviction = this.pendingSessionEvictions.get(eventId);
+    if (!pendingEviction) {
+      return undefined;
+    }
+
+    this.pendingSessionEvictions.delete(eventId);
+    this.evictedClientPubkeys.delete(pendingEviction.clientPubkey);
+    return pendingEviction;
   }
 
   /**
@@ -151,7 +186,11 @@ export class ServerOpenStreamFactory {
       onClose: async (): Promise<void> => {
         await this.flushPendingResponse(eventId);
       },
-      onAbort: async (): Promise<void> => {
+      onAbort: async (reason?: string): Promise<void> => {
+        if (reason === 'Probe timeout') {
+          await this.handleProbeTimeout(clientPubkey, eventId);
+        }
+        await this.deps.onAbort?.(clientPubkey, eventId, reason);
         await this.flushPendingResponse(eventId);
       },
     });
@@ -172,5 +211,68 @@ export class ServerOpenStreamFactory {
     }
 
     await this.deps.handleResponse(pendingResponse);
+  }
+
+  private async handleProbeTimeout(
+    clientPubkey: string,
+    eventId: string,
+  ): Promise<void> {
+    const session = this.deps.sessionStore.getSession(clientPubkey);
+    if (session) {
+      this.pendingSessionEvictions.set(eventId, {
+        clientPubkey,
+        session: { ...session },
+      });
+      this.evictedClientPubkeys.add(clientPubkey);
+    }
+
+    const removed = this.deps.sessionStore.removeSession(clientPubkey);
+    if (!removed && !session) {
+      return;
+    }
+
+    this.deps.logger.info('Removed session after open-stream probe timeout', {
+      clientPubkey,
+      eventId,
+    });
+
+    const evictionSession =
+      session ?? {
+        isInitialized: false,
+        isEncrypted: false,
+        hasSentCommonTags: false,
+        supportsEncryption: false,
+        supportsEphemeralEncryption: false,
+        supportsOversizedTransfer: false,
+        supportsOpenStream: false,
+      };
+
+    await Promise.resolve(
+      this.deps.onClientSessionEvicted?.({
+        clientPubkey,
+        session: evictionSession,
+      }),
+    ).catch((error) => {
+      this.deps.logger.error('Error in onClientSessionEvicted callback', {
+        clientPubkey,
+        error,
+      });
+    });
+  }
+
+  /**
+   * Test-only accessor for writers map.
+   * @internal
+   */
+  public getWritersMap(): Map<string, OpenStreamWriter> {
+    return this.writers;
+  }
+
+  /**
+   * Test-only accessor for pending responses map.
+   * @internal
+   */
+  public getPendingResponsesMap(): Map<string, JSONRPCResponse> {
+    return this.pendingResponses;
   }
 }
