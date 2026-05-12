@@ -305,6 +305,129 @@ export abstract class BaseNostrTransport {
   }
 
   /**
+   * Builds the final outbound Nostr event that would be published for an MCP message.
+   */
+  protected async buildPublishedMcpEvent(
+    message: JSONRPCMessage,
+    recipientPublicKey: string,
+    kind: number,
+    tags?: NostrEvent['tags'],
+    isEncrypted?: boolean,
+    giftWrapKind?: number,
+  ): Promise<NostrEvent> {
+    const shouldEncrypt = this.shouldEncryptMessage(kind, isEncrypted);
+    const event = await this.createSignedNostrEvent(message, kind, tags);
+
+    return this.buildPublishedEventFromSignedEvent(
+      event,
+      recipientPublicKey,
+      shouldEncrypt,
+      giftWrapKind,
+    );
+  }
+
+  /**
+   * Builds the final publishable event from an already-signed inner event.
+   */
+  protected buildPublishedEventFromSignedEvent(
+    event: NostrEvent,
+    recipientPublicKey: string,
+    shouldEncrypt: boolean,
+    giftWrapKind?: number,
+  ): NostrEvent {
+    if (!shouldEncrypt) {
+      return event;
+    }
+
+    return encryptMessage(
+      JSON.stringify(event),
+      recipientPublicKey,
+      giftWrapKind,
+    );
+  }
+
+  /**
+   * Measures the UTF-8 byte length of the final outbound Nostr event that would be published.
+   */
+  protected async measurePublishedMcpMessageSize(
+    message: JSONRPCMessage,
+    recipientPublicKey: string,
+    kind: number,
+    tags?: NostrEvent['tags'],
+    isEncrypted?: boolean,
+    giftWrapKind?: number,
+  ): Promise<number> {
+    const event = await this.buildPublishedMcpEvent(
+      message,
+      recipientPublicKey,
+      kind,
+      tags,
+      isEncrypted,
+      giftWrapKind,
+    );
+
+    return new TextEncoder().encode(JSON.stringify(event)).byteLength;
+  }
+
+  /**
+   * Resolves a conservative per-chunk payload budget for oversized progress frames
+   * against the final published event size limit.
+   */
+  protected async resolveSafeOversizedChunkSize(params: {
+    desiredChunkSizeBytes: number;
+    maxPublishedEventBytes: number;
+    recipientPublicKey: string;
+    kind: number;
+    progressToken: string;
+    progress: number;
+    tags?: NostrEvent['tags'];
+    isEncrypted?: boolean;
+    giftWrapKind?: number;
+  }): Promise<number> {
+    const buildChunkNotification = (
+      chunkSizeBytes: number,
+    ): JSONRPCMessage => ({
+      jsonrpc: '2.0',
+      method: 'notifications/progress',
+      params: {
+        progressToken: params.progressToken,
+        progress: params.progress,
+        cvm: {
+          type: 'oversized-transfer',
+          frameType: 'chunk',
+          data: '\\'.repeat(chunkSizeBytes),
+        },
+      },
+    });
+
+    let low = 1;
+    let high = params.desiredChunkSizeBytes;
+    let best = 1;
+
+    while (low <= high) {
+      const mid = Math.floor((low + high) / 2);
+      const size = await this.measurePublishedMcpMessageSize(
+        buildChunkNotification(mid),
+        params.recipientPublicKey,
+        params.kind,
+        params.tags,
+        params.isEncrypted,
+        params.giftWrapKind,
+      );
+
+      if (size <= params.maxPublishedEventBytes) {
+        best = mid;
+        low = mid + 1;
+        continue;
+      }
+
+      high = mid - 1;
+    }
+
+    return best;
+  }
+
+  /**
    * Publishes a signed Nostr event to the relay network.
    */
   protected async publishEvent(event: NostrEvent): Promise<void> {
@@ -340,7 +463,6 @@ export abstract class BaseNostrTransport {
   ): Promise<string> {
     try {
       const shouldEncrypt = this.shouldEncryptMessage(kind, isEncrypted);
-
       const event = await this.createSignedNostrEvent(message, kind, tags);
 
       // Allow caller to register the event ID before publishing
@@ -349,9 +471,10 @@ export abstract class BaseNostrTransport {
       if (shouldEncrypt) {
         // Optional transports may decide gift wrap kind upstream.
         // Default remains persistent kind (1059) for backwards compatibility.
-        const encryptedEvent = encryptMessage(
-          JSON.stringify(event),
+        const encryptedEvent = this.buildPublishedEventFromSignedEvent(
+          event,
           recipientPublicKey,
+          shouldEncrypt,
           giftWrapKind,
         );
         await this.publishEvent(encryptedEvent);

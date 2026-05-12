@@ -41,6 +41,42 @@ import { MockRelayHub } from '../__mocks__/mock-relay-handler.js';
 import { waitFor } from '../core/utils/test.utils.js';
 import { buildOpenStreamPingFrame } from './open-stream/frames.js';
 
+class InspectableNostrClientTransport extends NostrClientTransport {
+  public async measureOutboundSizeForTesting(
+    message: JSONRPCMessage,
+    includeDiscovery: boolean = true,
+  ): Promise<number> {
+    return this.measurePublishedMcpMessageSize(
+      message,
+      this['serverPubkey'],
+      CTXVM_MESSAGES_KIND,
+      this['buildOutboundClientTags']({
+        baseTags: this['createRecipientTags'](this['serverPubkey']),
+        includeDiscovery,
+      }),
+      undefined,
+      this['chooseOutboundGiftWrapKind'](),
+    );
+  }
+
+  public async resolveChunkSizeForTesting(params: {
+    desiredChunkSizeBytes: number;
+    thresholdBytes: number;
+    progressToken: string;
+  }): Promise<number> {
+    return this.resolveSafeOversizedChunkSize({
+      desiredChunkSizeBytes: params.desiredChunkSizeBytes,
+      maxPublishedEventBytes: params.thresholdBytes,
+      recipientPublicKey: this['serverPubkey'],
+      kind: CTXVM_MESSAGES_KIND,
+      progressToken: params.progressToken,
+      progress: 2,
+      tags: this['createRecipientTags'](this['serverPubkey']),
+      giftWrapKind: this['chooseOutboundGiftWrapKind'](),
+    });
+  }
+}
+
 describe.serial('NostrClientTransport', () => {
   let relay: MockRelayInstance;
   let relayUrl: string;
@@ -91,6 +127,97 @@ describe.serial('NostrClientTransport', () => {
     await server.close();
     relay.stop();
     await sleep(100);
+  });
+
+  test('measures final published event size above logical JSON-RPC size', async () => {
+    const clientPrivateKey = bytesToHex(generateSecretKey());
+
+    const clientTransport = new InspectableNostrClientTransport({
+      signer: new PrivateKeySigner(clientPrivateKey),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      serverPubkey: serverPublicKey,
+      encryptionMode: EncryptionMode.DISABLED,
+      isStateless: true,
+    });
+
+    const message: JSONRPCMessage = {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: {
+        name: 'add',
+        arguments: { a: 1, b: 2 },
+        _meta: { progressToken: 'size-check' },
+      },
+    };
+
+    const logicalSize = new TextEncoder().encode(
+      JSON.stringify(message),
+    ).byteLength;
+    const publishedSize =
+      await clientTransport.measureOutboundSizeForTesting(message);
+
+    expect(publishedSize).toBeGreaterThan(logicalSize);
+  });
+
+  test('derives a chunk size that fits within the published event threshold', async () => {
+    const clientPrivateKey = bytesToHex(generateSecretKey());
+
+    const clientTransport = new InspectableNostrClientTransport({
+      signer: new PrivateKeySigner(clientPrivateKey),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      serverPubkey: serverPublicKey,
+      encryptionMode: EncryptionMode.DISABLED,
+    });
+
+    const desiredChunkSizeBytes = 512;
+    const desiredFrame: JSONRPCMessage = {
+      jsonrpc: '2.0',
+      method: 'notifications/progress',
+      params: {
+        progressToken: 'chunk-check',
+        progress: 2,
+        cvm: {
+          type: 'oversized-transfer',
+          frameType: 'chunk',
+          data: '\\'.repeat(desiredChunkSizeBytes),
+        },
+      },
+    };
+    const desiredMeasured = await clientTransport.measureOutboundSizeForTesting(
+      desiredFrame,
+      false,
+    );
+    const thresholdBytes = desiredMeasured - 100;
+
+    const chunkSizeBytes = await clientTransport.resolveChunkSizeForTesting({
+      desiredChunkSizeBytes,
+      thresholdBytes,
+      progressToken: 'chunk-check',
+    });
+
+    const candidateFrame: JSONRPCMessage = {
+      jsonrpc: '2.0',
+      method: 'notifications/progress',
+      params: {
+        progressToken: 'chunk-check',
+        progress: 2,
+        cvm: {
+          type: 'oversized-transfer',
+          frameType: 'chunk',
+          data: '\\'.repeat(chunkSizeBytes),
+        },
+      },
+    };
+
+    const measured = await clientTransport.measureOutboundSizeForTesting(
+      candidateFrame,
+      false,
+    );
+
+    expect(chunkSizeBytes).toBeGreaterThan(0);
+    expect(chunkSizeBytes).toBeLessThan(desiredChunkSizeBytes);
+    expect(measured).toBeLessThanOrEqual(thresholdBytes);
   });
 
   test('should connect and list tools in stateless mode', async () => {

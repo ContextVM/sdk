@@ -479,29 +479,37 @@ export class NostrClientTransport
   private async sendRequest(message: JSONRPCMessage): Promise<string> {
     const isRequest = isJSONRPCRequest(message);
 
-    // --- CEP-22 Oversized Transfer (proactive path) ---
-    if (this.oversizedEnabled && isRequest) {
-      const progressToken = message.params?._meta?.progressToken;
-      if (progressToken !== undefined) {
-        const serialized = JSON.stringify(message);
-        const byteLength = new TextEncoder().encode(serialized).byteLength;
-        if (byteLength > this.oversizedThreshold) {
-          await this.sendOversizedRequest(
-            message,
-            serialized,
-            String(progressToken),
-          );
-          return 'oversized-transfer';
-        }
-      }
-    }
-
     const tags = this.buildOutboundClientTags({
       baseTags: this.createRecipientTags(this.serverPubkey),
       includeDiscovery: isRequest,
     });
 
     const giftWrapKind = this.chooseOutboundGiftWrapKind();
+
+    // --- CEP-22 Oversized Transfer (proactive path) ---
+    if (this.oversizedEnabled && isRequest) {
+      const progressToken = message.params?._meta?.progressToken;
+      if (progressToken !== undefined) {
+        const serialized = JSON.stringify(message);
+        const publishedEventSize = await this.measurePublishedMcpMessageSize(
+          message,
+          this.serverPubkey,
+          CTXVM_MESSAGES_KIND,
+          tags,
+          undefined,
+          giftWrapKind,
+        );
+        if (publishedEventSize > this.oversizedThreshold) {
+          await this.sendOversizedRequest(
+            message,
+            serialized,
+            String(progressToken),
+            giftWrapKind,
+          );
+          return 'oversized-transfer';
+        }
+      }
+    }
 
     const eventId = await this.sendMcpMessage(
       message,
@@ -560,21 +568,32 @@ export class NostrClientTransport
     >,
     serialized: string,
     progressToken: string,
+    giftWrapKind: number,
   ): Promise<void> {
     const frameRecipientTags = this.createRecipientTags(this.serverPubkey);
     const startFrameTags = this.buildOutboundClientTags({
       baseTags: frameRecipientTags,
       includeDiscovery: true,
     });
+    const chunkSizeBytes = await this.resolveSafeOversizedChunkSize({
+      desiredChunkSizeBytes: this.oversizedChunkSize,
+      maxPublishedEventBytes: this.oversizedThreshold,
+      recipientPublicKey: this.serverPubkey,
+      kind: CTXVM_MESSAGES_KIND,
+      progressToken,
+      progress: this.serverSupportsOversizedTransfer ? 2 : 3,
+      tags: frameRecipientTags,
+      giftWrapKind,
+    });
     const endFrameEventId = await sendOversizedClientRequest(
       serialized,
       progressToken,
       {
-        chunkSizeBytes: this.oversizedChunkSize,
+        chunkSizeBytes,
         acceptTimeoutMs: this.oversizedAcceptTimeoutMs,
         serverPubkey: this.serverPubkey,
         serverSupportsOversizedTransfer: this.serverSupportsOversizedTransfer,
-        giftWrapKind: this.chooseOutboundGiftWrapKind(),
+        giftWrapKind,
         startFrameTags,
         continuationFrameTags: frameRecipientTags,
       },

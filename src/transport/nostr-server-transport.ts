@@ -924,41 +924,72 @@ export class NostrServerTransport
       route.progressToken &&
       session.supportsOversizedTransfer
     ) {
-      // Serialize before restoring id so the client receives the correct id.
+      // Serialize after restoring id so the client receives the original JSON-RPC id.
       const serialized = JSON.stringify(responseToSend);
-      const byteLength = new TextEncoder().encode(serialized).byteLength;
-      if (byteLength > this.oversizedThreshold) {
-        const continuationFrameTags = this.createResponseTags(
-          route.clientPubkey,
-          nostrEventId,
-        );
-        const startFrameTags = this.buildServerOutboundTags({
-          baseTags: continuationFrameTags,
-          session,
-        });
-        const giftWrapKind = this.chooseServerOutboundGiftWrapKind({
-          session,
-          fallbackWrapKind: route.wrapKind,
+      const continuationFrameTags = this.createResponseTags(
+        route.clientPubkey,
+        nostrEventId,
+      );
+      const startFrameTags = this.buildServerOutboundTags({
+        baseTags: continuationFrameTags,
+        session,
+      });
+      const giftWrapKind = this.chooseServerOutboundGiftWrapKind({
+        session,
+        fallbackWrapKind: route.wrapKind,
+      });
+      const publishedEventSize = await this.measurePublishedMcpMessageSize(
+        responseToSend,
+        route.clientPubkey,
+        CTXVM_MESSAGES_KIND,
+        startFrameTags,
+        session.isEncrypted,
+        giftWrapKind,
+      );
+      if (publishedEventSize > this.oversizedThreshold) {
+        const chunkSizeBytes = await this.resolveSafeOversizedChunkSize({
+          desiredChunkSizeBytes: this.oversizedChunkSize,
+          maxPublishedEventBytes: this.oversizedThreshold,
+          recipientPublicKey: route.clientPubkey,
+          kind: CTXVM_MESSAGES_KIND,
+          progressToken: route.progressToken,
+          progress: 2,
+          tags: continuationFrameTags,
+          isEncrypted: session.isEncrypted,
+          giftWrapKind,
         });
 
-        await sendOversizedServerResponse(
-          {
-            serialized,
-            clientPubkey: route.clientPubkey,
-            progressToken: route.progressToken,
-            startFrameTags,
-            continuationFrameTags,
-            isEncrypted: session.isEncrypted,
-            giftWrapKind,
-          },
-          {
-            chunkSizeBytes: this.oversizedChunkSize,
-          },
-          {
-            sendMcpMessage: this.sendMcpMessage.bind(this),
-            logger: this.logger,
-          },
-        );
+        try {
+          await sendOversizedServerResponse(
+            {
+              serialized,
+              clientPubkey: route.clientPubkey,
+              progressToken: route.progressToken,
+              startFrameTags,
+              continuationFrameTags,
+              isEncrypted: session.isEncrypted,
+              giftWrapKind,
+            },
+            {
+              chunkSizeBytes,
+            },
+            {
+              sendMcpMessage: this.sendMcpMessage.bind(this),
+              logger: this.logger,
+            },
+          );
+        } catch (error) {
+          this.correlationStore.registerEventRoute(
+            nostrEventId,
+            route.clientPubkey,
+            route.originalRequestId,
+            route.progressToken,
+            route.wrapKind,
+          );
+          throw error;
+        } finally {
+          this.finalizePendingOpenStreamSessionEviction(nostrEventId);
+        }
         return;
       }
     }
