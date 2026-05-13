@@ -1774,7 +1774,7 @@ describe.serial('NostrServerTransport', () => {
       openStream: { enabled: true },
     });
 
-    const internalState = serverTransport.getInternalStateForTesting() as {
+    const internalState = serverTransport.getInternalStateForTesting() as unknown as {
       sessionStore: {
         getOrCreateSession: (
           clientPubkey: string,
