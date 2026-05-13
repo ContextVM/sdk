@@ -52,6 +52,7 @@ import {
   clearRelayCache,
 } from '../__mocks__/test-relay-helpers.js';
 import { waitFor } from '../core/utils/test.utils.js';
+import { OpenStreamAbortFrame } from './open-stream/types.js';
 
 describe.serial('NostrServerTransport', () => {
   let relay: MockRelayInstance;
@@ -1761,6 +1762,114 @@ describe.serial('NostrServerTransport', () => {
     expect(internalState.pendingOpenStreamResponses.has('a'.repeat(64))).toBe(
       false,
     );
+  });
+
+  test('flushes pending open-stream responses after abort frame publication completes', async () => {
+    const serverPrivateKey = bytesToHex(generateSecretKey());
+    const clientPublicKey = getPublicKey(generateSecretKey());
+
+    const serverTransport = new NostrServerTransport({
+      signer: new PrivateKeySigner(serverPrivateKey),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      encryptionMode: EncryptionMode.DISABLED,
+      openStream: { enabled: true },
+    });
+
+    const internalState = serverTransport.getInternalStateForTesting() as {
+      sessionStore: {
+        getOrCreateSession: (
+          clientPubkey: string,
+          isEncrypted: boolean,
+        ) => unknown;
+      };
+      pendingOpenStreamResponses: Map<string, JSONRPCResponse>;
+      openStreamWriters: Map<
+        string,
+        { abort: (reason?: string) => Promise<void> }
+      >;
+    };
+    internalState.sessionStore.getOrCreateSession(clientPublicKey, false);
+
+    const events: string[] = [];
+
+    (
+      serverTransport as unknown as {
+        sendNotification: (
+          clientPubkey: string,
+          notification: JSONRPCMessage,
+          correlatedEventId?: string,
+        ) => Promise<void>;
+      }
+    ).sendNotification = async (
+      _clientPubkey: string,
+      notification: JSONRPCMessage,
+    ): Promise<void> => {
+      if (
+        'method' in notification &&
+        notification.method === 'notifications/progress' &&
+        (notification.params?.cvm as OpenStreamAbortFrame).frameType === 'abort'
+      ) {
+        events.push('abort-frame');
+      }
+    };
+
+    (
+      serverTransport as unknown as {
+        handleResponse: (response: JSONRPCResponse) => Promise<void>;
+      }
+    ).handleResponse = async (_response: JSONRPCResponse): Promise<void> => {
+      events.push('final-response');
+    };
+
+    (
+      serverTransport as unknown as {
+        handleIncomingRequest: (
+          event: NostrEvent,
+          eventId: string,
+          request: {
+            id: string;
+            params?: { _meta?: { progressToken?: string } };
+          },
+          clientPubkey: string,
+          wrapKind?: number,
+        ) => void;
+      }
+    ).handleIncomingRequest(
+      {
+        id: 'b'.repeat(64),
+        pubkey: clientPublicKey,
+        created_at: Math.floor(Date.now() / 1000),
+        kind: 1,
+        tags: [],
+        content: '',
+        sig: 'c'.repeat(128),
+      } as NostrEvent,
+      'a'.repeat(64),
+      {
+        id: 'request-1',
+        params: {
+          _meta: {
+            progressToken: 'progress-1',
+          },
+        },
+      },
+      clientPublicKey,
+    );
+
+    internalState.pendingOpenStreamResponses.set('a'.repeat(64), {
+      jsonrpc: '2.0',
+      id: 'request-1',
+      result: {
+        content: [{ type: 'text', text: 'done' }],
+      },
+    });
+
+    const writer = internalState.openStreamWriters.get('a'.repeat(64));
+    expect(writer).toBeDefined();
+
+    await writer!.abort('Probe timeout');
+
+    expect(events).toEqual(['abort-frame', 'final-response']);
   });
 
   test.serial(

@@ -128,8 +128,6 @@ describe('OpenStreamWriter', () => {
 
     await abortWriter.abort('done');
 
-    await new Promise<void>((resolve) => queueMicrotask(resolve));
-
     expect(frames[frames.length - 1]).toMatchObject({
       cvm: {
         type: 'open-stream',
@@ -138,6 +136,24 @@ describe('OpenStreamWriter', () => {
       },
     });
     expect(lifecycle).toEqual(['close', 'abort:done']);
+  });
+
+  test('publishes abort before running abort lifecycle hook', async () => {
+    const events: string[] = [];
+    const writer = new OpenStreamWriter({
+      progressToken: 'token-abort-order',
+      publishFrame: async (frame): Promise<string | undefined> => {
+        events.push(`publish:${frame.cvm.frameType}`);
+        return undefined;
+      },
+      onAbort: async (reason?: string): Promise<void> => {
+        events.push(`abort:${reason ?? ''}`);
+      },
+    });
+
+    await writer.abort('ordered');
+
+    expect(events).toEqual(['publish:abort', 'abort:ordered']);
   });
 
   test('abort deactivates and runs local cleanup without waiting for a stuck write', async () => {
