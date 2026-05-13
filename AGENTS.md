@@ -53,9 +53,10 @@
 
 - **Keep files concise**: Extract helpers instead of creating "V2" copies.
 - **Use existing patterns** for dependency injection via constructor options.
-- **Aim to keep files under ~700 LOC**: This is a guideline only (not a hard guardrail).
+- **Prioritize clear ownership boundaries**: The goal is to ensure each module answers a single architectural question.
+- **Modularize around protocol or lifecycle concerns**: Modularization should follow logical sub-flows (e.g., event unwrapping, inbound coordination, outbound routing) rather than arbitrary code splitting.
+- **Aim to keep files under ~700 LOC**: This is a heuristic guideline only, not a hard guardrail.
 - Split or refactor when it improves clarity or testability.
-- Extract specialized concerns into dedicated modules (e.g., `StatelessModeHandler`, `CorrelationStore`).
 
 ## Environment
 
