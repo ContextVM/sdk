@@ -777,6 +777,8 @@ export class NostrServerTransport
       openStreamReceiver: this.openStreamFactory.getReceiver(),
       openStreamWriters: this.openStreamFactory.getWritersMap(),
       pendingOpenStreamResponses: this.openStreamFactory.getPendingResponsesMap(),
+      openStreamFactory: this.openStreamFactory,
+      inboundCoordinator: this.inboundCoordinator,
     };
   }
 }

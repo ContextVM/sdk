@@ -1755,7 +1755,6 @@ describe.serial('NostrServerTransport', () => {
     expect(writer).toBeDefined();
 
     await writer!.abort('Probe timeout');
-    await sleep(50);
 
     expect(internalState.sessionStore.hasSession(clientPublicKey)).toBe(false);
     expect(handledResponses).toHaveLength(1);
@@ -1787,20 +1786,30 @@ describe.serial('NostrServerTransport', () => {
         string,
         { abort: (reason?: string) => Promise<void> }
       >;
+      openStreamFactory: {
+        deps: {
+          sendNotification: (clientPubkey: string, notification: JSONRPCMessage) => Promise<void>;
+          handleResponse: (response: JSONRPCResponse) => Promise<void>;
+        }
+      };
+      inboundCoordinator: {
+        handleIncomingRequest: (
+          event: NostrEvent,
+          eventId: string,
+          request: {
+            id: string;
+            params?: { _meta?: { progressToken?: string } };
+          },
+          clientPubkey: string,
+          wrapKind?: number,
+        ) => void;
+      };
     };
     internalState.sessionStore.getOrCreateSession(clientPublicKey, false);
 
     const events: string[] = [];
 
-    (
-      serverTransport as unknown as {
-        sendNotification: (
-          clientPubkey: string,
-          notification: JSONRPCMessage,
-          correlatedEventId?: string,
-        ) => Promise<void>;
-      }
-    ).sendNotification = async (
+    internalState.openStreamFactory.deps.sendNotification = async (
       _clientPubkey: string,
       notification: JSONRPCMessage,
     ): Promise<void> => {
@@ -1813,28 +1822,11 @@ describe.serial('NostrServerTransport', () => {
       }
     };
 
-    (
-      serverTransport as unknown as {
-        handleResponse: (response: JSONRPCResponse) => Promise<void>;
-      }
-    ).handleResponse = async (_response: JSONRPCResponse): Promise<void> => {
+    internalState.openStreamFactory.deps.handleResponse = async (_response: JSONRPCResponse): Promise<void> => {
       events.push('final-response');
     };
 
-    (
-      serverTransport as unknown as {
-        handleIncomingRequest: (
-          event: NostrEvent,
-          eventId: string,
-          request: {
-            id: string;
-            params?: { _meta?: { progressToken?: string } };
-          },
-          clientPubkey: string,
-          wrapKind?: number,
-        ) => void;
-      }
-    ).handleIncomingRequest(
+    internalState.inboundCoordinator.handleIncomingRequest(
       {
         id: 'b'.repeat(64),
         pubkey: clientPublicKey,
