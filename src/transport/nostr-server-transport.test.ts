@@ -1754,6 +1754,7 @@ describe.serial('NostrServerTransport', () => {
     expect(writer).toBeDefined();
 
     await writer!.abort('Probe timeout');
+    await sleep(50);
 
     expect(internalState.sessionStore.hasSession(clientPublicKey)).toBe(false);
     expect(handledResponses).toHaveLength(1);
