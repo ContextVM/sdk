@@ -40,6 +40,7 @@ import {
   isJSONRPCRequest,
   JSONRPCMessage,
   JSONRPCResponse,
+  JSONRPCErrorResponse,
 } from '@modelcontextprotocol/sdk/types.js';
 import { withServerPayments } from '../payments/server-transport-payments.js';
 
@@ -1258,13 +1259,20 @@ describe.serial('NostrServerTransport', () => {
 
       await (
         serverTransport as unknown as {
-          authorizeAndProcessEvent: (
-            event: NostrEvent,
-            isEncrypted: boolean,
-            wrapKind?: number,
-          ) => Promise<void>;
+          inboundCoordinator: {
+            authorizeAndProcessEvent: (
+              event: NostrEvent,
+              isEncrypted: boolean,
+              mcpMessage: JSONRPCMessage,
+              wrapKind?: number,
+            ) => Promise<void>;
+          }
         }
-      ).authorizeAndProcessEvent(requestEvent, false);
+      ).inboundCoordinator.authorizeAndProcessEvent(
+        requestEvent,
+        false,
+        JSON.parse(requestEvent.content) as JSONRPCMessage,
+      );
 
       await sleep(100);
       expect(observedRequestEventId).toBeDefined();
@@ -1616,18 +1624,20 @@ describe.serial('NostrServerTransport', () => {
 
     (
       serverTransport as unknown as {
-        handleIncomingRequest: (
-          event: NostrEvent,
-          eventId: string,
-          request: {
-            id: string;
-            params?: { _meta?: { progressToken?: string } };
-          },
-          clientPubkey: string,
-          wrapKind?: number,
-        ) => void;
+        inboundCoordinator: {
+          handleIncomingRequest: (
+            event: NostrEvent,
+            eventId: string,
+            request: {
+              id: string;
+              params?: { _meta?: { progressToken?: string } };
+            },
+            clientPubkey: string,
+            wrapKind?: number,
+          ) => void;
+        }
       }
-    ).handleIncomingRequest(
+    ).inboundCoordinator.handleIncomingRequest(
       {
         id: 'b'.repeat(64),
         pubkey: clientPublicKey,
@@ -1688,26 +1698,30 @@ describe.serial('NostrServerTransport', () => {
     const handledResponses: JSONRPCResponse[] = [];
     (
       serverTransport as unknown as {
-        handleResponse: (response: JSONRPCResponse) => Promise<void>;
+        outboundResponseRouter: {
+          route: (response: JSONRPCResponse | JSONRPCErrorResponse) => Promise<void>;
+        }
       }
-    ).handleResponse = async (response: JSONRPCResponse): Promise<void> => {
-      handledResponses.push(response);
+    ).outboundResponseRouter.route = async (response: JSONRPCResponse | JSONRPCErrorResponse): Promise<void> => {
+      handledResponses.push(response as JSONRPCResponse);
     };
 
     (
       serverTransport as unknown as {
-        handleIncomingRequest: (
-          event: NostrEvent,
-          eventId: string,
-          request: {
-            id: string;
-            params?: { _meta?: { progressToken?: string } };
-          },
-          clientPubkey: string,
-          wrapKind?: number,
-        ) => void;
+        inboundCoordinator: {
+          handleIncomingRequest: (
+            event: NostrEvent,
+            eventId: string,
+            request: {
+              id: string;
+              params?: { _meta?: { progressToken?: string } };
+            },
+            clientPubkey: string,
+            wrapKind?: number,
+          ) => void;
+        }
       }
-    ).handleIncomingRequest(
+    ).inboundCoordinator.handleIncomingRequest(
       {
         id: 'b'.repeat(64),
         pubkey: clientPublicKey,
@@ -1760,7 +1774,7 @@ describe.serial('NostrServerTransport', () => {
       openStream: { enabled: true },
     });
 
-    const internalState = serverTransport.getInternalStateForTesting() as {
+    const internalState = serverTransport.getInternalStateForTesting() as unknown as {
       sessionStore: {
         getOrCreateSession: (
           clientPubkey: string,
@@ -1772,20 +1786,30 @@ describe.serial('NostrServerTransport', () => {
         string,
         { abort: (reason?: string) => Promise<void> }
       >;
+      openStreamFactory: {
+        deps: {
+          sendNotification: (clientPubkey: string, notification: JSONRPCMessage) => Promise<void>;
+          handleResponse: (response: JSONRPCResponse) => Promise<void>;
+        }
+      };
+      inboundCoordinator: {
+        handleIncomingRequest: (
+          event: NostrEvent,
+          eventId: string,
+          request: {
+            id: string;
+            params?: { _meta?: { progressToken?: string } };
+          },
+          clientPubkey: string,
+          wrapKind?: number,
+        ) => void;
+      };
     };
     internalState.sessionStore.getOrCreateSession(clientPublicKey, false);
 
     const events: string[] = [];
 
-    (
-      serverTransport as unknown as {
-        sendNotification: (
-          clientPubkey: string,
-          notification: JSONRPCMessage,
-          correlatedEventId?: string,
-        ) => Promise<void>;
-      }
-    ).sendNotification = async (
+    internalState.openStreamFactory.deps.sendNotification = async (
       _clientPubkey: string,
       notification: JSONRPCMessage,
     ): Promise<void> => {
@@ -1798,28 +1822,11 @@ describe.serial('NostrServerTransport', () => {
       }
     };
 
-    (
-      serverTransport as unknown as {
-        handleResponse: (response: JSONRPCResponse) => Promise<void>;
-      }
-    ).handleResponse = async (_response: JSONRPCResponse): Promise<void> => {
+    internalState.openStreamFactory.deps.handleResponse = async (_response: JSONRPCResponse): Promise<void> => {
       events.push('final-response');
     };
 
-    (
-      serverTransport as unknown as {
-        handleIncomingRequest: (
-          event: NostrEvent,
-          eventId: string,
-          request: {
-            id: string;
-            params?: { _meta?: { progressToken?: string } };
-          },
-          clientPubkey: string,
-          wrapKind?: number,
-        ) => void;
-      }
-    ).handleIncomingRequest(
+    internalState.inboundCoordinator.handleIncomingRequest(
       {
         id: 'b'.repeat(64),
         pubkey: clientPublicKey,

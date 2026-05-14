@@ -1,14 +1,7 @@
 import {
-  InitializeResultSchema,
-  ListPromptsResultSchema,
-  ListResourcesResultSchema,
-  ListResourceTemplatesResultSchema,
-  ListToolsResultSchema,
   type ListToolsResult,
-  isJSONRPCRequest,
   isJSONRPCNotification,
   type JSONRPCMessage,
-  type JSONRPCRequest,
   type JSONRPCResponse,
   isJSONRPCResultResponse,
   isJSONRPCErrorResponse,
@@ -22,22 +15,12 @@ import {
 import {
   CTXVM_MESSAGES_KIND,
   DEFAULT_TIMEOUT_MS,
-  EPHEMERAL_GIFT_WRAP_KIND,
-  GIFT_WRAP_KIND,
   NOSTR_TAGS,
-  NOTIFICATIONS_INITIALIZED_METHOD,
-  decryptMessage,
   DEFAULT_LRU_SIZE,
 } from '../core/index.js';
-import { EncryptionMode, GiftWrapMode } from '../core/interfaces.js';
 import { NostrEvent } from 'nostr-tools';
-import { verifyEvent } from 'nostr-tools/pure';
 import { LogLevel } from '../core/utils/logger.js';
-import {
-  injectClientPubkey,
-  injectRequestEventId,
-  withTimeout,
-} from '../core/utils/utils.js';
+import { withTimeout } from '../core/utils/utils.js';
 import { CorrelationStore } from './nostr-server/correlation-store.js';
 import { ClientSession, SessionStore } from './nostr-server/session-store.js';
 import { LruCache } from '../core/utils/lru-cache.js';
@@ -57,24 +40,20 @@ import {
   type TransferPolicy,
 } from './oversized-transfer/index.js';
 import {
-  OpenStreamReceiver,
-  OpenStreamWriter,
-  buildOpenStreamAcceptFrame,
-  buildOpenStreamAbortFrame,
-  buildOpenStreamPingFrame,
-  buildOpenStreamPongFrame,
-} from './open-stream/index.js';
-import {
   DEFAULT_CHUNK_SIZE,
   DEFAULT_OVERSIZED_THRESHOLD,
 } from './oversized-transfer/constants.js';
-import { learnPeerCapabilities } from './discovery-tags.js';
-import {
-  sendAcceptFrame,
-  sendOversizedServerResponse,
-} from './nostr-server/oversized-server-handler.js';
+import { ServerCapabilityNegotiator } from './capability-negotiator.js';
 import type { OpenStreamTransportPolicy } from './open-stream-policy.js';
+import { InboundNotificationDispatcher } from './nostr-server/inbound-notification-dispatcher.js';
+import { OutboundResponseRouter } from './nostr-server/outbound-response-router.js';
+import { OutboundNotificationBroadcaster } from './nostr-server/outbound-notification-broadcaster.js';
+import { ServerOpenStreamFactory } from './nostr-server/open-stream-factory.js';
+import { ServerEventPipeline } from './nostr-server/event-pipeline.js';
+import { ServerInboundCoordinator } from './nostr-server/inbound-coordinator.js';
+import type { InboundMiddlewareFn } from './middleware.js';
 
+export type { InboundMiddlewareFn } from './middleware.js';
 /**
  * Options for configuring the NostrServerTransport.
  */
@@ -174,11 +153,6 @@ export type ListToolsAnnouncementTagsProducer = (
   result: ListToolsResult,
 ) => string[][];
 
-export type InboundMiddlewareFn = (
-  message: JSONRPCMessage,
-  ctx: { clientPubkey: string; clientPmis?: readonly string[] },
-  forward: (message: JSONRPCMessage) => Promise<void>,
-) => Promise<void>;
 
 /**
  * A server-side transport layer for CTXVM that uses Nostr events for communication.
@@ -226,32 +200,18 @@ export class NostrServerTransport
   /** Receives inbound oversized-transfer frames from clients (client→server requests). */
   private readonly oversizedReceiver: OversizedTransferReceiver;
 
-  /** Receives inbound open-stream frames from clients (client→server notifications). */
-  private readonly openStreamReceiver: OpenStreamReceiver;
-
-  /** Pending final responses held until their CEP-41 stream terminates. */
-  private readonly pendingOpenStreamResponses = new Map<
-    string,
-    JSONRPCResponse
-  >();
-
-  /** Sessions logically evicted after CEP-41 probe timeout, retained only to flush deferred finals. */
-  private readonly pendingOpenStreamSessionEvictions = new Map<
-    string,
-    { clientPubkey: string; session: ClientSession }
-  >();
-
-  /** Client pubkeys that should no longer receive new notifications. */
-  private readonly evictedOpenStreamClientPubkeys = new Set<string>();
-
-  /** Active server-side CEP-41 writers keyed by inbound request event id. */
-  private readonly openStreamWriters = new Map<string, OpenStreamWriter>();
-
   // Oversized-transfer sender settings (for server→client responses)
   private readonly oversizedEnabled: boolean;
   private readonly oversizedThreshold: number;
   private readonly oversizedChunkSize: number;
   private readonly openStreamEnabled: boolean;
+  private readonly capabilityNegotiator: ServerCapabilityNegotiator;
+  private readonly openStreamFactory: ServerOpenStreamFactory;
+  private readonly eventPipeline: ServerEventPipeline;
+  private readonly inboundCoordinator: ServerInboundCoordinator;
+  private readonly inboundNotificationDispatcher: InboundNotificationDispatcher;
+  private readonly outboundResponseRouter: OutboundResponseRouter;
+  private readonly outboundNotificationBroadcaster: OutboundNotificationBroadcaster;
 
   constructor(options: NostrServerTransportOptions) {
     super('nostr-server-transport', options);
@@ -357,59 +317,6 @@ export class NostrServerTransport
       this.logger,
     );
     this.openStreamEnabled = options.openStream?.enabled ?? false;
-    this.openStreamReceiver = new OpenStreamReceiver({
-      maxConcurrentStreams: options.openStream?.policy?.maxConcurrentStreams,
-      maxBufferedChunksPerStream:
-        options.openStream?.policy?.maxBufferedChunksPerStream,
-      maxBufferedBytesPerStream:
-        options.openStream?.policy?.maxBufferedBytesPerStream,
-      idleTimeoutMs: options.openStream?.policy?.idleTimeoutMs,
-      probeTimeoutMs: options.openStream?.policy?.probeTimeoutMs,
-      closeGracePeriodMs: options.openStream?.policy?.closeGracePeriodMs,
-      getSessionOptions: (progressToken) => {
-        let progress = 0;
-
-        return {
-          sendPing: async (nonce: string): Promise<void> => {
-            progress += 1;
-            await this.sendNotification(progressToken, {
-              jsonrpc: '2.0',
-              method: 'notifications/progress',
-              params: buildOpenStreamPingFrame({
-                progressToken,
-                progress,
-                nonce,
-              }),
-            });
-          },
-          sendPong: async (nonce: string): Promise<void> => {
-            progress += 1;
-            await this.sendNotification(progressToken, {
-              jsonrpc: '2.0',
-              method: 'notifications/progress',
-              params: buildOpenStreamPongFrame({
-                progressToken,
-                progress,
-                nonce,
-              }),
-            });
-          },
-          sendAbort: async (reason?: string): Promise<void> => {
-            progress += 1;
-            await this.sendNotification(progressToken, {
-              jsonrpc: '2.0',
-              method: 'notifications/progress',
-              params: buildOpenStreamAbortFrame({
-                progressToken,
-                progress,
-                reason,
-              }),
-            });
-          },
-        };
-      },
-      logger: this.logger,
-    });
 
     // Advertise CEP-22 support so clients can skip the accept handshake.
     const internalCommonTags: string[][] = [];
@@ -423,6 +330,114 @@ export class NostrServerTransport
     }
 
     this.announcementManager.setInternalCommonTags(internalCommonTags);
+
+    this.capabilityNegotiator = new ServerCapabilityNegotiator({
+      getCommonTags: this.announcementManager.getCommonTags.bind(this.announcementManager),
+      composeOutboundTags: this.composeOutboundTags.bind(this),
+      giftWrapMode: this.giftWrapMode,
+    });
+
+    this.openStreamFactory = new ServerOpenStreamFactory({
+      openStreamEnabled: this.openStreamEnabled,
+      sendNotification: this.sendNotification.bind(this),
+      handleResponse: async (response) => {
+        await this.outboundResponseRouter.route(response);
+      },
+      sessionStore: this.sessionStore,
+      onClientSessionEvicted: this.onClientSessionEvicted,
+      correlationStore: this.correlationStore,
+      policy: options.openStream?.policy,
+      logger: this.logger,
+    });
+
+    this.inboundCoordinator = new ServerInboundCoordinator({
+      sessionStore: this.sessionStore,
+      correlationStore: this.correlationStore,
+      authorizationPolicy: this.authorizationPolicy,
+      openStreamFactory: this.openStreamFactory,
+      inboundMiddlewares: this.inboundMiddlewares,
+      injectClientPubkey: this.injectClientPubkey,
+      shouldInjectRequestEventId: this.shouldInjectRequestEventId,
+      oversizedEnabled: this.oversizedEnabled,
+      openStreamEnabled: this.openStreamEnabled,
+      giftWrapMode: this.giftWrapMode,
+      sendMcpMessage: this.sendMcpMessage.bind(this),
+      createResponseTags: (clientPubkey, requestId) =>
+        this.createResponseTags(clientPubkey, String(requestId)),
+      getOrCreateClientSession: this.getOrCreateClientSession.bind(this),
+      forwardMessage: async (msg: JSONRPCMessage, clientPubkey: string) => {
+        this.onmessage?.(msg);
+        this.onmessageWithContext?.(msg, { clientPubkey });
+        return true;
+      },
+      logger: this.logger,
+      onerror: (error) => this.onerror?.(error),
+    });
+
+    this.inboundNotificationDispatcher = new InboundNotificationDispatcher({
+      openStreamReceiver: this.openStreamFactory.getReceiver(),
+      oversizedReceiver: this.oversizedReceiver,
+      openStreamFactory: this.openStreamFactory,
+      correlationStore: this.correlationStore,
+      sendNotification: this.sendNotification.bind(this),
+      handleIncomingRequest: this.inboundCoordinator.handleIncomingRequest.bind(
+        this.inboundCoordinator,
+      ),
+      handleIncomingNotification:
+        this.inboundCoordinator.handleIncomingNotification.bind(
+          this.inboundCoordinator,
+        ),
+      cleanupDroppedRequest: this.inboundCoordinator.cleanupDroppedRequest.bind(
+        this.inboundCoordinator,
+      ),
+      shouldInjectRequestEventId: this.shouldInjectRequestEventId,
+      injectClientPubkey: this.injectClientPubkey,
+      logger: this.logger,
+      onerror: (error) => this.onerror?.(error),
+    });
+
+    this.inboundCoordinator.setNotificationDispatcher(this.inboundNotificationDispatcher);
+
+
+
+    this.outboundResponseRouter = new OutboundResponseRouter({
+      correlationStore: this.correlationStore,
+      sessionStore: this.sessionStore,
+      announcementManager: this.announcementManager,
+      openStreamFactory: this.openStreamFactory,
+      oversizedConfig: {
+        enabled: this.oversizedEnabled,
+        threshold: this.oversizedThreshold,
+        chunkSize: this.oversizedChunkSize,
+      },
+      applyListToolsResultTransformers: this.applyListToolsResultTransformers.bind(this),
+      buildOutboundTags: this.capabilityNegotiator.buildOutboundTags.bind(this.capabilityNegotiator),
+      createResponseTags: this.createResponseTags.bind(this),
+      chooseGiftWrapKind: this.capabilityNegotiator.chooseOutboundGiftWrapKind.bind(this.capabilityNegotiator),
+      sendMcpMessage: this.sendMcpMessage.bind(this),
+      measurePublishedMcpMessageSize: this.measurePublishedMcpMessageSize.bind(this),
+      resolveSafeOversizedChunkSize: this.resolveSafeOversizedChunkSize.bind(this),
+      logger: this.logger,
+      onerror: (error) => this.onerror?.(error),
+    });
+
+    this.outboundNotificationBroadcaster = new OutboundNotificationBroadcaster({
+      correlationStore: this.correlationStore,
+      sessionStore: this.sessionStore,
+      sendNotification: this.sendNotification.bind(this),
+      enqueueTask: this.taskQueue.add.bind(this.taskQueue),
+      logger: this.logger,
+      onerror: (error) => this.onerror?.(error),
+    });
+
+    this.eventPipeline = new ServerEventPipeline({
+      signer: this.signer,
+      seenEventIds: this.seenEventIds,
+      encryptionMode: this.encryptionMode,
+      giftWrapMode: this.giftWrapMode,
+      logger: this.logger,
+      onerror: (error) => this.onerror?.(error),
+    });
   }
 
   /**
@@ -530,9 +545,8 @@ export class NostrServerTransport
       this.correlationStore.clear();
       this.seenEventIds.clear();
       this.oversizedReceiver.clear();
-      this.openStreamReceiver.clear();
-      this.pendingOpenStreamResponses.clear();
-      this.openStreamWriters.clear();
+      this.openStreamFactory.getReceiver().clear();
+      this.openStreamFactory.clear();
       this.onclose?.();
     } catch (error) {
       this.onerror?.(error instanceof Error ? error : new Error(String(error)));
@@ -600,62 +614,6 @@ export class NostrServerTransport
     return session;
   }
 
-  private takePendingServerDiscoveryTags(session: ClientSession): string[][] {
-    if (session.hasSentCommonTags) {
-      return [];
-    }
-
-    session.hasSentCommonTags = true;
-    return this.announcementManager.getCommonTags();
-  }
-
-  private buildServerOutboundTags(params: {
-    baseTags: readonly string[][];
-    session: ClientSession;
-    includeDiscovery?: boolean;
-    negotiationTags?: readonly string[][];
-  }): string[][] {
-    const {
-      baseTags,
-      session,
-      includeDiscovery = true,
-      negotiationTags = [],
-    } = params;
-
-    return this.composeOutboundTags({
-      baseTags,
-      discoveryTags: includeDiscovery
-        ? this.takePendingServerDiscoveryTags(session)
-        : [],
-      negotiationTags,
-    });
-  }
-
-  private chooseServerOutboundGiftWrapKind(params: {
-    session: ClientSession;
-    fallbackWrapKind?: number;
-  }): number | undefined {
-    const { session, fallbackWrapKind } = params;
-
-    if (!session.isEncrypted) {
-      return undefined;
-    }
-
-    if (this.giftWrapMode === GiftWrapMode.EPHEMERAL) {
-      return EPHEMERAL_GIFT_WRAP_KIND;
-    }
-
-    if (this.giftWrapMode === GiftWrapMode.PERSISTENT) {
-      return GIFT_WRAP_KIND;
-    }
-
-    if (session.supportsEphemeralEncryption) {
-      return EPHEMERAL_GIFT_WRAP_KIND;
-    }
-
-    return fallbackWrapKind;
-  }
-
   private getRelayUrls(relayHandler: RelayHandler): string[] {
     return relayHandler.getRelayUrls();
   }
@@ -694,150 +652,7 @@ export class NostrServerTransport
     }
   }
 
-  /**
-   * Handles incoming requests with correlation tracking.
-   * @param eventId The Nostr event ID.
-   * @param request The request message.
-   * @param clientPubkey The client's public key.
-   */
-  private handleIncomingRequest(
-    event: NostrEvent,
-    eventId: string,
-    request: JSONRPCRequest,
-    clientPubkey: string,
-    wrapKind?: number,
-  ): void {
-    // Store the original request ID for later restoration
-    const originalRequestId = request.id;
-    // Use the unique Nostr event ID as the MCP request ID to avoid collisions
-    request.id = eventId;
 
-    // Register the event route in the correlation store
-    const progressToken = request.params?._meta?.progressToken;
-    this.correlationStore.registerEventRoute(
-      eventId,
-      clientPubkey,
-      originalRequestId,
-      progressToken ? String(progressToken) : undefined,
-      wrapKind,
-      this.shouldInjectRequestEventId ? event : undefined,
-    );
-
-    if (this.openStreamEnabled && progressToken) {
-      const writer = new OpenStreamWriter({
-        progressToken: String(progressToken),
-        publishFrame: async (frame) => {
-          await this.sendNotification(clientPubkey, {
-            jsonrpc: '2.0',
-            method: 'notifications/progress',
-            params: frame,
-          });
-          return undefined;
-        },
-        onClose: async (): Promise<void> => {
-          await this.flushPendingOpenStreamResponse(eventId);
-        },
-        onAbort: async (reason?: string): Promise<void> => {
-          await this.handleOpenStreamWriterAbort(clientPubkey, eventId, reason);
-        },
-      });
-
-      this.openStreamWriters.set(eventId, writer);
-    }
-  }
-
-  private async flushPendingOpenStreamResponse(eventId: string): Promise<void> {
-    const pendingResponse = this.pendingOpenStreamResponses.get(eventId);
-    this.pendingOpenStreamResponses.delete(eventId);
-    this.openStreamWriters.delete(eventId);
-
-    if (!pendingResponse) {
-      return;
-    }
-
-    await this.handleResponse(pendingResponse);
-  }
-
-  private async handleOpenStreamWriterAbort(
-    clientPubkey: string,
-    eventId: string,
-    reason?: string,
-  ): Promise<void> {
-    if (reason === 'Probe timeout') {
-      const session = this.sessionStore.getSession(clientPubkey);
-      if (session) {
-        this.pendingOpenStreamSessionEvictions.set(eventId, {
-          clientPubkey,
-          session: { ...session },
-        });
-        this.evictedOpenStreamClientPubkeys.add(clientPubkey);
-      }
-
-      const removed = this.sessionStore.removeSession(clientPubkey);
-      if (removed || session) {
-        this.logger.info('Removed session after open-stream probe timeout', {
-          clientPubkey,
-          eventId,
-        });
-      }
-    }
-
-    await this.flushPendingOpenStreamResponse(eventId);
-  }
-
-  private finalizePendingOpenStreamSessionEviction(eventId: string): void {
-    const pendingEviction = this.pendingOpenStreamSessionEvictions.get(eventId);
-    if (!pendingEviction) {
-      return;
-    }
-
-    this.pendingOpenStreamSessionEvictions.delete(eventId);
-    this.evictedOpenStreamClientPubkeys.delete(pendingEviction.clientPubkey);
-  }
-
-  private findEventIdByProgressToken(
-    progressToken: string,
-  ): string | undefined {
-    for (const [clientPubkey] of this.sessionStore.getAllSessions()) {
-      const eventId = this.correlationStore.getEventIdByProgressToken(
-        clientPubkey,
-        progressToken,
-      );
-      if (eventId) {
-        return eventId;
-      }
-    }
-
-    return undefined;
-  }
-
-  /**
-   * Cleans up request correlation for a request that was dropped by middleware.
-   */
-  private cleanupDroppedRequest(message: JSONRPCMessage): void {
-    if (!isJSONRPCRequest(message)) {
-      return;
-    }
-
-    this.correlationStore.popEventRoute(String(message.id));
-  }
-
-  /**
-   * Handles incoming notifications.
-   * @param clientPubkey The client's public key.
-   * @param notification The notification message.
-   */
-  private handleIncomingNotification(
-    clientPubkey: string,
-    notification: JSONRPCMessage,
-  ): void {
-    if (
-      isJSONRPCNotification(notification) &&
-      notification.method === NOTIFICATIONS_INITIALIZED_METHOD
-    ) {
-      this.sessionStore.markInitialized(clientPubkey);
-    }
-  }
 
   /**
    * Handles response messages by finding the original request and routing back to client.
@@ -861,185 +676,7 @@ export class NostrServerTransport
   private async handleResponse(
     response: JSONRPCResponse | JSONRPCErrorResponse,
   ): Promise<void> {
-    // Handle special announcement responses
-    if (response.id === 'announcement') {
-      const wasHandled =
-        await this.announcementManager.handleAnnouncementResponse(response);
-      if (wasHandled && isJSONRPCResultResponse(response)) {
-        if (InitializeResultSchema.safeParse(response.result).success) {
-          this.logger.info('Initialized');
-        }
-      }
-      return;
-    }
-
-    // Find the event route using O(1) lookup
-    const nostrEventId = response.id as string;
-    const existingOpenStreamWriter = this.openStreamWriters.get(nostrEventId);
-    if (existingOpenStreamWriter && existingOpenStreamWriter.isActive) {
-      this.pendingOpenStreamResponses.set(nostrEventId, response);
-      return;
-    }
-
-    const route = this.correlationStore.popEventRoute(nostrEventId);
-
-    if (!route) {
-      this.onerror?.(
-        new Error(`No pending request found for response ID: ${response.id}`),
-      );
-      return;
-    }
-
-    const pendingEviction =
-      this.pendingOpenStreamSessionEvictions.get(nostrEventId);
-    const session =
-      this.sessionStore.getSession(route.clientPubkey) ??
-      pendingEviction?.session;
-    if (!session) {
-      this.onerror?.(
-        new Error(`No session found for client: ${route.clientPubkey}`),
-      );
-      return;
-    }
-
-    const parsedListToolsResult = isJSONRPCResultResponse(response)
-      ? ListToolsResultSchema.safeParse(response.result)
-      : null;
-
-    const responseToSend = parsedListToolsResult?.success
-      ? {
-          ...response,
-          result: this.applyListToolsResultTransformers(
-            parsedListToolsResult.data,
-          ),
-        }
-      : response;
-
-    // Restore the original request ID in the response
-    responseToSend.id = route.originalRequestId;
-
-    // CEP-22 Oversized Transfer (proactive path for server responses)
-    if (
-      this.oversizedEnabled &&
-      route.progressToken &&
-      session.supportsOversizedTransfer
-    ) {
-      // Serialize after restoring id so the client receives the original JSON-RPC id.
-      const serialized = JSON.stringify(responseToSend);
-      const continuationFrameTags = this.createResponseTags(
-        route.clientPubkey,
-        nostrEventId,
-      );
-      const startFrameTags = this.buildServerOutboundTags({
-        baseTags: continuationFrameTags,
-        session,
-      });
-      const giftWrapKind = this.chooseServerOutboundGiftWrapKind({
-        session,
-        fallbackWrapKind: route.wrapKind,
-      });
-      const publishedEventSize = await this.measurePublishedMcpMessageSize(
-        responseToSend,
-        route.clientPubkey,
-        CTXVM_MESSAGES_KIND,
-        startFrameTags,
-        session.isEncrypted,
-        giftWrapKind,
-      );
-      if (publishedEventSize > this.oversizedThreshold) {
-        const chunkSizeBytes = await this.resolveSafeOversizedChunkSize({
-          desiredChunkSizeBytes: this.oversizedChunkSize,
-          maxPublishedEventBytes: this.oversizedThreshold,
-          recipientPublicKey: route.clientPubkey,
-          kind: CTXVM_MESSAGES_KIND,
-          progressToken: route.progressToken,
-          progress: 2,
-          tags: continuationFrameTags,
-          isEncrypted: session.isEncrypted,
-          giftWrapKind,
-        });
-
-        try {
-          await sendOversizedServerResponse(
-            {
-              serialized,
-              clientPubkey: route.clientPubkey,
-              progressToken: route.progressToken,
-              startFrameTags,
-              continuationFrameTags,
-              isEncrypted: session.isEncrypted,
-              giftWrapKind,
-            },
-            {
-              chunkSizeBytes,
-            },
-            {
-              sendMcpMessage: this.sendMcpMessage.bind(this),
-              logger: this.logger,
-            },
-          );
-        } catch (error) {
-          this.correlationStore.registerEventRoute(
-            nostrEventId,
-            route.clientPubkey,
-            route.originalRequestId,
-            route.progressToken,
-            route.wrapKind,
-          );
-          throw error;
-        } finally {
-          this.finalizePendingOpenStreamSessionEviction(nostrEventId);
-        }
-        return;
-      }
-    }
-
-    // Send the response back to the original requester
-    const tags = this.buildServerOutboundTags({
-      baseTags: this.createResponseTags(route.clientPubkey, nostrEventId),
-      session,
-    });
-
-    const giftWrapKind = this.chooseServerOutboundGiftWrapKind({
-      session,
-      fallbackWrapKind: route.wrapKind,
-    });
-
-    // Attach pricing tags to capability list responses so clients can access CEP-8 pricing
-    if (isJSONRPCResultResponse(responseToSend)) {
-      const result = responseToSend.result;
-      if (
-        ListToolsResultSchema.safeParse(result).success ||
-        ListResourcesResultSchema.safeParse(result).success ||
-        ListResourceTemplatesResultSchema.safeParse(result).success ||
-        ListPromptsResultSchema.safeParse(result).success
-      ) {
-        tags.push(...this.announcementManager.getPricingTags());
-      }
-    }
-
-    try {
-      await this.sendMcpMessage(
-        responseToSend,
-        route.clientPubkey,
-        CTXVM_MESSAGES_KIND,
-        tags,
-        session.isEncrypted,
-        undefined,
-        giftWrapKind,
-      );
-    } catch (error) {
-      this.correlationStore.registerEventRoute(
-        nostrEventId,
-        route.clientPubkey,
-        route.originalRequestId,
-        route.progressToken,
-        route.wrapKind,
-      );
-      throw error;
-    } finally {
-      this.finalizePendingOpenStreamSessionEviction(nostrEventId);
-    }
+    await this.outboundResponseRouter.route(response);
   }
 
   /**
@@ -1049,64 +686,7 @@ export class NostrServerTransport
   private async handleNotification(
     notification: JSONRPCMessage,
   ): Promise<void> {
-    try {
-      // Special handling for progress notifications
-      // TODO: Add handling for `notifications/resources/updated`, as they need to be associated with an id
-      if (
-        isJSONRPCNotification(notification) &&
-        notification.method === 'notifications/progress' &&
-        notification.params?.progressToken
-      ) {
-        const token = String(notification.params.progressToken);
-
-        const nostrEventId = this.findEventIdByProgressToken(token);
-
-        if (nostrEventId) {
-          const route = this.correlationStore.getEventRoute(nostrEventId);
-          if (route) {
-            await this.sendNotification(
-              route.clientPubkey,
-              notification,
-              nostrEventId,
-            );
-            return;
-          }
-        }
-
-        const error = new Error(`No client found for progress token: ${token}`);
-        this.logger.error('Progress token not found', { token });
-        this.onerror?.(error);
-        return;
-      }
-
-      // Use TaskQueue for outbound notification broadcasting to prevent event loop blocking
-      for (const [
-        clientPubkey,
-        session,
-      ] of this.sessionStore.getAllSessions()) {
-        if (session.isInitialized) {
-          this.taskQueue.add(async () => {
-            try {
-              await this.sendNotification(clientPubkey, notification);
-            } catch (error) {
-              this.logger.error('Error sending notification', {
-                error: error instanceof Error ? error.message : String(error),
-                clientPubkey,
-                method: isJSONRPCNotification(notification)
-                  ? notification.method
-                  : 'unknown',
-              });
-            }
-          });
-        }
-      }
-    } catch (error) {
-      this.logger.error('Error in handleNotification', {
-        error: error instanceof Error ? error.message : String(error),
-        stack: error instanceof Error ? error.stack : undefined,
-      });
-      this.onerror?.(error instanceof Error ? error : new Error(String(error)));
-    }
+    await this.outboundNotificationBroadcaster.broadcast(notification);
   }
 
   /**
@@ -1120,7 +700,7 @@ export class NostrServerTransport
     notification: JSONRPCMessage,
     correlatedEventId?: string,
   ): Promise<void> {
-    if (this.evictedOpenStreamClientPubkeys.has(clientPubkey)) {
+    if (this.openStreamFactory.isClientEvicted(clientPubkey)) {
       throw new Error(`No active session found for client: ${clientPubkey}`);
     }
 
@@ -1134,12 +714,12 @@ export class NostrServerTransport
       baseTags.push([NOSTR_TAGS.EVENT_ID, correlatedEventId]);
     }
 
-    const tags = this.buildServerOutboundTags({
+    const tags = this.capabilityNegotiator.buildOutboundTags({
       baseTags,
       session,
     });
 
-    const giftWrapKind = this.chooseServerOutboundGiftWrapKind({
+    const giftWrapKind = this.capabilityNegotiator.chooseOutboundGiftWrapKind({
       session,
     });
 
@@ -1161,495 +741,29 @@ export class NostrServerTransport
    * @param event The incoming Nostr event.
    */
   private async processIncomingEvent(event: NostrEvent): Promise<void> {
-    try {
-      if (
-        event.kind === GIFT_WRAP_KIND ||
-        event.kind === EPHEMERAL_GIFT_WRAP_KIND
-      ) {
-        if (!this.isGiftWrapKindAllowed(event.kind)) {
-          this.logger.debug('Skipping gift wrap due to GiftWrapMode policy', {
-            eventId: event.id,
-            kind: event.kind,
-          });
-          return;
-        }
-
-        // Deduplicate gift-wrap envelopes before any expensive decryption.
-        if (this.seenEventIds.has(event.id)) {
-          this.logger.debug('Skipping duplicate gift-wrapped event', {
-            eventId: event.id,
-          });
-          return;
-        }
-        this.seenEventIds.set(event.id, true);
-
-        await this.handleEncryptedEvent(event);
-      } else {
-        await this.handleUnencryptedEvent(event);
-      }
-    } catch (error) {
-      this.logger.error('Error in processIncomingEvent', {
-        error: error instanceof Error ? error.message : String(error),
-        stack: error instanceof Error ? error.stack : undefined,
-        eventId: event.id,
-        eventKind: event.kind,
-      });
-      this.onerror?.(error instanceof Error ? error : new Error(String(error)));
-    }
-  }
-
-  /**
-   * Handles encrypted (gift-wrapped) events.
-   * @param event The incoming gift-wrapped Nostr event.
-   */
-  private async handleEncryptedEvent(event: NostrEvent): Promise<void> {
-    if (this.encryptionMode === EncryptionMode.DISABLED) {
-      this.logger.error(
-        `Received encrypted message from ${event.pubkey} but encryption is disabled. Ignoring.`,
-      );
-      return;
-    }
-    try {
-      const decryptedJson = await withTimeout(
-        decryptMessage(event, this.signer),
-        DEFAULT_TIMEOUT_MS,
-        'Decrypt message timed out',
-      );
-      const currentEvent = JSON.parse(decryptedJson) as NostrEvent;
-
-      // Verify the inner event's cryptographic signature to prevent identity
-      // forgery. Without this check an attacker can place any pubkey inside
-      // the plaintext and bypass allowlists. (Fixes #64)
-      if (!verifyEvent(currentEvent)) {
-        this.logger.error(
-          'Rejecting decrypted inner event with invalid signature',
-          {
-            innerEventId: currentEvent.id,
-            innerPubkey: currentEvent.pubkey,
-            outerEventId: event.id,
-          },
-        );
-        return;
-      }
-
-      // Deduplicate decrypted inner events before authorization and dispatch.
-      if (this.seenEventIds.has(currentEvent.id)) {
-        this.logger.debug('Skipping duplicate decrypted inner event', {
-          outerEventId: event.id,
-          innerEventId: currentEvent.id,
-        });
-        return;
-      }
-      this.seenEventIds.set(currentEvent.id, true);
-
-      await this.authorizeAndProcessEvent(currentEvent, true, event.kind);
-    } catch (error) {
-      this.logger.error('Failed to handle encrypted Nostr event', {
-        error: error instanceof Error ? error.message : String(error),
-        stack: error instanceof Error ? error.stack : undefined,
-        eventId: event.id,
-        pubkey: event.pubkey,
-      });
-      this.onerror?.(
-        error instanceof Error
-          ? error
-          : new Error('Failed to handle encrypted Nostr event'),
-      );
-    }
-  }
-
-  /**
-   * Handles unencrypted events.
-   * @param event The incoming Nostr event.
-   */
-  private async handleUnencryptedEvent(event: NostrEvent): Promise<void> {
-    if (this.encryptionMode === EncryptionMode.REQUIRED) {
-      this.logger.error(
-        `Received unencrypted message from ${event.pubkey} but encryption is required. Ignoring.`,
-      );
-      return;
-    }
-    if (!verifyEvent(event)) {
-      this.logger.error('Rejecting unencrypted event with invalid signature', {
-        eventId: event.id,
-        pubkey: event.pubkey,
-      });
-      return;
-    }
-    await this.authorizeAndProcessEvent(event, false);
-  }
-
-  /**
-   * Authorizes and processes an incoming Nostr event, handling message validation,
-   * client authorization, session management, and optional client public key injection.
-   * @param event The Nostr event to process.
-   * @param isEncrypted Whether the original event was encrypted.
-   */
-  private async authorizeAndProcessEvent(
-    event: NostrEvent,
-    isEncrypted: boolean,
-    wrapKind?: number,
-  ): Promise<void> {
-    try {
-      const mcpMessage = this.convertNostrEventToMcpMessage(event);
-
+    const unwrapped = await this.eventPipeline.unwrap(event);
+    if (unwrapped) {
+      const mcpMessage = this.convertNostrEventToMcpMessage(unwrapped.event);
       if (!mcpMessage) {
         this.logger.error(
           'Skipping invalid Nostr event with malformed JSON content',
           {
-            eventId: event.id,
-            pubkey: event.pubkey,
-            content: event.content,
+            eventId: unwrapped.event.id,
+            pubkey: unwrapped.event.pubkey,
+            content: unwrapped.event.content,
           },
         );
         return;
       }
-
-      const inboundMessage: JSONRPCMessage = mcpMessage;
-
-      // Check authorization using the authorization policy
-      const authDecision = await this.authorizationPolicy.authorize(
-        event.pubkey,
+      await this.inboundCoordinator.authorizeAndProcessEvent(
+        unwrapped.event,
+        unwrapped.isEncrypted,
         mcpMessage,
+        unwrapped.wrapKind,
       );
-
-      if (!authDecision.allowed) {
-        this.logger.error(
-          `Unauthorized message from ${event.pubkey}, message: ${JSON.stringify(mcpMessage)}. Ignoring.`,
-        );
-
-        if (
-          'shouldReplyUnauthorized' in authDecision &&
-          authDecision.shouldReplyUnauthorized &&
-          isJSONRPCRequest(mcpMessage)
-        ) {
-          const errorResponse: JSONRPCErrorResponse = {
-            jsonrpc: '2.0',
-            id: mcpMessage.id,
-            error: {
-              code: -32000,
-              message: 'Unauthorized',
-            },
-          };
-
-          const tags = this.createResponseTags(event.pubkey, event.id);
-          this.sendMcpMessage(
-            errorResponse,
-            event.pubkey,
-            CTXVM_MESSAGES_KIND,
-            tags,
-            isEncrypted,
-            undefined,
-            isEncrypted
-              ? this.giftWrapMode === GiftWrapMode.EPHEMERAL
-                ? EPHEMERAL_GIFT_WRAP_KIND
-                : this.giftWrapMode === GiftWrapMode.PERSISTENT
-                  ? GIFT_WRAP_KIND
-                  : wrapKind
-              : undefined,
-          ).catch((err) => {
-            this.logger.error('Failed to send unauthorized response', {
-              error: err instanceof Error ? err.message : String(err),
-              pubkey: event.pubkey,
-              eventId: event.id,
-            });
-            this.onerror?.(
-              new Error(`Failed to send unauthorized response: ${err}`),
-            );
-          });
-        }
-        return;
-      }
-
-      const session = this.getOrCreateClientSession(event.pubkey, isEncrypted);
-      const hadLearnedOversizedSupport = session.supportsOversizedTransfer;
-      const discoveredCapabilities = learnPeerCapabilities(event.tags);
-      session.supportsEncryption ||= discoveredCapabilities.supportsEncryption;
-      session.supportsEphemeralEncryption ||=
-        discoveredCapabilities.supportsEphemeralEncryption;
-      session.supportsOversizedTransfer ||=
-        this.oversizedEnabled &&
-        discoveredCapabilities.supportsOversizedTransfer;
-      session.supportsOpenStream ||=
-        this.openStreamEnabled && discoveredCapabilities.supportsOpenStream;
-
-      const shouldSendAccept = !hadLearnedOversizedSupport;
-
-      const forward = async (msg: JSONRPCMessage): Promise<boolean> => {
-        this.onmessage?.(msg);
-        this.onmessageWithContext?.(msg, {
-          clientPubkey: event.pubkey,
-        });
-        return true;
-      };
-
-      const clientPmis = event.tags
-        .filter((tag) => tag[0] === 'pmi' && typeof tag[1] === 'string')
-        .map((tag) => tag[1] as string);
-      const ctx = {
-        clientPubkey: event.pubkey,
-        clientPmis: clientPmis.length > 0 ? clientPmis : undefined,
-      };
-      const middlewares = this.inboundMiddlewares;
-
-      const dispatch = async (
-        index: number,
-        msg: JSONRPCMessage,
-      ): Promise<boolean> => {
-        const mw = middlewares[index];
-        if (!mw) {
-          return await forward(msg);
-        }
-        let forwarded = false;
-        await mw(msg, ctx, async (nextMsg) => {
-          forwarded = await dispatch(index + 1, nextMsg);
-        });
-        return forwarded;
-      };
-
-      if (isJSONRPCRequest(inboundMessage)) {
-        this.handleIncomingRequest(
-          event,
-          event.id,
-          inboundMessage,
-          event.pubkey,
-          wrapKind,
-        );
-
-        if (this.shouldInjectRequestEventId) {
-          injectRequestEventId(inboundMessage, event.id);
-        }
-
-        if (this.injectClientPubkey) {
-          injectClientPubkey(inboundMessage, event.pubkey);
-        }
-
-        const openStreamWriter = this.openStreamWriters.get(event.id);
-        if (openStreamWriter) {
-          const params = inboundMessage.params ?? {};
-          inboundMessage.params = params;
-          const meta = params._meta ?? {};
-          params._meta = meta;
-          (meta as { stream?: OpenStreamWriter }).stream = openStreamWriter;
-        }
-      } else if (isJSONRPCNotification(inboundMessage)) {
-        this.handleIncomingNotification(event.pubkey, inboundMessage);
-
-        if (
-          inboundMessage.method === 'notifications/progress' &&
-          OpenStreamReceiver.isOpenStreamFrame(inboundMessage)
-        ) {
-          const frame = inboundMessage.params?.cvm as
-            | { frameType?: string; reason?: string }
-            | undefined;
-
-          if (frame?.frameType === 'abort') {
-            const progressToken = String(
-              inboundMessage.params?.progressToken ?? '',
-            );
-            const eventId = this.correlationStore.getEventIdByProgressToken(
-              event.pubkey,
-              progressToken,
-            );
-            const writer = eventId
-              ? this.openStreamWriters.get(eventId)
-              : undefined;
-
-            if (writer) {
-              void writer.abort(frame.reason).catch((err: unknown) => {
-                this.logger.error(
-                  'Open stream abort propagation failed (server)',
-                  {
-                    error: err instanceof Error ? err.message : String(err),
-                    pubkey: event.pubkey,
-                    progressToken,
-                  },
-                );
-                this.onerror?.(
-                  err instanceof Error ? err : new Error(String(err)),
-                );
-              });
-            }
-
-            return;
-          }
-
-          if (frame?.frameType === 'ping') {
-            const progressToken = String(
-              inboundMessage.params?.progressToken ?? '',
-            );
-            const nonce =
-              'nonce' in frame && typeof frame.nonce === 'string'
-                ? frame.nonce
-                : '';
-            const eventId = this.correlationStore.getEventIdByProgressToken(
-              event.pubkey,
-              progressToken,
-            );
-            const writer = eventId
-              ? this.openStreamWriters.get(eventId)
-              : undefined;
-
-            if (writer) {
-              void writer.pong(nonce).catch((err: unknown) => {
-                this.logger.error('Open stream ping handling failed (server)', {
-                  error: err instanceof Error ? err.message : String(err),
-                  pubkey: event.pubkey,
-                  progressToken,
-                });
-                this.onerror?.(
-                  err instanceof Error ? err : new Error(String(err)),
-                );
-              });
-
-              return;
-            }
-          }
-
-          this.openStreamReceiver
-            .processFrame(inboundMessage)
-            .then(async () => {
-              const frameType = frame?.frameType;
-
-              if (frameType === 'start' && session.supportsOpenStream) {
-                await this.sendNotification(event.pubkey, {
-                  jsonrpc: '2.0',
-                  method: 'notifications/progress',
-                  params: buildOpenStreamAcceptFrame({
-                    progressToken: String(
-                      inboundMessage.params?.progressToken ?? '',
-                    ),
-                    progress: Number(inboundMessage.params?.progress ?? 0) + 1,
-                  }),
-                });
-              }
-            })
-            .catch((err: unknown) => {
-              this.logger.error('Open stream error (server)', {
-                error: err instanceof Error ? err.message : String(err),
-                pubkey: event.pubkey,
-              });
-              this.onerror?.(
-                err instanceof Error ? err : new Error(String(err)),
-              );
-            });
-          return;
-        }
-
-        if (
-          inboundMessage.method === 'notifications/progress' &&
-          OversizedTransferReceiver.isOversizedFrame(inboundMessage)
-        ) {
-          this.oversizedReceiver
-            .processFrame(inboundMessage)
-            .then(async (synthetic) => {
-              if (synthetic === null) {
-                if (
-                  (
-                    inboundMessage.params?.cvm as
-                      | { frameType?: string }
-                      | undefined
-                  )?.frameType === 'start' &&
-                  shouldSendAccept
-                ) {
-                  await sendAcceptFrame(
-                    {
-                      clientPubkey: event.pubkey,
-                      progressToken: String(
-                        inboundMessage.params?.progressToken ?? '',
-                      ),
-                    },
-                    {
-                      sendNotification: this.sendNotification.bind(this),
-                    },
-                  ).catch((err: unknown) => {
-                    this.logger.error('Failed to send oversized accept', {
-                      error: err instanceof Error ? err.message : String(err),
-                    });
-                  });
-                }
-                return;
-              }
-
-              if (isJSONRPCRequest(synthetic)) {
-                this.handleIncomingRequest(
-                  event,
-                  event.id,
-                  synthetic,
-                  event.pubkey,
-                  wrapKind,
-                );
-
-                if (this.shouldInjectRequestEventId) {
-                  injectRequestEventId(synthetic, event.id);
-                }
-
-                if (this.injectClientPubkey) {
-                  injectClientPubkey(synthetic, event.pubkey);
-                }
-              } else if (isJSONRPCNotification(synthetic)) {
-                this.handleIncomingNotification(event.pubkey, synthetic);
-              }
-
-              void dispatch(0, synthetic)
-                .then((forwarded) => {
-                  if (!forwarded) {
-                    this.cleanupDroppedRequest(synthetic);
-                  }
-                })
-                .catch((err: unknown) => {
-                  this.logger.error(
-                    'Error dispatching reassembled oversized message',
-                    {
-                      error: err instanceof Error ? err.message : String(err),
-                      pubkey: event.pubkey,
-                    },
-                  );
-                  this.onerror?.(
-                    err instanceof Error
-                      ? err
-                      : new Error('oversized dispatch failed'),
-                  );
-                });
-            })
-            .catch((err: unknown) => {
-              this.logger.error('Oversized transfer error (server)', {
-                error: err instanceof Error ? err.message : String(err),
-              });
-              this.onerror?.(
-                err instanceof Error ? err : new Error(String(err)),
-              );
-            });
-          return;
-        }
-      }
-
-      void dispatch(0, inboundMessage)
-        .then((forwarded) => {
-          if (!forwarded) {
-            this.cleanupDroppedRequest(inboundMessage);
-          }
-        })
-        .catch((err: unknown) => {
-          this.logger.error('Error in inboundMiddleware chain', {
-            error: err instanceof Error ? err.message : String(err),
-            eventId: event.id,
-            pubkey: event.pubkey,
-          });
-          this.onerror?.(
-            err instanceof Error ? err : new Error('inboundMiddleware failed'),
-          );
-        });
-    } catch (error) {
-      this.logger.error('Error in authorizeAndProcessEvent', {
-        error: error instanceof Error ? error.message : String(error),
-        stack: error instanceof Error ? error.stack : undefined,
-        eventId: event.id,
-        pubkey: event.pubkey,
-      });
-      this.onerror?.(error instanceof Error ? error : new Error(String(error)));
     }
   }
+
 
   /**
    * Test-only accessor for internal state.
@@ -1660,10 +774,11 @@ export class NostrServerTransport
       sessionStore: this.sessionStore,
       correlationStore: this.correlationStore,
       oversizedReceiver: this.oversizedReceiver,
-      openStreamReceiver: this.openStreamReceiver,
-      pendingOpenStreamResponses: this.pendingOpenStreamResponses,
-      pendingOpenStreamSessionEvictions: this.pendingOpenStreamSessionEvictions,
-      openStreamWriters: this.openStreamWriters,
+      openStreamReceiver: this.openStreamFactory.getReceiver(),
+      openStreamWriters: this.openStreamFactory.getWritersMap(),
+      pendingOpenStreamResponses: this.openStreamFactory.getPendingResponsesMap(),
+      openStreamFactory: this.openStreamFactory,
+      inboundCoordinator: this.inboundCoordinator,
     };
   }
 }

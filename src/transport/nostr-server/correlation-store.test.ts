@@ -54,7 +54,7 @@ describe('CorrelationStore', () => {
       const store = new CorrelationStore();
       store.registerEventRoute('event1', 'client1', 'req1', 'token1');
 
-      expect(store.getEventIdByProgressToken('client1', 'token1')).toBe(
+      expect(store.getEventIdByProgressToken('token1', 'client1')).toBe(
         'event1',
       );
       expect(store.hasProgressToken('client1', 'token1')).toBe(true);
@@ -65,10 +65,10 @@ describe('CorrelationStore', () => {
       store.registerEventRoute('event1', 'client1', 'req1', 'shared');
       store.registerEventRoute('event2', 'client2', 'req2', 'shared');
 
-      expect(store.getEventIdByProgressToken('client1', 'shared')).toBe(
+      expect(store.getEventIdByProgressToken('shared', 'client1')).toBe(
         'event1',
       );
-      expect(store.getEventIdByProgressToken('client2', 'shared')).toBe(
+      expect(store.getEventIdByProgressToken('shared', 'client2')).toBe(
         'event2',
       );
     });
@@ -136,9 +136,7 @@ describe('CorrelationStore', () => {
   describe('getEventIdByProgressToken', () => {
     it('returns undefined for unknown token', () => {
       const store = new CorrelationStore();
-      expect(
-        store.getEventIdByProgressToken('client1', 'unknown'),
-      ).toBeUndefined();
+      expect(store.getEventIdByProgressToken('unknown', 'client1')).toBeUndefined();
     });
 
     it('returns correct event id for token', () => {
@@ -146,10 +144,10 @@ describe('CorrelationStore', () => {
       store.registerEventRoute('event1', 'client1', 'req1', 'token1');
       store.registerEventRoute('event2', 'client2', 'req2', 'token2');
 
-      expect(store.getEventIdByProgressToken('client1', 'token1')).toBe(
+      expect(store.getEventIdByProgressToken('token1', 'client1')).toBe(
         'event1',
       );
-      expect(store.getEventIdByProgressToken('client2', 'token2')).toBe(
+      expect(store.getEventIdByProgressToken('token2', 'client2')).toBe(
         'event2',
       );
     });
@@ -430,17 +428,17 @@ describe('CorrelationStore', () => {
       const store = new CorrelationStore();
 
       store.registerEventRoute('event1', 'client1', 'req1', 'token1');
-      expect(store.getEventIdByProgressToken('client1', 'token1')).toBe(
+      expect(store.getEventIdByProgressToken('token1', 'client1')).toBe(
         'event1',
       );
 
       store.registerEventRoute('event2', 'client1', 'req2', 'token1');
 
-      expect(store.getEventIdByProgressToken('client1', 'token1')).toBe(
+      expect(store.getEventIdByProgressToken('token1', 'client1')).toBe(
         'event2',
       );
       expect(
-        store.getEventIdByProgressToken('client2', 'token1'),
+        store.getEventIdByProgressToken('token1', 'client2'),
       ).toBeUndefined();
     });
 
