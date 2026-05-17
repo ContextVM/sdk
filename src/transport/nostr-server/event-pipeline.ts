@@ -1,9 +1,18 @@
 import { type NostrEvent } from 'nostr-tools';
 import { verifyEvent } from 'nostr-tools/pure';
-import { type NostrSigner, EncryptionMode, GiftWrapMode } from '../../core/interfaces.js';
+import {
+  type NostrSigner,
+  EncryptionMode,
+  GiftWrapMode,
+} from '../../core/interfaces.js';
 import { type LruCache } from '../../core/utils/lru-cache.js';
 import { type Logger } from '../../core/utils/logger.js';
-import { decryptMessage, DEFAULT_TIMEOUT_MS, EPHEMERAL_GIFT_WRAP_KIND, GIFT_WRAP_KIND } from '../../core/index.js';
+import {
+  decryptMessage,
+  DEFAULT_TIMEOUT_MS,
+  EPHEMERAL_GIFT_WRAP_KIND,
+  GIFT_WRAP_KIND,
+} from '../../core/index.js';
 import { withTimeout } from '../../core/utils/utils.js';
 
 /** Dependencies for the server-side event decryption and verification pipeline. */
@@ -37,10 +46,13 @@ export class ServerEventPipeline {
         event.kind === EPHEMERAL_GIFT_WRAP_KIND
       ) {
         if (!this.isGiftWrapKindAllowed(event.kind)) {
-          this.deps.logger.debug('Skipping gift wrap due to GiftWrapMode policy', {
-            eventId: event.id,
-            kind: event.kind,
-          });
+          this.deps.logger.debug(
+            'Skipping gift wrap due to GiftWrapMode policy',
+            {
+              eventId: event.id,
+              kind: event.kind,
+            },
+          );
           return null;
         }
 
@@ -64,7 +76,9 @@ export class ServerEventPipeline {
         eventId: event.id,
         eventKind: event.kind,
       });
-      this.deps.onerror?.(error instanceof Error ? error : new Error(String(error)));
+      this.deps.onerror?.(
+        error instanceof Error ? error : new Error(String(error)),
+      );
       return null;
     }
   }
@@ -79,7 +93,9 @@ export class ServerEventPipeline {
     return true;
   }
 
-  private async handleEncryptedEvent(event: NostrEvent): Promise<UnwrappedEvent | null> {
+  private async handleEncryptedEvent(
+    event: NostrEvent,
+  ): Promise<UnwrappedEvent | null> {
     if (this.deps.encryptionMode === EncryptionMode.DISABLED) {
       this.deps.logger.error(
         `Received encrypted message from ${event.pubkey} but encryption is disabled. Ignoring.`,
@@ -144,10 +160,13 @@ export class ServerEventPipeline {
       return null;
     }
     if (!verifyEvent(event)) {
-      this.deps.logger.error('Rejecting unencrypted event with invalid signature', {
-        eventId: event.id,
-        pubkey: event.pubkey,
-      });
+      this.deps.logger.error(
+        'Rejecting unencrypted event with invalid signature',
+        {
+          eventId: event.id,
+          pubkey: event.pubkey,
+        },
+      );
       return null;
     }
     return { event, isEncrypted: false };

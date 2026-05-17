@@ -55,7 +55,11 @@ export class ClientOpenStreamFactory {
             await this.send({
               jsonrpc: '2.0',
               method: 'notifications/progress',
-              params: buildOpenStreamPingFrame({ progressToken, progress, nonce }),
+              params: buildOpenStreamPingFrame({
+                progressToken,
+                progress,
+                nonce,
+              }),
             });
           },
           sendPong: async (nonce: string): Promise<void> => {
@@ -63,7 +67,11 @@ export class ClientOpenStreamFactory {
             await this.send({
               jsonrpc: '2.0',
               method: 'notifications/progress',
-              params: buildOpenStreamPongFrame({ progressToken, progress, nonce }),
+              params: buildOpenStreamPongFrame({
+                progressToken,
+                progress,
+                nonce,
+              }),
             });
           },
           sendAbort: async (reason?: string): Promise<void> => {
@@ -71,7 +79,11 @@ export class ClientOpenStreamFactory {
             await this.send({
               jsonrpc: '2.0',
               method: 'notifications/progress',
-              params: buildOpenStreamAbortFrame({ progressToken, progress, reason }),
+              params: buildOpenStreamAbortFrame({
+                progressToken,
+                progress,
+                reason,
+              }),
             });
           },
         };
@@ -142,7 +154,11 @@ export class ClientOpenStreamFactory {
         await this.send({
           jsonrpc: '2.0',
           method: 'notifications/progress',
-          params: buildOpenStreamAbortFrame({ progressToken, progress, reason }),
+          params: buildOpenStreamAbortFrame({
+            progressToken,
+            progress,
+            reason,
+          }),
         });
       },
     });

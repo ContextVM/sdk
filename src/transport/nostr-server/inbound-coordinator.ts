@@ -48,8 +48,14 @@ export interface ServerInboundCoordinatorDeps {
     wrapKind?: number,
   ) => Promise<string>;
   createResponseTags: (clientPubkey: string, requestId: string) => string[][];
-  getOrCreateClientSession: (clientPubkey: string, isEncrypted: boolean) => ClientSession;
-  forwardMessage: (msg: JSONRPCMessage, clientPubkey: string) => Promise<boolean>;
+  getOrCreateClientSession: (
+    clientPubkey: string,
+    isEncrypted: boolean,
+  ) => ClientSession;
+  forwardMessage: (
+    msg: JSONRPCMessage,
+    clientPubkey: string,
+  ) => Promise<boolean>;
   logger: Logger;
   onerror?: (error: Error) => void;
 }
@@ -63,7 +69,9 @@ export class ServerInboundCoordinator {
 
   constructor(private deps: ServerInboundCoordinatorDeps) {}
 
-  public setNotificationDispatcher(dispatcher: InboundNotificationDispatcher): void {
+  public setNotificationDispatcher(
+    dispatcher: InboundNotificationDispatcher,
+  ): void {
     this.inboundNotificationDispatcher = dispatcher;
   }
 
@@ -135,7 +143,10 @@ export class ServerInboundCoordinator {
         return;
       }
 
-      const session = this.deps.getOrCreateClientSession(event.pubkey, isEncrypted);
+      const session = this.deps.getOrCreateClientSession(
+        event.pubkey,
+        isEncrypted,
+      );
       const hadLearnedOversizedSupport = session.supportsOversizedTransfer;
       const discoveredCapabilities = learnPeerCapabilities(event.tags);
       session.supportsEncryption ||= discoveredCapabilities.supportsEncryption;
@@ -145,7 +156,8 @@ export class ServerInboundCoordinator {
         this.deps.oversizedEnabled &&
         discoveredCapabilities.supportsOversizedTransfer;
       session.supportsOpenStream ||=
-        this.deps.openStreamEnabled && discoveredCapabilities.supportsOpenStream;
+        this.deps.openStreamEnabled &&
+        discoveredCapabilities.supportsOpenStream;
 
       const shouldSendAccept = !hadLearnedOversizedSupport;
 
@@ -190,7 +202,9 @@ export class ServerInboundCoordinator {
           injectClientPubkey(inboundMessage, event.pubkey);
         }
 
-        const openStreamWriter = this.deps.openStreamFactory.getWriter(event.id);
+        const openStreamWriter = this.deps.openStreamFactory.getWriter(
+          event.id,
+        );
         if (openStreamWriter) {
           const params = inboundMessage.params ?? {};
           inboundMessage.params = params;
@@ -232,7 +246,9 @@ export class ServerInboundCoordinator {
         eventId: event.id,
         pubkey: event.pubkey,
       });
-      this.deps.onerror?.(error instanceof Error ? error : new Error(String(error)));
+      this.deps.onerror?.(
+        error instanceof Error ? error : new Error(String(error)),
+      );
     }
   }
 

@@ -31,7 +31,9 @@ export interface ClientOutboundSenderDeps {
     wrapKind?: number,
   ) => Promise<string>;
   waitForAccept: (token: string, timeoutMs: number) => Promise<void>;
-  getOriginalRequestContext: (msg: JSONRPCMessage) => OriginalRequestContext | undefined;
+  getOriginalRequestContext: (
+    msg: JSONRPCMessage,
+  ) => OriginalRequestContext | undefined;
   resolvePendingOpenStream: (progressToken: string) => void;
   measurePublishedMcpMessageSize: (
     message: JSONRPCMessage,
@@ -76,16 +78,18 @@ export class ClientOutboundSender {
           includeDiscovery: isRequest,
         });
 
-        const giftWrapKind = this.deps.capabilityNegotiator.chooseOutboundGiftWrapKind();
+        const giftWrapKind =
+          this.deps.capabilityNegotiator.chooseOutboundGiftWrapKind();
 
-        const publishedEventSize = await this.deps.measurePublishedMcpMessageSize(
-          message,
-          this.deps.serverPubkey,
-          CTXVM_MESSAGES_KIND,
-          tags,
-          undefined,
-          giftWrapKind,
-        );
+        const publishedEventSize =
+          await this.deps.measurePublishedMcpMessageSize(
+            message,
+            this.deps.serverPubkey,
+            CTXVM_MESSAGES_KIND,
+            tags,
+            undefined,
+            giftWrapKind,
+          );
 
         if (publishedEventSize > this.deps.oversizedThreshold) {
           await this.sendOversizedRequest(
@@ -103,7 +107,8 @@ export class ClientOutboundSender {
       includeDiscovery: isRequest,
     });
 
-    const giftWrapKind = this.deps.capabilityNegotiator.chooseOutboundGiftWrapKind();
+    const giftWrapKind =
+      this.deps.capabilityNegotiator.chooseOutboundGiftWrapKind();
 
     const eventId = await this.deps.sendMcpMessage(
       message,
@@ -152,7 +157,9 @@ export class ClientOutboundSender {
     progressToken: string,
     giftWrapKind: number,
   ): Promise<void> {
-    const frameRecipientTags = this.deps.createRecipientTags(this.deps.serverPubkey);
+    const frameRecipientTags = this.deps.createRecipientTags(
+      this.deps.serverPubkey,
+    );
     const startFrameTags = this.deps.capabilityNegotiator.buildOutboundTags({
       baseTags: frameRecipientTags,
       includeDiscovery: true,
@@ -195,7 +202,8 @@ export class ClientOutboundSender {
         originalRequestId: originalMessage.id,
         isInitialize: originalMessage.method === INITIALIZE_METHOD,
         progressToken,
-        originalRequestContext: this.deps.getOriginalRequestContext(originalMessage),
+        originalRequestContext:
+          this.deps.getOriginalRequestContext(originalMessage),
       });
     }
 

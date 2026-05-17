@@ -34,9 +34,7 @@ import {
   OversizedTransferReceiver,
   type TransferPolicy,
 } from './oversized-transfer/index.js';
-import {
-  OpenStreamSession,
-} from './open-stream/index.js';
+import { OpenStreamSession } from './open-stream/index.js';
 
 import { ClientCapabilityNegotiator } from './capability-negotiator.js';
 import { ClientInboundCoordinator } from './nostr-client/inbound-coordinator.js';
@@ -229,14 +227,15 @@ export class NostrClientTransport
       composeOutboundTags: this.composeOutboundTags.bind(this),
     });
 
-    this.inboundNotificationDispatcher = new ClientInboundNotificationDispatcher({
-      openStreamReceiver: this.openStreamFactory.getReceiver(),
-      oversizedReceiver: this.oversizedReceiver,
-      handleResponse: this.handleResponse.bind(this),
-      handleNotification: this.handleNotification.bind(this),
-      logger: this.logger,
-      onerror: (error) => this.onerror?.(error),
-    });
+    this.inboundNotificationDispatcher =
+      new ClientInboundNotificationDispatcher({
+        openStreamReceiver: this.openStreamFactory.getReceiver(),
+        oversizedReceiver: this.oversizedReceiver,
+        handleResponse: this.handleResponse.bind(this),
+        handleNotification: this.handleNotification.bind(this),
+        logger: this.logger,
+        onerror: (error) => this.onerror?.(error),
+      });
 
     this.eventPipeline = new ClientEventPipeline({
       signer: this.signer,
@@ -277,9 +276,12 @@ export class NostrClientTransport
         this.oversizedReceiver,
       ),
       getOriginalRequestContext: this.getOriginalRequestContext.bind(this),
-      resolvePendingOpenStream: this.resolvePendingOutboundOpenStream.bind(this),
-      measurePublishedMcpMessageSize: this.measurePublishedMcpMessageSize.bind(this),
-      resolveSafeOversizedChunkSize: this.resolveSafeOversizedChunkSize.bind(this),
+      resolvePendingOpenStream:
+        this.resolvePendingOutboundOpenStream.bind(this),
+      measurePublishedMcpMessageSize:
+        this.measurePublishedMcpMessageSize.bind(this),
+      resolveSafeOversizedChunkSize:
+        this.resolveSafeOversizedChunkSize.bind(this),
       logger: this.logger,
     });
   }
@@ -389,7 +391,6 @@ export class NostrClientTransport
       });
     }
   }
-
 
   private getOriginalRequestContext(
     message: JSONRPCMessage,
@@ -726,7 +727,8 @@ export class NostrClientTransport
       relayUrls: this.relayHandler.getRelayUrls?.() ?? [],
       serverInitializeEvent: this.metadataStore.getServerInitializeEvent(),
       serverToolsListEvent: this.metadataStore.getServerToolsListEvent(),
-      serverResourcesListEvent: this.metadataStore.getServerResourcesListEvent(),
+      serverResourcesListEvent:
+        this.metadataStore.getServerResourcesListEvent(),
       serverResourceTemplatesListEvent:
         this.metadataStore.getServerResourceTemplatesListEvent(),
       serverPromptsListEvent: this.metadataStore.getServerPromptsListEvent(),

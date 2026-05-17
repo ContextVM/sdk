@@ -15,8 +15,15 @@ import { OversizedTransferReceiver } from '../oversized-transfer/index.js';
 export interface ClientInboundNotificationDispatcherDeps {
   openStreamReceiver: OpenStreamReceiver;
   oversizedReceiver: OversizedTransferReceiver;
-  handleResponse: (correlatedEventId: string, synthetic: JSONRPCResponse) => void;
-  handleNotification: (eventId: string, correlatedEventId: string | undefined, synthetic: JSONRPCMessage) => void;
+  handleResponse: (
+    correlatedEventId: string,
+    synthetic: JSONRPCResponse,
+  ) => void;
+  handleNotification: (
+    eventId: string,
+    correlatedEventId: string | undefined,
+    synthetic: JSONRPCMessage,
+  ) => void;
   logger: Logger;
   onerror?: (error: Error) => void;
 }
@@ -47,7 +54,9 @@ export class ClientInboundNotificationDispatcher {
           this.deps.logger.error('Open stream error (client)', {
             error: err instanceof Error ? err.message : String(err),
           });
-          this.deps.onerror?.(err instanceof Error ? err : new Error(String(err)));
+          this.deps.onerror?.(
+            err instanceof Error ? err : new Error(String(err)),
+          );
         });
       // Allow progress notifications to fall through to the user's onmessage handler
       return false;
@@ -86,7 +95,9 @@ export class ClientInboundNotificationDispatcher {
           this.deps.logger.error('Oversized transfer error (client)', {
             error: err instanceof Error ? err.message : String(err),
           });
-          this.deps.onerror?.(err instanceof Error ? err : new Error(String(err)));
+          this.deps.onerror?.(
+            err instanceof Error ? err : new Error(String(err)),
+          );
         });
       return true;
     }

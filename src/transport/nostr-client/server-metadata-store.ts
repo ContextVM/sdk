@@ -1,4 +1,7 @@
-import { type InitializeResult, InitializeResultSchema } from '@modelcontextprotocol/sdk/types.js';
+import {
+  type InitializeResult,
+  InitializeResultSchema,
+} from '@modelcontextprotocol/sdk/types.js';
 import { type NostrEvent } from 'nostr-tools';
 import { NOSTR_TAGS } from '../../core/constants.js';
 import { getNostrEventTag } from '../../core/utils/serializers.js';
@@ -52,7 +55,10 @@ export class ServerMetadataStore {
     return this.supportsOpenStream;
   }
 
-  public updateListEnvelopeState(type: ListEnvelopeType, event: NostrEvent): void {
+  public updateListEnvelopeState(
+    type: ListEnvelopeType,
+    event: NostrEvent,
+  ): void {
     switch (type) {
       case 'tools':
         this.serverToolsListEvent = event;

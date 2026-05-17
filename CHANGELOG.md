@@ -1,5 +1,16 @@
 # @contextvm/sdk
 
+## 0.11.9
+
+### Patch Changes
+
+- fix: make open-stream browser-safe and remove production Buffer usage
+  - replace CEP-41 stream byte accounting in [`OpenStreamSession`](src/transport/open-stream/session.ts:55) with `TextEncoder`-based UTF-8 measurement
+  - make internal open-stream processing failures terminate sessions so consumers observe iterator/`closed` errors
+  - add regression coverage for browser-safe byte accounting and failure propagation in [`session.test.ts`](src/transport/open-stream/session.test.ts) and [`registry.test.ts`](src/transport/open-stream/registry.test.ts)
+  - add runtime-neutral Base64 helper in [`base64.ts`](src/core/utils/base64.ts) and use it in LNBits payment modules
+  - document Node/browser compatibility rules in [`AGENTS.md`](AGENTS.md) to prevent future Node-only globals in production paths
+
 ## 0.11.8
 
 ### Patch Changes

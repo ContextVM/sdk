@@ -1,4 +1,8 @@
-import { NOSTR_TAGS, EPHEMERAL_GIFT_WRAP_KIND, GIFT_WRAP_KIND } from '../core/constants.js';
+import {
+  NOSTR_TAGS,
+  EPHEMERAL_GIFT_WRAP_KIND,
+  GIFT_WRAP_KIND,
+} from '../core/constants.js';
 import { EncryptionMode, GiftWrapMode } from '../core/interfaces.js';
 import { type NostrEvent } from 'nostr-tools';
 import { type ClientSession } from './nostr-server/session-store.js';
@@ -58,7 +62,9 @@ export function getDiscoveryTags(tags: readonly string[][]): string[][] {
   return tags
     .filter((tag) => {
       const tagName = tag[0];
-      return typeof tagName === 'string' && !NON_DISCOVERY_TAG_NAMES.has(tagName);
+      return (
+        typeof tagName === 'string' && !NON_DISCOVERY_TAG_NAMES.has(tagName)
+      );
     })
     .map((tag) => cloneTag(tag));
 }
@@ -86,8 +92,14 @@ export function learnPeerCapabilities(
 ): PeerCapabilities {
   return {
     supportsEncryption: hasSingleTag(eventTags, NOSTR_TAGS.SUPPORT_ENCRYPTION),
-    supportsEphemeralEncryption: hasSingleTag(eventTags, NOSTR_TAGS.SUPPORT_ENCRYPTION_EPHEMERAL),
-    supportsOversizedTransfer: hasSingleTag(eventTags, NOSTR_TAGS.SUPPORT_OVERSIZED_TRANSFER),
+    supportsEphemeralEncryption: hasSingleTag(
+      eventTags,
+      NOSTR_TAGS.SUPPORT_ENCRYPTION_EPHEMERAL,
+    ),
+    supportsOversizedTransfer: hasSingleTag(
+      eventTags,
+      NOSTR_TAGS.SUPPORT_OVERSIZED_TRANSFER,
+    ),
     supportsOpenStream: hasSingleTag(eventTags, NOSTR_TAGS.SUPPORT_OPEN_STREAM),
   };
 }
@@ -128,10 +140,17 @@ export class ServerCapabilityNegotiator {
     includeDiscovery?: boolean;
     negotiationTags?: readonly string[][];
   }): string[][] {
-    const { baseTags, session, includeDiscovery = true, negotiationTags = [] } = params;
+    const {
+      baseTags,
+      session,
+      includeDiscovery = true,
+      negotiationTags = [],
+    } = params;
     return this.deps.composeOutboundTags({
       baseTags,
-      discoveryTags: includeDiscovery ? this.takePendingDiscoveryTags(session) : [],
+      discoveryTags: includeDiscovery
+        ? this.takePendingDiscoveryTags(session)
+        : [],
       negotiationTags,
     });
   }
@@ -146,8 +165,10 @@ export class ServerCapabilityNegotiator {
     const { session, fallbackWrapKind } = params;
 
     if (!session.isEncrypted) return undefined;
-    if (this.deps.giftWrapMode === GiftWrapMode.EPHEMERAL) return EPHEMERAL_GIFT_WRAP_KIND;
-    if (this.deps.giftWrapMode === GiftWrapMode.PERSISTENT) return GIFT_WRAP_KIND;
+    if (this.deps.giftWrapMode === GiftWrapMode.EPHEMERAL)
+      return EPHEMERAL_GIFT_WRAP_KIND;
+    if (this.deps.giftWrapMode === GiftWrapMode.PERSISTENT)
+      return GIFT_WRAP_KIND;
     if (session.supportsEphemeralEncryption) return EPHEMERAL_GIFT_WRAP_KIND;
     return fallbackWrapKind;
   }
@@ -190,7 +211,8 @@ export class ClientCapabilityNegotiator {
   public learnServerCapabilities(discovered: {
     supportsEphemeralEncryption: boolean;
   }): void {
-    this.serverSupportsEphemeralGiftWraps ||= discovered.supportsEphemeralEncryption;
+    this.serverSupportsEphemeralGiftWraps ||=
+      discovered.supportsEphemeralEncryption;
   }
 
   /**
@@ -208,7 +230,10 @@ export class ClientCapabilityNegotiator {
     if (this.deps.encryptionMode !== EncryptionMode.DISABLED) {
       tags.push([NOSTR_TAGS.SUPPORT_ENCRYPTION]);
     }
-    if (this.deps.encryptionMode !== EncryptionMode.DISABLED && this.deps.giftWrapMode !== GiftWrapMode.PERSISTENT) {
+    if (
+      this.deps.encryptionMode !== EncryptionMode.DISABLED &&
+      this.deps.giftWrapMode !== GiftWrapMode.PERSISTENT
+    ) {
       tags.push([NOSTR_TAGS.SUPPORT_ENCRYPTION_EPHEMERAL]);
     }
     if (this.deps.oversizedEnabled) {
@@ -266,13 +291,17 @@ export class ClientCapabilityNegotiator {
    * Chooses the appropriate gift-wrap kind based on learned server capabilities.
    */
   public chooseOutboundGiftWrapKind(): number {
-    if (this.deps.giftWrapMode === GiftWrapMode.PERSISTENT) return GIFT_WRAP_KIND;
-    if (this.deps.giftWrapMode === GiftWrapMode.EPHEMERAL) return EPHEMERAL_GIFT_WRAP_KIND;
+    if (this.deps.giftWrapMode === GiftWrapMode.PERSISTENT)
+      return GIFT_WRAP_KIND;
+    if (this.deps.giftWrapMode === GiftWrapMode.EPHEMERAL)
+      return EPHEMERAL_GIFT_WRAP_KIND;
     if (this.serverSupportsEphemeralGiftWraps) return EPHEMERAL_GIFT_WRAP_KIND;
     const supportsEphemeralFromInit = queryTags(
       this._serverInitializeEvent,
       NOSTR_TAGS.SUPPORT_ENCRYPTION_EPHEMERAL,
     ).isFlag;
-    return supportsEphemeralFromInit ? EPHEMERAL_GIFT_WRAP_KIND : GIFT_WRAP_KIND;
+    return supportsEphemeralFromInit
+      ? EPHEMERAL_GIFT_WRAP_KIND
+      : GIFT_WRAP_KIND;
   }
 }

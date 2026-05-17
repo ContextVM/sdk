@@ -26,16 +26,27 @@ export interface OutboundResponseRouterDeps {
   sessionStore: SessionStore;
   announcementManager: AnnouncementManager;
   openStreamFactory: {
-    deferIfStreamActive: (eventId: string, response: JSONRPCResponse) => boolean;
+    deferIfStreamActive: (
+      eventId: string,
+      response: JSONRPCResponse,
+    ) => boolean;
     takePendingEviction: (
       eventId: string,
     ) => { clientPubkey: string; session: ClientSession } | undefined;
   };
   oversizedConfig: { enabled: boolean; threshold: number; chunkSize: number };
-  applyListToolsResultTransformers: (result: ListToolsResult) => ListToolsResult;
-  buildOutboundTags: (params: { baseTags: readonly string[][]; session: ClientSession }) => string[][];
+  applyListToolsResultTransformers: (
+    result: ListToolsResult,
+  ) => ListToolsResult;
+  buildOutboundTags: (params: {
+    baseTags: readonly string[][];
+    session: ClientSession;
+  }) => string[][];
   createResponseTags: (clientPubkey: string, eventId: string) => string[][];
-  chooseGiftWrapKind: (params: { session: ClientSession; fallbackWrapKind?: number }) => number | undefined;
+  chooseGiftWrapKind: (params: {
+    session: ClientSession;
+    fallbackWrapKind?: number;
+  }) => number | undefined;
   sendMcpMessage: (
     message: JSONRPCMessage,
     targetPubkey: string,
@@ -83,7 +94,9 @@ export class OutboundResponseRouter {
     // Handle special announcement responses
     if (response.id === 'announcement') {
       const wasHandled =
-        await this.deps.announcementManager.handleAnnouncementResponse(response);
+        await this.deps.announcementManager.handleAnnouncementResponse(
+          response,
+        );
       if (wasHandled && isJSONRPCResultResponse(response)) {
         if (InitializeResultSchema.safeParse(response.result).success) {
           this.deps.logger.info('Initialized');
@@ -94,7 +107,9 @@ export class OutboundResponseRouter {
 
     // Find the event route using O(1) lookup
     const nostrEventId = response.id as string;
-    if (this.deps.openStreamFactory.deferIfStreamActive(nostrEventId, response)) {
+    if (
+      this.deps.openStreamFactory.deferIfStreamActive(nostrEventId, response)
+    ) {
       return;
     }
 

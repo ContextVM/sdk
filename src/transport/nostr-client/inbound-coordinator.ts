@@ -75,7 +75,13 @@ export class ClientInboundCoordinator {
       }
 
       // CEP-22/41 Interception
-      if (this.deps.notificationDispatcher.tryIntercept(mcpMessage, nostrEvent.id, eTag ?? undefined)) {
+      if (
+        this.deps.notificationDispatcher.tryIntercept(
+          mcpMessage,
+          nostrEvent.id,
+          eTag ?? undefined,
+        )
+      ) {
         return;
       }
 
@@ -96,12 +102,15 @@ export class ClientInboundCoordinator {
         }
 
         if (!this.deps.correlationStore.hasPendingRequest(eTag)) {
-          this.deps.logger.warn('Received response for unknown/expired request', {
-            eventId: nostrEvent.id,
-            eTag,
-            reason:
-              'Request not found in pending set - may be duplicate or late response',
-          });
+          this.deps.logger.warn(
+            'Received response for unknown/expired request',
+            {
+              eventId: nostrEvent.id,
+              eTag,
+              reason:
+                'Request not found in pending set - may be duplicate or late response',
+            },
+          );
           return;
         }
 
@@ -111,13 +120,27 @@ export class ClientInboundCoordinator {
         if (isJSONRPCResultResponse(mcpMessage)) {
           const result = mcpMessage.result;
           if (ListToolsResultSchema.safeParse(result).success) {
-            this.deps.metadataStore.updateListEnvelopeState('tools', nostrEvent);
+            this.deps.metadataStore.updateListEnvelopeState(
+              'tools',
+              nostrEvent,
+            );
           } else if (ListResourcesResultSchema.safeParse(result).success) {
-            this.deps.metadataStore.updateListEnvelopeState('resources', nostrEvent);
-          } else if (ListResourceTemplatesResultSchema.safeParse(result).success) {
-            this.deps.metadataStore.updateListEnvelopeState('templates', nostrEvent);
+            this.deps.metadataStore.updateListEnvelopeState(
+              'resources',
+              nostrEvent,
+            );
+          } else if (
+            ListResourceTemplatesResultSchema.safeParse(result).success
+          ) {
+            this.deps.metadataStore.updateListEnvelopeState(
+              'templates',
+              nostrEvent,
+            );
           } else if (ListPromptsResultSchema.safeParse(result).success) {
-            this.deps.metadataStore.updateListEnvelopeState('prompts', nostrEvent);
+            this.deps.metadataStore.updateListEnvelopeState(
+              'prompts',
+              nostrEvent,
+            );
           }
         }
 
@@ -126,7 +149,11 @@ export class ClientInboundCoordinator {
       }
 
       if (isJSONRPCNotification(mcpMessage)) {
-        this.deps.handleNotification(nostrEvent.id, eTag ?? undefined, mcpMessage);
+        this.deps.handleNotification(
+          nostrEvent.id,
+          eTag ?? undefined,
+          mcpMessage,
+        );
         return;
       }
 
@@ -164,13 +191,18 @@ export class ClientInboundCoordinator {
     this.deps.metadataStore.setSupportsOversizedTransfer(
       discovered.supportsOversizedTransfer,
     );
-    this.deps.metadataStore.setSupportsOpenStream(discovered.supportsOpenStream);
+    this.deps.metadataStore.setSupportsOpenStream(
+      discovered.supportsOpenStream,
+    );
 
     if (!this.deps.metadataStore.getServerInitializeEvent()) {
       this.setInitializeEvent(event);
-      this.deps.logger.info('Learned server discovery tags from inbound event', {
-        eventId: event.id,
-      });
+      this.deps.logger.info(
+        'Learned server discovery tags from inbound event',
+        {
+          eventId: event.id,
+        },
+      );
       return;
     }
 

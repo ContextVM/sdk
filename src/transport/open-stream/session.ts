@@ -18,6 +18,12 @@ type Deferred<T> = {
   promise: Promise<T>;
 };
 
+const textEncoder = new TextEncoder();
+
+function utf8ByteLength(value: string): number {
+  return textEncoder.encode(value).byteLength;
+}
+
 function createDeferred<T>(): Deferred<T> {
   let resolve!: (value: T | PromiseLike<T>) => void;
   let reject!: (reason?: unknown) => void;
@@ -116,6 +122,14 @@ export class OpenStreamSession implements OpenStreamSessionLike<string> {
     await this.finishAborted(error, reason, true);
   }
 
+  public async fail(error: Error): Promise<void> {
+    if (!this.active) {
+      return;
+    }
+
+    await this.finishAborted(error, error.message, false);
+  }
+
   public dispose(): void {
     this.finalize();
   }
@@ -189,7 +203,7 @@ export class OpenStreamSession implements OpenStreamSessionLike<string> {
             return { done: true, value: undefined };
           }
 
-          this.queuedBytes -= Buffer.byteLength(value.value, 'utf8');
+          this.queuedBytes -= utf8ByteLength(value.value);
 
           return { done: false, value };
         }
@@ -254,7 +268,7 @@ export class OpenStreamSession implements OpenStreamSessionLike<string> {
       );
     }
 
-    const chunkBytes = Buffer.byteLength(frame.data, 'utf8');
+    const chunkBytes = utf8ByteLength(frame.data);
     if (
       this.bufferedChunks.size + this.queue.length >=
       this.maxBufferedChunks
@@ -285,7 +299,7 @@ export class OpenStreamSession implements OpenStreamSessionLike<string> {
       }
 
       this.bufferedChunks.delete(this.nextExpectedChunkIndex);
-      this.bufferedBytes -= Buffer.byteLength(data, 'utf8');
+      this.bufferedBytes -= utf8ByteLength(data);
       this.emit({ value: data, chunkIndex: this.nextExpectedChunkIndex });
       this.nextExpectedChunkIndex += 1;
     }
@@ -302,7 +316,7 @@ export class OpenStreamSession implements OpenStreamSessionLike<string> {
       return;
     }
 
-    this.queuedBytes += Buffer.byteLength(value.value, 'utf8');
+    this.queuedBytes += utf8ByteLength(value.value);
     this.queue.push(value);
   }
 

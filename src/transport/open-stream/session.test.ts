@@ -174,6 +174,58 @@ describe('OpenStreamSession', () => {
     ).rejects.toBeInstanceOf(OpenStreamSequenceError);
   });
 
+  test('uses UTF-8 byte accounting without relying on Buffer', async () => {
+    const session = new OpenStreamSession({
+      progressToken: 'token-utf8-byte-accounting',
+      maxBufferedChunks: 4,
+      maxBufferedBytes: 4,
+    });
+
+    await session.processFrame(1, {
+      type: 'open-stream',
+      frameType: 'start',
+    });
+
+    await session.processFrame(2, {
+      type: 'open-stream',
+      frameType: 'chunk',
+      chunkIndex: 0,
+      data: 'éé',
+    });
+
+    await expect(
+      session.processFrame(3, {
+        type: 'open-stream',
+        frameType: 'chunk',
+        chunkIndex: 1,
+        data: 'a',
+      }),
+    ).rejects.toBeInstanceOf(OpenStreamSequenceError);
+  });
+
+  test('fail terminates the iterator and closed promise with the provided error', async () => {
+    const session = new OpenStreamSession({
+      progressToken: 'token-explicit-fail',
+      maxBufferedChunks: 4,
+      maxBufferedBytes: 16,
+    });
+
+    await session.processFrame(1, {
+      type: 'open-stream',
+      frameType: 'start',
+    });
+
+    const iterator = session[Symbol.asyncIterator]();
+    const nextChunk = iterator.next().catch((error: unknown) => error);
+    const closed = session.closed.catch((error: unknown) => error);
+    const error = new OpenStreamSequenceError('synthetic failure');
+
+    await session.fail(error);
+
+    expect(await nextChunk).toBe(error);
+    expect(await closed).toBe(error);
+  });
+
   test('counts unread queued chunks against the buffered byte limit', async () => {
     const session = new OpenStreamSession({
       progressToken: 'token-queued-bytes',

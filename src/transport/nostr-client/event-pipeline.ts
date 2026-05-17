@@ -3,7 +3,12 @@ import { verifyEvent } from 'nostr-tools/pure';
 import { type NostrSigner, GiftWrapMode } from '../../core/interfaces.js';
 import { type LruCache } from '../../core/utils/lru-cache.js';
 import { type Logger } from '../../core/utils/logger.js';
-import { decryptMessage, DEFAULT_TIMEOUT_MS, EPHEMERAL_GIFT_WRAP_KIND, GIFT_WRAP_KIND } from '../../core/index.js';
+import {
+  decryptMessage,
+  DEFAULT_TIMEOUT_MS,
+  EPHEMERAL_GIFT_WRAP_KIND,
+  GIFT_WRAP_KIND,
+} from '../../core/index.js';
 import { withTimeout } from '../../core/utils/utils.js';
 
 /** Dependencies for the client-side event decryption and verification pipeline. */
@@ -38,10 +43,13 @@ export class ClientEventPipeline {
         event.kind === EPHEMERAL_GIFT_WRAP_KIND
       ) {
         if (!this.isGiftWrapKindAllowed(event.kind)) {
-          this.deps.logger.debug('Skipping gift wrap due to GiftWrapMode policy', {
-            eventId: event.id,
-            kind: event.kind,
-          });
+          this.deps.logger.debug(
+            'Skipping gift wrap due to GiftWrapMode policy',
+            {
+              eventId: event.id,
+              kind: event.kind,
+            },
+          );
           return null;
         }
 
@@ -97,11 +105,14 @@ export class ClientEventPipeline {
       }
 
       if (nostrEvent.pubkey !== this.deps.serverPubkey) {
-        this.deps.logger.debug('Skipping event from unexpected server pubkey:', {
-          receivedPubkey: nostrEvent.pubkey,
-          expectedPubkey: this.deps.serverPubkey,
-          eventId: nostrEvent.id,
-        });
+        this.deps.logger.debug(
+          'Skipping event from unexpected server pubkey:',
+          {
+            receivedPubkey: nostrEvent.pubkey,
+            expectedPubkey: this.deps.serverPubkey,
+            eventId: nostrEvent.id,
+          },
+        );
         return null;
       }
 

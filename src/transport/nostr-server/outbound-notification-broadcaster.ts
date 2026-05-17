@@ -87,7 +87,9 @@ export class OutboundNotificationBroadcaster {
         error: error instanceof Error ? error.message : String(error),
         stack: error instanceof Error ? error.stack : undefined,
       });
-      this.deps.onerror?.(error instanceof Error ? error : new Error(String(error)));
+      this.deps.onerror?.(
+        error instanceof Error ? error : new Error(String(error)),
+      );
     }
   }
 }

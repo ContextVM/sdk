@@ -16,7 +16,10 @@ import { OversizedTransferReceiver } from '../oversized-transfer/index.js';
 import { type CorrelationStore } from './correlation-store.js';
 import { type ClientSession } from './session-store.js';
 import { sendAcceptFrame } from './oversized-server-handler.js';
-import { injectClientPubkey, injectRequestEventId } from '../../core/utils/utils.js';
+import {
+  injectClientPubkey,
+  injectRequestEventId,
+} from '../../core/utils/utils.js';
 
 /**
  * Dependencies for the Server InboundNotificationDispatcher.
@@ -24,9 +27,14 @@ import { injectClientPubkey, injectRequestEventId } from '../../core/utils/utils
 export interface InboundNotificationDispatcherDeps {
   openStreamReceiver: OpenStreamReceiver;
   oversizedReceiver: OversizedTransferReceiver;
-  openStreamFactory: { getWriter: (eventId: string) => OpenStreamWriter | undefined };
+  openStreamFactory: {
+    getWriter: (eventId: string) => OpenStreamWriter | undefined;
+  };
   correlationStore: CorrelationStore;
-  sendNotification: (clientPubkey: string, notification: JSONRPCMessage) => Promise<void>;
+  sendNotification: (
+    clientPubkey: string,
+    notification: JSONRPCMessage,
+  ) => Promise<void>;
   handleIncomingRequest: (
     event: NostrEvent,
     eventId: string,
@@ -34,7 +42,10 @@ export interface InboundNotificationDispatcherDeps {
     clientPubkey: string,
     wrapKind?: number,
   ) => void;
-  handleIncomingNotification: (clientPubkey: string, notification: JSONRPCMessage) => void;
+  handleIncomingNotification: (
+    clientPubkey: string,
+    notification: JSONRPCMessage,
+  ) => void;
   cleanupDroppedRequest: (message: JSONRPCMessage) => void;
   shouldInjectRequestEventId: boolean;
   injectClientPubkey: boolean;
@@ -73,21 +84,30 @@ export class InboundNotificationDispatcher {
         | undefined;
 
       if (frame?.frameType === 'abort') {
-        const progressToken = String(inboundMessage.params?.progressToken ?? '');
+        const progressToken = String(
+          inboundMessage.params?.progressToken ?? '',
+        );
         const eventId = this.deps.correlationStore.getEventIdByProgressToken(
           progressToken,
           event.pubkey,
         );
-        const writer = eventId ? this.deps.openStreamFactory.getWriter(eventId) : undefined;
+        const writer = eventId
+          ? this.deps.openStreamFactory.getWriter(eventId)
+          : undefined;
 
         if (writer) {
           void writer.abort(frame.reason).catch((err: unknown) => {
-            this.deps.logger.error('Open stream abort propagation failed (server)', {
-              error: err instanceof Error ? err.message : String(err),
-              pubkey: event.pubkey,
-              progressToken,
-            });
-            this.deps.onerror?.(err instanceof Error ? err : new Error(String(err)));
+            this.deps.logger.error(
+              'Open stream abort propagation failed (server)',
+              {
+                error: err instanceof Error ? err.message : String(err),
+                pubkey: event.pubkey,
+                progressToken,
+              },
+            );
+            this.deps.onerror?.(
+              err instanceof Error ? err : new Error(String(err)),
+            );
           });
         }
 
@@ -95,22 +115,34 @@ export class InboundNotificationDispatcher {
       }
 
       if (frame?.frameType === 'ping') {
-        const progressToken = String(inboundMessage.params?.progressToken ?? '');
-        const nonce = 'nonce' in frame && typeof frame.nonce === 'string' ? frame.nonce : '';
+        const progressToken = String(
+          inboundMessage.params?.progressToken ?? '',
+        );
+        const nonce =
+          'nonce' in frame && typeof frame.nonce === 'string'
+            ? frame.nonce
+            : '';
         const eventId = this.deps.correlationStore.getEventIdByProgressToken(
           progressToken,
           event.pubkey,
         );
-        const writer = eventId ? this.deps.openStreamFactory.getWriter(eventId) : undefined;
+        const writer = eventId
+          ? this.deps.openStreamFactory.getWriter(eventId)
+          : undefined;
 
         if (writer) {
           void writer.pong(nonce).catch((err: unknown) => {
-            this.deps.logger.error('Open stream ping handling failed (server)', {
-              error: err instanceof Error ? err.message : String(err),
-              pubkey: event.pubkey,
-              progressToken,
-            });
-            this.deps.onerror?.(err instanceof Error ? err : new Error(String(err)));
+            this.deps.logger.error(
+              'Open stream ping handling failed (server)',
+              {
+                error: err instanceof Error ? err.message : String(err),
+                pubkey: event.pubkey,
+                progressToken,
+              },
+            );
+            this.deps.onerror?.(
+              err instanceof Error ? err : new Error(String(err)),
+            );
           });
 
           return true;
@@ -127,7 +159,9 @@ export class InboundNotificationDispatcher {
               jsonrpc: '2.0',
               method: 'notifications/progress',
               params: buildOpenStreamAcceptFrame({
-                progressToken: String(inboundMessage.params?.progressToken ?? ''),
+                progressToken: String(
+                  inboundMessage.params?.progressToken ?? '',
+                ),
                 progress: Number(inboundMessage.params?.progress ?? 0) + 1,
               }),
             });
@@ -138,7 +172,9 @@ export class InboundNotificationDispatcher {
             error: err instanceof Error ? err.message : String(err),
             pubkey: event.pubkey,
           });
-          this.deps.onerror?.(err instanceof Error ? err : new Error(String(err)));
+          this.deps.onerror?.(
+            err instanceof Error ? err : new Error(String(err)),
+          );
         });
       return true;
     }
@@ -152,14 +188,16 @@ export class InboundNotificationDispatcher {
         .then(async (synthetic) => {
           if (synthetic === null) {
             if (
-              (inboundMessage.params?.cvm as { frameType?: string } | undefined)?.frameType ===
-                'start' &&
+              (inboundMessage.params?.cvm as { frameType?: string } | undefined)
+                ?.frameType === 'start' &&
               shouldSendAccept
             ) {
               await sendAcceptFrame(
                 {
                   clientPubkey: event.pubkey,
-                  progressToken: String(inboundMessage.params?.progressToken ?? ''),
+                  progressToken: String(
+                    inboundMessage.params?.progressToken ?? '',
+                  ),
                 },
                 {
                   sendNotification: this.deps.sendNotification,
@@ -174,7 +212,13 @@ export class InboundNotificationDispatcher {
           }
 
           if (isJSONRPCRequest(synthetic)) {
-            this.deps.handleIncomingRequest(event, event.id, synthetic, event.pubkey, wrapKind);
+            this.deps.handleIncomingRequest(
+              event,
+              event.id,
+              synthetic,
+              event.pubkey,
+              wrapKind,
+            );
 
             if (this.deps.shouldInjectRequestEventId) {
               injectRequestEventId(synthetic, event.id);
@@ -194,12 +238,17 @@ export class InboundNotificationDispatcher {
               }
             })
             .catch((err: unknown) => {
-              this.deps.logger.error('Error dispatching reassembled oversized message', {
-                error: err instanceof Error ? err.message : String(err),
-                pubkey: event.pubkey,
-              });
+              this.deps.logger.error(
+                'Error dispatching reassembled oversized message',
+                {
+                  error: err instanceof Error ? err.message : String(err),
+                  pubkey: event.pubkey,
+                },
+              );
               this.deps.onerror?.(
-                err instanceof Error ? err : new Error('oversized dispatch failed'),
+                err instanceof Error
+                  ? err
+                  : new Error('oversized dispatch failed'),
               );
             });
         })
@@ -207,7 +256,9 @@ export class InboundNotificationDispatcher {
           this.deps.logger.error('Oversized transfer error (server)', {
             error: err instanceof Error ? err.message : String(err),
           });
-          this.deps.onerror?.(err instanceof Error ? err : new Error(String(err)));
+          this.deps.onerror?.(
+            err instanceof Error ? err : new Error(String(err)),
+          );
         });
       return true;
     }

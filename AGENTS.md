@@ -61,4 +61,8 @@
 ## Environment
 
 - The library must be compatible with Node.js version 18 or higher.
+- Production SDK code must remain browser-safe unless a module is explicitly server-only.
+- Do not use Node-only globals such as `Buffer` in non-test source files. Prefer Web Platform APIs such as `TextEncoder`, `TextDecoder`, `crypto.subtle`, and runtime-neutral helpers.
+- If a server-oriented module needs encoding utilities, use shared runtime-neutral helpers so the file remains safe to bundle unless intentionally documented otherwise.
+- Any new shared transport or protocol path must be reviewed for both Node and browser compatibility before merging.
 - Use `bun` as the package manager and test suite.

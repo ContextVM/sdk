@@ -1266,7 +1266,7 @@ describe.serial('NostrServerTransport', () => {
               mcpMessage: JSONRPCMessage,
               wrapKind?: number,
             ) => Promise<void>;
-          }
+          };
         }
       ).inboundCoordinator.authorizeAndProcessEvent(
         requestEvent,
@@ -1635,7 +1635,7 @@ describe.serial('NostrServerTransport', () => {
             clientPubkey: string,
             wrapKind?: number,
           ) => void;
-        }
+        };
       }
     ).inboundCoordinator.handleIncomingRequest(
       {
@@ -1699,10 +1699,14 @@ describe.serial('NostrServerTransport', () => {
     (
       serverTransport as unknown as {
         outboundResponseRouter: {
-          route: (response: JSONRPCResponse | JSONRPCErrorResponse) => Promise<void>;
-        }
+          route: (
+            response: JSONRPCResponse | JSONRPCErrorResponse,
+          ) => Promise<void>;
+        };
       }
-    ).outboundResponseRouter.route = async (response: JSONRPCResponse | JSONRPCErrorResponse): Promise<void> => {
+    ).outboundResponseRouter.route = async (
+      response: JSONRPCResponse | JSONRPCErrorResponse,
+    ): Promise<void> => {
       handledResponses.push(response as JSONRPCResponse);
     };
 
@@ -1719,7 +1723,7 @@ describe.serial('NostrServerTransport', () => {
             clientPubkey: string,
             wrapKind?: number,
           ) => void;
-        }
+        };
       }
     ).inboundCoordinator.handleIncomingRequest(
       {
@@ -1774,37 +1778,41 @@ describe.serial('NostrServerTransport', () => {
       openStream: { enabled: true },
     });
 
-    const internalState = serverTransport.getInternalStateForTesting() as unknown as {
-      sessionStore: {
-        getOrCreateSession: (
-          clientPubkey: string,
-          isEncrypted: boolean,
-        ) => unknown;
+    const internalState =
+      serverTransport.getInternalStateForTesting() as unknown as {
+        sessionStore: {
+          getOrCreateSession: (
+            clientPubkey: string,
+            isEncrypted: boolean,
+          ) => unknown;
+        };
+        pendingOpenStreamResponses: Map<string, JSONRPCResponse>;
+        openStreamWriters: Map<
+          string,
+          { abort: (reason?: string) => Promise<void> }
+        >;
+        openStreamFactory: {
+          deps: {
+            sendNotification: (
+              clientPubkey: string,
+              notification: JSONRPCMessage,
+            ) => Promise<void>;
+            handleResponse: (response: JSONRPCResponse) => Promise<void>;
+          };
+        };
+        inboundCoordinator: {
+          handleIncomingRequest: (
+            event: NostrEvent,
+            eventId: string,
+            request: {
+              id: string;
+              params?: { _meta?: { progressToken?: string } };
+            },
+            clientPubkey: string,
+            wrapKind?: number,
+          ) => void;
+        };
       };
-      pendingOpenStreamResponses: Map<string, JSONRPCResponse>;
-      openStreamWriters: Map<
-        string,
-        { abort: (reason?: string) => Promise<void> }
-      >;
-      openStreamFactory: {
-        deps: {
-          sendNotification: (clientPubkey: string, notification: JSONRPCMessage) => Promise<void>;
-          handleResponse: (response: JSONRPCResponse) => Promise<void>;
-        }
-      };
-      inboundCoordinator: {
-        handleIncomingRequest: (
-          event: NostrEvent,
-          eventId: string,
-          request: {
-            id: string;
-            params?: { _meta?: { progressToken?: string } };
-          },
-          clientPubkey: string,
-          wrapKind?: number,
-        ) => void;
-      };
-    };
     internalState.sessionStore.getOrCreateSession(clientPublicKey, false);
 
     const events: string[] = [];
@@ -1822,7 +1830,9 @@ describe.serial('NostrServerTransport', () => {
       }
     };
 
-    internalState.openStreamFactory.deps.handleResponse = async (_response: JSONRPCResponse): Promise<void> => {
+    internalState.openStreamFactory.deps.handleResponse = async (
+      _response: JSONRPCResponse,
+    ): Promise<void> => {
       events.push('final-response');
     };
 

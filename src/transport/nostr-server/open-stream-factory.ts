@@ -1,23 +1,39 @@
-import { OpenStreamWriter, OpenStreamReceiver, buildOpenStreamPingFrame, buildOpenStreamPongFrame, buildOpenStreamAbortFrame } from '../open-stream/index.js';
+import {
+  OpenStreamWriter,
+  OpenStreamReceiver,
+  buildOpenStreamPingFrame,
+  buildOpenStreamPongFrame,
+  buildOpenStreamAbortFrame,
+} from '../open-stream/index.js';
 import { type OpenStreamRegistryOptions } from '../open-stream/registry.js';
 import { type Logger } from '../../core/utils/logger.js';
 import { type CorrelationStore } from './correlation-store.js';
 import { type ClientSession, type SessionStore } from './session-store.js';
-import { type JSONRPCMessage, type JSONRPCResponse } from '@modelcontextprotocol/sdk/types.js';
+import {
+  type JSONRPCMessage,
+  type JSONRPCResponse,
+} from '@modelcontextprotocol/sdk/types.js';
 
 /**
  * Dependencies for the ServerOpenStreamFactory.
  */
 export interface ServerOpenStreamFactoryDeps {
   openStreamEnabled: boolean;
-  sendNotification: (clientPubkey: string, notification: JSONRPCMessage) => Promise<void>;
+  sendNotification: (
+    clientPubkey: string,
+    notification: JSONRPCMessage,
+  ) => Promise<void>;
   handleResponse: (response: JSONRPCResponse) => Promise<void>;
   sessionStore: SessionStore;
   onClientSessionEvicted?: (ctx: {
     clientPubkey: string;
     session: ClientSession;
   }) => void | Promise<void>;
-  onAbort?: (clientPubkey: string, eventId: string, reason?: string) => Promise<void>;
+  onAbort?: (
+    clientPubkey: string,
+    eventId: string,
+    reason?: string,
+  ) => Promise<void>;
   correlationStore: CorrelationStore;
   policy?: Partial<OpenStreamRegistryOptions>;
   logger: Logger;
@@ -48,7 +64,8 @@ export class ServerOpenStreamFactory {
         let progress = 0;
 
         const getClientPubkey = () => {
-          const eventId = this.deps.correlationStore.getEventIdByProgressToken(progressToken);
+          const eventId =
+            this.deps.correlationStore.getEventIdByProgressToken(progressToken);
           if (!eventId) return undefined;
           const route = this.deps.correlationStore.getEventRoute(eventId);
           return route?.clientPubkey;
@@ -152,7 +169,10 @@ export class ServerOpenStreamFactory {
    * Checks if an event has an active stream and defers the response if so.
    * Returns true if deferred.
    */
-  public deferIfStreamActive(eventId: string, response: JSONRPCResponse): boolean {
+  public deferIfStreamActive(
+    eventId: string,
+    response: JSONRPCResponse,
+  ): boolean {
     const existingWriter = this.writers.get(eventId);
     if (existingWriter && existingWriter.isActive) {
       this.pendingResponses.set(eventId, response);
@@ -236,16 +256,15 @@ export class ServerOpenStreamFactory {
       eventId,
     });
 
-    const evictionSession =
-      session ?? {
-        isInitialized: false,
-        isEncrypted: false,
-        hasSentCommonTags: false,
-        supportsEncryption: false,
-        supportsEphemeralEncryption: false,
-        supportsOversizedTransfer: false,
-        supportsOpenStream: false,
-      };
+    const evictionSession = session ?? {
+      isInitialized: false,
+      isEncrypted: false,
+      hasSentCommonTags: false,
+      supportsEncryption: false,
+      supportsEphemeralEncryption: false,
+      supportsOversizedTransfer: false,
+      supportsOpenStream: false,
+    };
 
     await Promise.resolve(
       this.deps.onClientSessionEvicted?.({

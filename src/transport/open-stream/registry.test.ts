@@ -79,6 +79,41 @@ describe('OpenStreamRegistry', () => {
     expect(registry.size).toBe(0);
   });
 
+  test('terminates a session when frame processing fails after creation', async () => {
+    const registry = new OpenStreamRegistry({
+      maxConcurrentStreams: 2,
+      maxBufferedChunksPerStream: 4,
+      maxBufferedBytesPerStream: 4,
+      logger: createLogger('test', { level: 'silent' }),
+    });
+
+    const session = await registry.processFrame({
+      progressToken: 'token-processing-failure',
+      progress: 1,
+      cvm: {
+        type: 'open-stream',
+        frameType: 'start',
+      },
+    });
+    const closed = session.closed.catch((error: unknown) => error);
+
+    await expect(
+      registry.processFrame({
+        progressToken: 'token-processing-failure',
+        progress: 2,
+        cvm: {
+          type: 'open-stream',
+          frameType: 'chunk',
+          chunkIndex: 1,
+          data: 'hello',
+        },
+      }),
+    ).rejects.toBeInstanceOf(OpenStreamSequenceError);
+
+    expect(await closed).toBeInstanceOf(OpenStreamSequenceError);
+    expect(registry.getSession('token-processing-failure')).toBeUndefined();
+  });
+
   test('applies default buffering limits when a session is created without overrides', async () => {
     const registry = new OpenStreamRegistry({
       maxConcurrentStreams: 2,

@@ -6,6 +6,7 @@ import type {
 import { PMI_BITCOIN_LIGHTNING_BOLT11 } from '../pmis.js';
 import { createLogger, type Logger } from '../../core/utils/logger.js';
 import { sleep } from '../../core/utils/utils.js';
+import { encodeBase64 } from '../../core/utils/base64.js';
 
 export interface LnBolt11LnbitsPaymentProcessorOptions {
   /** LNbits instance base URL (e.g. `https://lnbits.example.com`). */
@@ -56,7 +57,7 @@ export class LnBolt11LnbitsPaymentProcessor implements PaymentProcessor {
       'X-Api-Key': this.lnbitsApiKey,
     };
     if (this.lnbitsBasicAuth) {
-      const encoded = Buffer.from(this.lnbitsBasicAuth).toString('base64');
+      const encoded = encodeBase64(this.lnbitsBasicAuth);
       headers['Authorization'] = `Basic ${encoded}`;
     }
     return headers;

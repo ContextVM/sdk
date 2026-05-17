@@ -153,7 +153,6 @@ export type ListToolsAnnouncementTagsProducer = (
   result: ListToolsResult,
 ) => string[][];
 
-
 /**
  * A server-side transport layer for CTXVM that uses Nostr events for communication.
  * This transport listens for incoming MCP requests via Nostr events and can send
@@ -332,7 +331,9 @@ export class NostrServerTransport
     this.announcementManager.setInternalCommonTags(internalCommonTags);
 
     this.capabilityNegotiator = new ServerCapabilityNegotiator({
-      getCommonTags: this.announcementManager.getCommonTags.bind(this.announcementManager),
+      getCommonTags: this.announcementManager.getCommonTags.bind(
+        this.announcementManager,
+      ),
       composeOutboundTags: this.composeOutboundTags.bind(this),
       giftWrapMode: this.giftWrapMode,
     });
@@ -396,9 +397,9 @@ export class NostrServerTransport
       onerror: (error) => this.onerror?.(error),
     });
 
-    this.inboundCoordinator.setNotificationDispatcher(this.inboundNotificationDispatcher);
-
-
+    this.inboundCoordinator.setNotificationDispatcher(
+      this.inboundNotificationDispatcher,
+    );
 
     this.outboundResponseRouter = new OutboundResponseRouter({
       correlationStore: this.correlationStore,
@@ -410,13 +411,21 @@ export class NostrServerTransport
         threshold: this.oversizedThreshold,
         chunkSize: this.oversizedChunkSize,
       },
-      applyListToolsResultTransformers: this.applyListToolsResultTransformers.bind(this),
-      buildOutboundTags: this.capabilityNegotiator.buildOutboundTags.bind(this.capabilityNegotiator),
+      applyListToolsResultTransformers:
+        this.applyListToolsResultTransformers.bind(this),
+      buildOutboundTags: this.capabilityNegotiator.buildOutboundTags.bind(
+        this.capabilityNegotiator,
+      ),
       createResponseTags: this.createResponseTags.bind(this),
-      chooseGiftWrapKind: this.capabilityNegotiator.chooseOutboundGiftWrapKind.bind(this.capabilityNegotiator),
+      chooseGiftWrapKind:
+        this.capabilityNegotiator.chooseOutboundGiftWrapKind.bind(
+          this.capabilityNegotiator,
+        ),
       sendMcpMessage: this.sendMcpMessage.bind(this),
-      measurePublishedMcpMessageSize: this.measurePublishedMcpMessageSize.bind(this),
-      resolveSafeOversizedChunkSize: this.resolveSafeOversizedChunkSize.bind(this),
+      measurePublishedMcpMessageSize:
+        this.measurePublishedMcpMessageSize.bind(this),
+      resolveSafeOversizedChunkSize:
+        this.resolveSafeOversizedChunkSize.bind(this),
       logger: this.logger,
       onerror: (error) => this.onerror?.(error),
     });
@@ -652,8 +661,6 @@ export class NostrServerTransport
     }
   }
 
-
-
   /**
    * Handles response messages by finding the original request and routing back to client.
    * @param response The JSON-RPC response or error to send.
@@ -764,7 +771,6 @@ export class NostrServerTransport
     }
   }
 
-
   /**
    * Test-only accessor for internal state.
    * @internal
@@ -776,7 +782,8 @@ export class NostrServerTransport
       oversizedReceiver: this.oversizedReceiver,
       openStreamReceiver: this.openStreamFactory.getReceiver(),
       openStreamWriters: this.openStreamFactory.getWritersMap(),
-      pendingOpenStreamResponses: this.openStreamFactory.getPendingResponsesMap(),
+      pendingOpenStreamResponses:
+        this.openStreamFactory.getPendingResponsesMap(),
       openStreamFactory: this.openStreamFactory,
       inboundCoordinator: this.inboundCoordinator,
     };

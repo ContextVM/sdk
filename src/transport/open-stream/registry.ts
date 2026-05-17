@@ -171,7 +171,16 @@ export class OpenStreamRegistry {
     }
 
     const session = existingSession ?? this.createSession(progressToken);
-    await session.processFrame(frame.progress, frame.cvm);
+
+    try {
+      await session.processFrame(frame.progress, frame.cvm);
+    } catch (error) {
+      await session.fail(
+        error instanceof Error ? error : new Error(String(error)),
+      );
+      throw error;
+    }
+
     return session;
   }
 

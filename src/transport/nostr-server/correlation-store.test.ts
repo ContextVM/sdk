@@ -136,7 +136,9 @@ describe('CorrelationStore', () => {
   describe('getEventIdByProgressToken', () => {
     it('returns undefined for unknown token', () => {
       const store = new CorrelationStore();
-      expect(store.getEventIdByProgressToken('unknown', 'client1')).toBeUndefined();
+      expect(
+        store.getEventIdByProgressToken('unknown', 'client1'),
+      ).toBeUndefined();
     });
 
     it('returns correct event id for token', () => {
