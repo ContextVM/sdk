@@ -9,6 +9,7 @@ export interface CommonSchemaToolConfig {
 
 export interface CommonToolSchemasOptions {
   tools: CommonSchemaToolConfig[];
+  categories?: string[];
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -72,6 +73,27 @@ function getCommonToolNames(
   return new Set(options.tools.map((tool) => tool.name));
 }
 
+function getAnnouncementCategories(
+  options: CommonToolSchemasOptions,
+): string[] {
+  const categories = options.categories ?? [];
+  const seen = new Set<string>();
+  const normalizedCategories: string[] = [];
+
+  categories.forEach((category) => {
+    const normalizedCategory = category.trim();
+
+    if (!normalizedCategory || seen.has(normalizedCategory)) {
+      return;
+    }
+
+    seen.add(normalizedCategory);
+    normalizedCategories.push(normalizedCategory);
+  });
+
+  return normalizedCategories;
+}
+
 /**
  * Creates a pure transformer that enriches opted-in `tools/list` results with CEP-15 schema hashes.
  */
@@ -133,6 +155,7 @@ export function createCommonSchemaAnnouncementTagsProducer(
   options: CommonToolSchemasOptions,
 ): (result: ListToolsResult) => string[][] {
   const commonToolNames = getCommonToolNames(options);
+  const categories = getAnnouncementCategories(options);
 
   return (result: ListToolsResult): string[][] => {
     if (!commonToolNames.size) {
@@ -151,7 +174,11 @@ export function createCommonSchemaAnnouncementTagsProducer(
       return [];
     }
 
-    return [...iTags, ['k', COMMON_SCHEMA_META_NAMESPACE]];
+    return [
+      ...iTags,
+      ['k', COMMON_SCHEMA_META_NAMESPACE],
+      ...categories.map((category) => ['t', category]),
+    ];
   };
 }
 

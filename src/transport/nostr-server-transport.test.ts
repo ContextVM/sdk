@@ -2013,4 +2013,74 @@ describe.serial('NostrServerTransport', () => {
     },
     15000,
   );
+
+  test.serial(
+    'withCommonToolSchemas includes configured CEP-15 category tags on announced tools/list events',
+    async () => {
+      const serverPrivateKey = bytesToHex(generateSecretKey());
+      const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
+      const uniqueSuffix = Math.random().toString(36).substring(2, 8);
+      const commonToolName = `translate_text_${uniqueSuffix}`;
+
+      const server = new McpServer({
+        name: 'Common Schema Category Server',
+        version: '1.0.0',
+      });
+
+      server.registerTool(
+        commonToolName,
+        {
+          title: 'Translate Text',
+          description: 'Translate text between languages',
+          inputSchema: {
+            text: z.string(),
+            targetLanguage: z.string(),
+          },
+        },
+        async ({ text, targetLanguage }) => ({
+          content: [
+            {
+              type: 'text',
+              text: `${targetLanguage}: ${text}`,
+            },
+          ],
+        }),
+      );
+
+      const transport = new NostrServerTransport({
+        signer: new PrivateKeySigner(serverPrivateKey),
+        relayHandler: new ApplesauceRelayPool([relayUrl]),
+        serverInfo: { name: 'Common Schema Category Server' },
+        isPublicServer: true,
+        encryptionMode: EncryptionMode.DISABLED,
+      });
+
+      withCommonToolSchemas(transport, {
+        tools: [{ name: commonToolName }],
+        categories: ['translation', ' translation ', '', 'language-tools'],
+      });
+
+      await server.connect(transport);
+
+      const relayPool = new ApplesauceRelayPool([relayUrl]);
+      await relayPool.connect();
+
+      const toolsListEvent = await waitForNostrEvent({
+        relayPool,
+        filters: [{ kinds: [TOOLS_LIST_KIND], authors: [serverPublicKey] }],
+        where: () => true,
+      });
+
+      const tTags = toolsListEvent.tags.filter((tag) => tag[0] === 't');
+
+      expect(tTags).toEqual([
+        ['t', 'translation'],
+        ['t', 'language-tools'],
+      ]);
+
+      await server.close();
+      await relayPool.disconnect();
+    },
+    15000,
+  );
 });
