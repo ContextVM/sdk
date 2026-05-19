@@ -215,6 +215,74 @@ describe('createCommonSchemaAnnouncementTagsProducer', () => {
     ]);
   });
 
+  test('appends deduplicated category tags after the common-schema tags', () => {
+    const result: ListToolsResult = {
+      tools: [
+        {
+          name: 'translate_text',
+          title: 'Translate Text',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              text: { type: 'string' },
+            },
+            required: ['text'],
+          },
+        },
+      ],
+    };
+
+    const produceTags = createCommonSchemaAnnouncementTagsProducer({
+      tools: [{ name: 'translate_text' }],
+      categories: [
+        'translation',
+        ' translation ',
+        '',
+        'language-tools',
+        'translation',
+      ],
+    });
+
+    expect(produceTags(result)).toEqual([
+      [
+        'i',
+        computeCommonSchemaHash({
+          name: 'translate_text',
+          inputSchema: result.tools[0]!.inputSchema,
+        }),
+        'translate_text',
+      ],
+      ['k', COMMON_SCHEMA_META_NAMESPACE],
+      ['t', 'translation'],
+      ['t', 'language-tools'],
+    ]);
+  });
+
+  test('does not emit category tags when no opted-in common-schema tools are present', () => {
+    const result: ListToolsResult = {
+      tools: [
+        {
+          name: 'bespoke_tool',
+          title: 'Bespoke Tool',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              query: { type: 'string' },
+            },
+            required: ['query'],
+          },
+        },
+      ],
+    };
+
+    const produceTags = createCommonSchemaAnnouncementTagsProducer({
+      tools: [{ name: 'translate_text' }],
+      categories: ['translation'],
+    });
+
+    expect(produceTags(result)).toEqual([]);
+  });
+
   test('returns no tags when no common-schema tools are present', () => {
     const result: ListToolsResult = {
       tools: [
