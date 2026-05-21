@@ -172,6 +172,7 @@ export class OpenStreamSession implements OpenStreamSessionLike<string> {
         return;
       case 'close':
         this.assertStarted();
+        this.assertValidLastChunkIndex(frame.lastChunkIndex);
         this.closedRemotely = true;
         this.closeState = {
           expectedLastChunkIndex: frame.lastChunkIndex,
@@ -327,15 +328,6 @@ export class OpenStreamSession implements OpenStreamSessionLike<string> {
 
     const expectedLastChunkIndex = this.closeState?.expectedLastChunkIndex;
     if (expectedLastChunkIndex !== undefined) {
-      if (
-        !Number.isInteger(expectedLastChunkIndex) ||
-        expectedLastChunkIndex < 0
-      ) {
-        throw new OpenStreamSequenceError(
-          `Invalid lastChunkIndex for stream ${this.progressToken}`,
-        );
-      }
-
       if (this.nextExpectedChunkIndex !== expectedLastChunkIndex + 1) {
         throw new OpenStreamSequenceError(
           `Incomplete stream for ${this.progressToken}: expected chunks through ${expectedLastChunkIndex}`,
@@ -344,6 +336,18 @@ export class OpenStreamSession implements OpenStreamSessionLike<string> {
     }
 
     void this.finishClosed().catch(() => undefined);
+  }
+
+  private assertValidLastChunkIndex(lastChunkIndex: number | undefined): void {
+    if (lastChunkIndex === undefined) {
+      return;
+    }
+
+    if (!Number.isInteger(lastChunkIndex) || lastChunkIndex < 0) {
+      throw new OpenStreamSequenceError(
+        `Invalid lastChunkIndex for stream ${this.progressToken}`,
+      );
+    }
   }
 
   private async handlePing(frame: OpenStreamPingFrame): Promise<void> {

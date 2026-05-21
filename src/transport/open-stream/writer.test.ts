@@ -156,6 +156,77 @@ describe('OpenStreamWriter', () => {
     expect(events).toEqual(['publish:abort', 'abort:ordered']);
   });
 
+  test('retries start when the first start publish fails', async () => {
+    const frames: OpenStreamProgress[] = [];
+    let shouldFailStart = true;
+    const writer = new OpenStreamWriter({
+      progressToken: 'token-start-retry',
+      publishFrame: async (frame): Promise<string | undefined> => {
+        if (frame.cvm.frameType === 'start' && shouldFailStart) {
+          shouldFailStart = false;
+          throw new Error('relay unavailable');
+        }
+
+        frames.push(frame);
+        return undefined;
+      },
+    });
+
+    await expect(writer.start()).rejects.toThrow('relay unavailable');
+    await writer.write('hello');
+
+    expect(frames.map((frame) => frame.cvm.frameType)).toEqual([
+      'start',
+      'chunk',
+    ]);
+  });
+
+  test('runs close lifecycle cleanup when close publish fails', async () => {
+    const lifecycle: string[] = [];
+    const writer = new OpenStreamWriter({
+      progressToken: 'token-close-failure-cleanup',
+      publishFrame: async (frame): Promise<string | undefined> => {
+        if (frame.cvm.frameType === 'close') {
+          throw new Error('close publish failed');
+        }
+
+        return undefined;
+      },
+      onClose: async (): Promise<void> => {
+        lifecycle.push('close');
+      },
+    });
+
+    await expect(writer.close()).rejects.toThrow('close publish failed');
+
+    expect(writer.isActive).toBe(false);
+    expect(lifecycle).toEqual(['close']);
+  });
+
+  test('runs abort lifecycle cleanup when abort publish fails', async () => {
+    const lifecycle: string[] = [];
+    const writer = new OpenStreamWriter({
+      progressToken: 'token-abort-failure-cleanup',
+      publishFrame: async (frame): Promise<string | undefined> => {
+        if (frame.cvm.frameType === 'abort') {
+          throw new Error('abort publish failed');
+        }
+
+        return undefined;
+      },
+      onAbort: async (reason?: string): Promise<void> => {
+        lifecycle.push(`abort:${reason ?? ''}`);
+      },
+    });
+
+    await expect(writer.abort('cleanup')).rejects.toThrow(
+      'abort publish failed',
+    );
+
+    expect(writer.isActive).toBe(false);
+    expect(lifecycle).toEqual(['abort:cleanup']);
+  });
+
   test('abort deactivates and runs local cleanup without waiting for a stuck write', async () => {
     let releaseChunkPublish: (() => void) | undefined;
     const lifecycle: string[] = [];

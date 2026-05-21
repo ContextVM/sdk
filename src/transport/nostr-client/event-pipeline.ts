@@ -39,6 +39,19 @@ export class ClientEventPipeline {
       let nostrEvent = event;
 
       if (
+        event.kind !== GIFT_WRAP_KIND &&
+        event.kind !== EPHEMERAL_GIFT_WRAP_KIND
+      ) {
+        if (this.deps.seenEventIds.has(event.id)) {
+          this.deps.logger.debug('Skipping duplicate inbound event', {
+            eventId: event.id,
+          });
+          return null;
+        }
+        this.deps.seenEventIds.set(event.id, true);
+      }
+
+      if (
         event.kind === GIFT_WRAP_KIND ||
         event.kind === EPHEMERAL_GIFT_WRAP_KIND
       ) {

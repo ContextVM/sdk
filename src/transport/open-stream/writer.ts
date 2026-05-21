@@ -116,14 +116,18 @@ export class OpenStreamWriter {
       }
 
       this.active = false;
-      await this.publishFrame(
-        buildOpenStreamCloseFrame({
-          progressToken: this.progressToken,
-          progress: this.nextProgress(),
-          lastChunkIndex: this.chunkIndex > 0 ? this.chunkIndex - 1 : undefined,
-        }),
-      );
-      await this.onClose?.();
+      try {
+        await this.publishFrame(
+          buildOpenStreamCloseFrame({
+            progressToken: this.progressToken,
+            progress: this.nextProgress(),
+            lastChunkIndex:
+              this.chunkIndex > 0 ? this.chunkIndex - 1 : undefined,
+          }),
+        );
+      } finally {
+        await this.onClose?.();
+      }
     });
   }
 
@@ -141,14 +145,17 @@ export class OpenStreamWriter {
     const progress = this.nextProgress();
 
     this.abortPromise = (async (): Promise<void> => {
-      await this.publishFrame(
-        buildOpenStreamAbortFrame({
-          progressToken: this.progressToken,
-          progress,
-          reason,
-        }),
-      );
-      await this.onAbort?.(reason);
+      try {
+        await this.publishFrame(
+          buildOpenStreamAbortFrame({
+            progressToken: this.progressToken,
+            progress,
+            reason,
+          }),
+        );
+      } finally {
+        await this.onAbort?.(reason);
+      }
     })();
 
     await this.abortPromise;
@@ -159,7 +166,6 @@ export class OpenStreamWriter {
       return;
     }
 
-    this.started = true;
     await this.publishFrame(
       buildOpenStreamStartFrame({
         progressToken: this.progressToken,
@@ -167,6 +173,7 @@ export class OpenStreamWriter {
         contentType: this.contentType,
       }),
     );
+    this.started = true;
   }
 
   private async enqueue(operation: () => Promise<void>): Promise<void> {

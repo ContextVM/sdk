@@ -479,6 +479,33 @@ describe('OpenStreamSession', () => {
     await expect(session.closed).resolves.toBeUndefined();
   });
 
+  test('rejects malformed close.lastChunkIndex before marking stream closed', async () => {
+    const session = new OpenStreamSession({
+      progressToken: 'token-malformed-last-chunk-index',
+      maxBufferedChunks: 8,
+      maxBufferedBytes: 1024,
+      closeGracePeriodMs: 1,
+    });
+
+    await session.processFrame(1, {
+      type: 'open-stream',
+      frameType: 'start',
+    });
+
+    await expect(
+      session.processFrame(2, {
+        type: 'open-stream',
+        frameType: 'close',
+        lastChunkIndex: -1,
+      }),
+    ).rejects.toBeInstanceOf(OpenStreamSequenceError);
+
+    expect(session.isActive).toBe(true);
+
+    await session.abort('cleanup');
+    await expect(session.closed).rejects.toBeInstanceOf(OpenStreamAbortError);
+  });
+
   test('responds to ping frames with a matching pong', async () => {
     const pongs: string[] = [];
     const session = new OpenStreamSession({

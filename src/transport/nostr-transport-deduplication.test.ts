@@ -168,6 +168,45 @@ describe('gift-wrap pre-decrypt deduplication', () => {
     expect(received).toHaveLength(1);
   });
 
+  test('client: drops duplicate plain inbound deliveries before dispatch', async () => {
+    decryptCallCount = 0;
+
+    const serverSk = generateSecretKey();
+    const serverPubkey = getPublicKey(serverSk);
+    const clientPriv = '1'.repeat(64);
+
+    const transport = new NostrClientTransport({
+      signer: new PrivateKeySigner(clientPriv),
+      relayHandler: makeNoopRelayHandler(),
+      serverPubkey,
+      encryptionMode: EncryptionMode.NONE,
+    });
+
+    const received: unknown[] = [];
+    transport.onmessage = (msg) => received.push(msg);
+
+    const plainEvent = finalizeEvent(
+      {
+        kind: 25910,
+        created_at: 1,
+        tags: [
+          ['p', getPublicKey(Uint8Array.from(Buffer.from(clientPriv, 'hex')))],
+        ],
+        content: JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'notifications/test',
+        }),
+      },
+      serverSk,
+    );
+
+    await transport['processIncomingEvent'](plainEvent);
+    await transport['processIncomingEvent'](plainEvent);
+
+    expect(decryptCallCount).toBe(0);
+    expect(received).toHaveLength(1);
+  });
+
   test('server: decrypts only once for duplicate gift-wrap deliveries', async () => {
     decryptCallCount = 0;
 
