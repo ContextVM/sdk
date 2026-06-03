@@ -3,6 +3,51 @@ import { ApplesauceRelayPool } from './applesauce-relay-pool.js';
 import type { NostrEvent } from 'nostr-tools';
 
 describe('ApplesauceRelayPool publish cancellation (regression)', () => {
+  test('publish() forwards configured publishOptions to RelayGroup.publish()', async () => {
+    const pool = new ApplesauceRelayPool(['ws://example.invalid'], {
+      publishOptions: {
+        timeout: 1_234,
+        retries: 2,
+      },
+    });
+
+    let receivedOptions:
+      | {
+          timeout?: number | boolean;
+          retries?: boolean | number | object;
+        }
+      | undefined;
+
+    (
+      pool as unknown as {
+        relayGroup: {
+          publish: (
+            event: NostrEvent,
+            opts?: { timeout?: number | boolean; retries?: boolean | number },
+          ) => Promise<Array<{ ok: boolean }>>;
+        };
+      }
+    ).relayGroup = {
+      publish: async (_event: NostrEvent, opts) => {
+        receivedOptions = opts;
+        return [{ ok: true }];
+      },
+    };
+
+    const event = {
+      id: 'f'.repeat(64),
+      pubkey: 'p'.repeat(64),
+      created_at: Math.floor(Date.now() / 1000),
+      kind: 1,
+      tags: [],
+      content: 'test',
+      sig: 's'.repeat(128),
+    } as unknown as NostrEvent;
+
+    await expect(pool.publish(event)).resolves.toBeUndefined();
+    expect(receivedOptions).toEqual({ timeout: 1_234, retries: 2 });
+  });
+
   test('publish() stops retrying after abortSignal is aborted (prevents zombie loops)', async () => {
     const pool = new ApplesauceRelayPool(['ws://example.invalid']);
 

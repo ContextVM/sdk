@@ -965,6 +965,30 @@ describe('ApplesauceRelayPool Integration', () => {
   }, 10000);
 });
 
+describe('ApplesauceRelayPool configuration', () => {
+  test('passes supported relayOptions through to underlying Relay instances', () => {
+    const pool = new ApplesauceRelayPool(['ws://localhost:1234'], {
+      relayOptions: {
+        eoseTimeout: 1_234,
+        eventTimeout: 2_345,
+        publishTimeout: 3_456,
+      },
+    });
+
+    const relay = (
+      pool as unknown as {
+        relays: Relay[];
+      }
+    ).relays[0];
+
+    expect(relay.eoseTimeout).toBe(1_234);
+    expect(relay.eventTimeout).toBe(2_345);
+    expect(relay.publishTimeout).toBe(3_456);
+
+    pool.unsubscribe();
+  });
+});
+
 describe('ApplesauceRelayPool Cleanup', () => {
   test('completeSubjectSafely handles undefined subjects', () => {
     const pool = new ApplesauceRelayPool(['ws://localhost:1234']);

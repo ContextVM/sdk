@@ -1,4 +1,9 @@
-import { Relay, RelayGroup } from 'applesauce-relay';
+import {
+  Relay,
+  RelayGroup,
+  type PublishOptions,
+  type RelayOptions,
+} from 'applesauce-relay';
 import type { NostrEvent, Filter } from 'nostr-tools';
 import { RelayHandler } from '../core/interfaces.js';
 import { createLogger } from '../core/utils/logger.js';
@@ -49,6 +54,13 @@ export interface ApplesauceRelayPoolOptions {
   reconnectBaseDelayMs?: number;
   /** Reconnect backoff max delay in ms (default: 30000) */
   reconnectMaxDelayMs?: number;
+  /** Options passed through to each underlying applesauce Relay instance. */
+  relayOptions?: Omit<
+    RelayOptions,
+    'keepAlive' | 'enablePing' | 'pingFrequency' | 'pingTimeout'
+  >;
+  /** Per-attempt publish options passed to RelayGroup.publish(). */
+  publishOptions?: Pick<PublishOptions, 'timeout' | 'retries'>;
 }
 
 /**
@@ -61,7 +73,8 @@ export class ApplesauceRelayPool implements RelayHandler {
   private relayGeneration = 0;
 
   // Outbound publish policy
-  private static readonly PUBLISH_ATTEMPT_TIMEOUT_MS = 10_000;
+  private static readonly DEFAULT_PUBLISH_ATTEMPT_TIMEOUT_MS = 10_000;
+  private static readonly DEFAULT_PUBLISH_ATTEMPT_RETRIES = 1;
   private static readonly PUBLISH_RETRY_INTERVAL_MS = 500;
   private static readonly PUBLISH_ERROR_LOG_INTERVAL_MS = 10_000;
 
@@ -72,6 +85,8 @@ export class ApplesauceRelayPool implements RelayHandler {
   // Liveness ping policy (instance-configurable)
   private readonly pingFrequencyMs: number;
   private readonly pingTimeoutMs: number;
+  private readonly relayOptions?: ApplesauceRelayPoolOptions['relayOptions'];
+  private readonly publishOptions: Pick<PublishOptions, 'timeout' | 'retries'>;
 
   private static readonly DISCONNECT_CLOSE_TIMEOUT_MS = 2_000;
 
@@ -228,6 +243,7 @@ export class ApplesauceRelayPool implements RelayHandler {
     // We set it to slightly larger than our liveness
     // cadence so that short gaps don't cause unnecessary disconnect/reconnect.
     const relay = new Relay(url, {
+      ...this.relayOptions,
       keepAlive: this.pingFrequencyMs + this.pingTimeoutMs + 5_000,
     });
 
@@ -276,6 +292,15 @@ export class ApplesauceRelayPool implements RelayHandler {
     this.pingTimeoutMs = opts?.pingTimeoutMs ?? 20_000;
     this.reconnectBaseDelayMs = opts?.reconnectBaseDelayMs ?? 3_000;
     this.reconnectMaxDelayMs = opts?.reconnectMaxDelayMs ?? 30_000;
+    this.relayOptions = opts?.relayOptions;
+    this.publishOptions = {
+      timeout:
+        opts?.publishOptions?.timeout ??
+        ApplesauceRelayPool.DEFAULT_PUBLISH_ATTEMPT_TIMEOUT_MS,
+      retries:
+        opts?.publishOptions?.retries ??
+        ApplesauceRelayPool.DEFAULT_PUBLISH_ATTEMPT_RETRIES,
+    };
 
     this.relays = relayUrls.map((url) => this.createRelay(url));
     this.relayGroup = new RelayGroup(this.relays);
@@ -322,10 +347,10 @@ export class ApplesauceRelayPool implements RelayHandler {
       attempt += 1;
       const publishGeneration = this.relayGeneration;
       try {
-        const responses = await this.relayGroup.publish(event, {
-          timeout: ApplesauceRelayPool.PUBLISH_ATTEMPT_TIMEOUT_MS,
-          retries: 0,
-        });
+        const responses = await this.relayGroup.publish(
+          event,
+          this.publishOptions,
+        );
 
         const connectedRelayUrls = new Set(
           this.relays

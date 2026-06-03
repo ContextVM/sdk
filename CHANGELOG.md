@@ -1,5 +1,13 @@
 # @contextvm/sdk
 
+## 0.11.12
+
+### Patch Changes
+
+- feat(relay): add relayOptions and publishOptions configuration
+
+  Add support for configuring relayOptions and publishOptions through the ApplesauceRelayPool constructor. The relayOptions are passed through to each underlying Relay instance, while publishOptions (timeout and retries) are forwarded to RelayGroup.publish(). Includes tests verifying both options are correctly applied.
+
 ## 0.11.11
 
 ### Patch Changes
