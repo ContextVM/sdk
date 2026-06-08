@@ -7,6 +7,7 @@ import {
   NostrServerTransport,
   NostrServerTransportOptions,
 } from '../transport/nostr-server-transport.js';
+import { NOTIFICATIONS_INITIALIZED_METHOD } from '../core/index.js';
 import { createLogger } from '../core/utils/logger.js';
 import { LruCache } from '../core/utils/lru-cache.js';
 
@@ -17,6 +18,20 @@ type ClientPubkey = string;
 type SessionTerminationCapableTransport = Transport & {
   terminateSession?: () => void | Promise<void>;
 };
+
+/**
+ * Determines whether a JSON-RPC message is part of the internal announcement
+ * flow. These messages must be forwarded to a dedicated announcement transport
+ * when operating in per-client mode.
+ */
+function isAnnouncementMessage(message: JSONRPCMessage): boolean {
+  return (
+    ('id' in message && (message as { id?: unknown }).id === 'announcement') ||
+    ('method' in message &&
+      (message as { method?: unknown }).method ===
+        NOTIFICATIONS_INITIALIZED_METHOD)
+  );
+}
 
 /**
  * Options for configuring the NostrMCPGateway.
@@ -38,6 +53,15 @@ export interface NostrMCPGatewayOptions {
     clientPubkey: ClientPubkey;
   }) => Transport | Promise<Transport>;
 
+  /**
+   * Optional dedicated MCP transport for announcement introspection in per-client mode.
+   * When `createMcpClientTransport` is used (e.g., for HTTP targets), the gateway drops
+   * transport-internal announcement messages because they lack a client pubkey context.
+   * Providing an `announcementMcpTransport` allows the gateway to forward those
+   * messages to this dedicated transport instead, enabling public server announcements.
+   */
+  announcementMcpTransport?: Transport;
+
   /** Maximum number of per-client MCP transports to keep in memory. @default 1000 */
   maxClientTransports?: number;
 }
@@ -54,6 +78,7 @@ export class NostrMCPGateway {
   private readonly createMcpClientTransport:
     | ((ctx: { clientPubkey: ClientPubkey }) => Transport | Promise<Transport>)
     | undefined;
+  private readonly announcementMcpTransport: Transport | undefined;
   private readonly clientTransports: LruCache<Transport> | undefined;
   private readonly clientTransportPromises:
     | Map<ClientPubkey, Promise<Transport>>
@@ -70,6 +95,7 @@ export class NostrMCPGateway {
   constructor(options: NostrMCPGatewayOptions) {
     this.mcpClientTransport = options.mcpClientTransport;
     this.createMcpClientTransport = options.createMcpClientTransport;
+    this.announcementMcpTransport = options.announcementMcpTransport;
 
     if (!this.mcpClientTransport && !this.createMcpClientTransport) {
       throw new Error(
@@ -118,7 +144,18 @@ export class NostrMCPGateway {
     this.nostrServerTransport.onmessage = (message: JSONRPCMessage) => {
       if (this.createMcpClientTransport) {
         // In per-client mode, we only forward messages that have pubkey context.
-        // Internal transport messages (e.g., announcement traffic) should not be sent to an MCP server.
+        // Internal transport messages (e.g., announcement traffic) should not be
+        // sent to a per-client MCP server. However, if a dedicated announcement
+        // transport is provided, forward announcement messages there.
+        if (this.announcementMcpTransport && isAnnouncementMessage(message)) {
+          logger.debug(
+            'Forwarding announcement message to dedicated transport:',
+            message,
+          );
+          this.announcementMcpTransport
+            .send(message)
+            .catch(this.handleServerErrorBound);
+        }
         return;
       }
 
@@ -170,6 +207,20 @@ export class NostrMCPGateway {
       };
       this.mcpClientTransport.onerror = this.handleServerErrorBound;
       this.mcpClientTransport.onclose = this.handleServerCloseBound;
+    }
+
+    // Forward announcement transport responses back to the Nostr transport.
+    if (this.announcementMcpTransport) {
+      this.announcementMcpTransport.onmessage = (message: JSONRPCMessage) => {
+        logger.debug('Received message from MCP server (announcement):', {
+          message,
+        });
+        this.nostrServerTransport
+          .send(message)
+          .catch(this.handleNostrErrorBound);
+      };
+      this.announcementMcpTransport.onerror = this.handleServerErrorBound;
+      this.announcementMcpTransport.onclose = this.handleServerCloseBound;
     }
   }
 
@@ -300,6 +351,9 @@ export class NostrMCPGateway {
 
     try {
       // Start both transports
+      if (this.announcementMcpTransport) {
+        await this.announcementMcpTransport.start();
+      }
       if (!this.createMcpClientTransport) {
         if (!this.mcpClientTransport) {
           throw new Error(
@@ -351,6 +405,10 @@ export class NostrMCPGateway {
           );
         }
         await this.mcpClientTransport.close();
+      }
+
+      if (this.announcementMcpTransport) {
+        await this.announcementMcpTransport.close();
       }
 
       this.isRunning = false;

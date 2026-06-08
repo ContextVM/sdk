@@ -1,5 +1,13 @@
 # @contextvm/sdk
 
+## 0.11.14
+
+### Patch Changes
+
+- feat(gateway): add dedicated announcement transport for per-client mode
+
+  Add support for a dedicated MCP transport to handle announcement messages in per-client mode. When using `createMcpClientTransport`, internal announcement messages are now forwarded to the optional `announcementMcpTransport` instead of being dropped, enabling public server announcements to be captured and processed.
+
 ## 0.11.13
 
 ### Patch Changes
