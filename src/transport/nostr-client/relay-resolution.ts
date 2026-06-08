@@ -58,37 +58,26 @@ export async function resolveOperationalRelays(
   const discoveryPromise = fetchServerRelayList({
     serverPubkey: config.serverPubkey,
     relayUrls: [...config.discoveryRelayUrls],
-  }).then((relayListEntries) => selectOperationalRelayUrls(relayListEntries));
+  })
+    .then((relayListEntries) => selectOperationalRelayUrls(relayListEntries))
+    .catch(() => []);
 
+  // Start fallback probing in parallel so it is ready if discovery returns empty.
   const fallbackConnectionPromise = connectFallbackOperationalRelays(
     config.fallbackOperationalRelayUrls,
   );
 
-  const firstConnectedRelayUrls = await Promise.race([
-    discoveryPromise,
-    fallbackConnectionPromise,
-  ]);
+  const discoveredRelayUrls = await discoveryPromise;
 
-  if (firstConnectedRelayUrls.length > 0) {
-    deps.logger.info('Resolved operational relays', {
-      relayCount: firstConnectedRelayUrls.length,
-    });
-    deps.setRelayHandler(firstConnectedRelayUrls);
-    return;
-  }
-
-  const [discoveryRelayUrls, fallbackRelayUrls] = await Promise.all([
-    discoveryPromise,
-    fallbackConnectionPromise,
-  ]);
-
-  if (discoveryRelayUrls.length > 0) {
+  if (discoveredRelayUrls.length > 0) {
     deps.logger.info('Resolved operational relays from server relay list', {
-      relayCount: discoveryRelayUrls.length,
+      relayCount: discoveredRelayUrls.length,
     });
-    deps.setRelayHandler(discoveryRelayUrls);
+    deps.setRelayHandler(discoveredRelayUrls);
     return;
   }
+
+  const fallbackRelayUrls = await fallbackConnectionPromise;
 
   if (fallbackRelayUrls.length > 0) {
     deps.logger.info('Using configured fallback operational relays', {

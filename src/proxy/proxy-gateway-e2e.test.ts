@@ -114,34 +114,38 @@ describe('Proxy-Gateway E2E Test (Without Mock Responses)', () => {
     await client.close();
   }, 15000);
 
-  test('should list tools through proxy-gateway chain', async () => {
-    const transport = getProxyTransport();
+  test.serial(
+    'should list tools through proxy-gateway chain',
+    async () => {
+      const transport = getProxyTransport();
 
-    const client = new Client({
-      name: 'tools-test-client',
-      version: '1.0.0',
-    });
+      const client = new Client({
+        name: 'tools-test-client',
+        version: '1.0.0',
+      });
 
-    await client.connect(transport);
+      await client.connect(transport);
 
-    // List tools from the mock MCP server through the gateway
-    const tools = await client.listTools();
-    expect(tools).toBeDefined();
-    expect(tools.tools).toBeDefined();
-    expect(tools.tools.length).toBeGreaterThan(0);
+      // List tools from the mock MCP server through the gateway
+      const tools = await client.listTools();
+      expect(tools).toBeDefined();
+      expect(tools.tools).toBeDefined();
+      expect(tools.tools.length).toBeGreaterThan(0);
 
-    // Verify the mock server provides the 'add' tool
-    const toolNames = tools.tools.map((tool) => tool.name);
-    expect(toolNames).toContain('add');
+      // Verify the mock server provides the 'add' tool
+      const toolNames = tools.tools.map((tool) => tool.name);
+      expect(toolNames).toContain('add');
 
-    // Verify the tool has the expected structure
-    const addTool = tools.tools.find((tool) => tool.name === 'add');
-    expect(addTool).toBeDefined();
-    expect(addTool!.title).toBe('Addition Tool');
-    expect(addTool!.description).toBe('Add two numbers');
+      // Verify the tool has the expected structure
+      const addTool = tools.tools.find((tool) => tool.name === 'add');
+      expect(addTool).toBeDefined();
+      expect(addTool!.title).toBe('Addition Tool');
+      expect(addTool!.description).toBe('Add two numbers');
 
-    await client.close();
-  }, 15000);
+      await client.close();
+    },
+    15000,
+  );
 
   test('should call tool through proxy-gateway chain', async () => {
     const transport = getProxyTransport();

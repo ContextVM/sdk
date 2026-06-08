@@ -1,5 +1,18 @@
 # @contextvm/sdk
 
+## 0.11.13
+
+### Patch Changes
+
+- fix(relay): prioritize CEP-17 discovered relays over fallback relays
+
+  Change relay resolution to always await CEP-17 discovery before using fallback
+  relays. Previously, a race condition between discovery and fallback could cause
+  fallback relays to be used even when discovery would return relays. Now
+  discovery is awaited first, ensuring CEP-17 discovered relays always take
+  precedence. Fallback relays are only used when discovery returns no operational
+  relays.
+
 ## 0.11.12
 
 ### Patch Changes

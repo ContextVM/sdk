@@ -1287,71 +1287,84 @@ describe('NostrClientTransport instance shape', () => {
     }
   });
 
-  test('uses fallback relays when they become available before discovery resolves', async () => {
-    const originalConnect = ApplesauceRelayPool.prototype.connect;
-
-    ApplesauceRelayPool.prototype.connect = async function connectForFallback(
-      this: ApplesauceRelayPool,
-    ): Promise<void> {
-      const relayUrls = this.getRelayUrls?.() ?? [];
-
-      if (relayUrls.includes('wss://delayed-discovery.example.com')) {
-        await sleep(50);
-      }
-
-      return originalConnect.call(this);
-    };
-
-    const transport = new NostrClientTransport({
-      serverPubkey: 'b'.repeat(64),
-      signer: new PrivateKeySigner('a'.repeat(64)),
-      relayHandler: [],
-      discoveryRelayUrls: ['wss://delayed-discovery.example.com'],
-      fallbackOperationalRelayUrls: ['wss://fallback.example.com'],
-    });
+  test('uses fallback relays when CEP-17 discovery returns no operational relays', async () => {
+    const spawned = await spawnMockRelay();
+    const discoveryRelayUrl = spawned.relayUrl;
 
     try {
+      const transport = new NostrClientTransport({
+        serverPubkey: 'b'.repeat(64),
+        signer: new PrivateKeySigner('a'.repeat(64)),
+        relayHandler: [],
+        discoveryRelayUrls: [discoveryRelayUrl],
+        fallbackOperationalRelayUrls: ['wss://fallback.example.com'],
+      });
+
       await transport['resolveOperationalRelayHandler']();
 
       expect(transport.getInternalStateForTesting().relayUrls).toEqual([
         'wss://fallback.example.com',
       ]);
     } finally {
-      ApplesauceRelayPool.prototype.connect = originalConnect;
+      spawned.stop();
+      await sleep(100);
     }
   });
 
-  test('allows fallback relays to win before discovery completes because they connect first', async () => {
-    const originalConnect = ApplesauceRelayPool.prototype.connect;
-
-    ApplesauceRelayPool.prototype.connect = async function connectForRace(
-      this: ApplesauceRelayPool,
-    ): Promise<void> {
-      const relayUrls = this.getRelayUrls?.() ?? [];
-
-      if (relayUrls.includes('wss://slow-discovery.example.com')) {
-        await sleep(50);
-      }
-
-      return originalConnect.call(this);
-    };
-
-    const transport = new NostrClientTransport({
-      serverPubkey: 'b'.repeat(64),
-      signer: new PrivateKeySigner('a'.repeat(64)),
-      relayHandler: [],
-      discoveryRelayUrls: ['wss://slow-discovery.example.com'],
-      fallbackOperationalRelayUrls: ['wss://fallback.example.com'],
-    });
+  test('uses CEP-17 discovered relays even when fallback relays connect first', async () => {
+    const spawned = await spawnMockRelay();
+    const discoveryRelayUrl = spawned.relayUrl;
+    const serverSigner = new PrivateKeySigner('e'.repeat(64));
+    const serverPubkey = await serverSigner.getPublicKey();
 
     try {
-      await transport['resolveOperationalRelayHandler']();
+      const relayListPublisher = new ApplesauceRelayPool([discoveryRelayUrl]);
+      await relayListPublisher.connect();
 
-      expect(transport.getInternalStateForTesting().relayUrls).toEqual([
-        'wss://fallback.example.com',
-      ]);
+      const relayListEvent = await serverSigner.signEvent({
+        kind: 10002,
+        content: '',
+        created_at: Math.floor(Date.now() / 1000),
+        pubkey: serverPubkey,
+        tags: [['r', 'wss://authoritative.example.com']],
+      });
+      await relayListPublisher.publish(relayListEvent);
+      await relayListPublisher.disconnect();
+
+      const originalConnect = ApplesauceRelayPool.prototype.connect;
+
+      ApplesauceRelayPool.prototype.connect = async function connectWithDelay(
+        this: ApplesauceRelayPool,
+      ): Promise<void> {
+        const relayUrls = this.getRelayUrls?.() ?? [];
+
+        if (relayUrls.includes(discoveryRelayUrl)) {
+          await sleep(50);
+        }
+
+        return originalConnect.call(this);
+      };
+
+      try {
+        const transport = new NostrClientTransport({
+          serverPubkey,
+          signer: new PrivateKeySigner('a'.repeat(64)),
+          relayHandler: [],
+          discoveryRelayUrls: [discoveryRelayUrl],
+          fallbackOperationalRelayUrls: ['wss://fallback.example.com'],
+        });
+
+        await transport['resolveOperationalRelayHandler']();
+
+        expect(transport.getInternalStateForTesting().relayUrls).toEqual([
+          'wss://authoritative.example.com',
+        ]);
+      } finally {
+        ApplesauceRelayPool.prototype.connect = originalConnect;
+      }
     } finally {
-      ApplesauceRelayPool.prototype.connect = originalConnect;
+      spawned.stop();
+      await sleep(100);
     }
   });
 });
