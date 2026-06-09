@@ -179,7 +179,7 @@ describe('gift-wrap pre-decrypt deduplication', () => {
       signer: new PrivateKeySigner(clientPriv),
       relayHandler: makeNoopRelayHandler(),
       serverPubkey,
-      encryptionMode: EncryptionMode.NONE,
+      encryptionMode: EncryptionMode.DISABLED,
     });
 
     const received: unknown[] = [];
