@@ -21,6 +21,8 @@ import {
   PAYMENT_ACCEPTED_METHOD,
   PAYMENT_REJECTED_METHOD,
   PAYMENT_REQUIRED_METHOD,
+  PAYMENT_REQUIRED_ERROR_CODE,
+  PAYMENT_PENDING_ERROR_CODE,
 } from './constants.js';
 
 export interface ClientPaymentsOptions {
@@ -56,6 +58,32 @@ export interface ClientPaymentsOptions {
     req: PaymentHandlerRequest,
     originalRequestContext?: OriginalRequestContext,
   ) => boolean | Promise<boolean>;
+
+  /** Requested payment interaction mode. @default 'transparent' */
+  paymentInteraction?: import('./types.js').PaymentInteractionMode;
+
+  /**
+   * Handler for explicit-gating -32042 errors.
+   * Called when a priced invocation returns Payment Required.
+   * The handler should pay one option and signal completion.
+   *
+   * **Error handling contract**:
+   * - If the promise resolves with `{ paid: true }`, the wrapper auto-retries the
+   *   original request with the same `method` and `params`.
+   * - If the promise resolves with `{ paid: false, reason }`, the wrapper synthesizes
+   *   a JSON-RPC error to the caller with code `-32042` and `data: { reason }`.
+   *   Use `reason: 'user_cancelled'` for user-initiated cancellations.
+   * - If the promise **rejects**, the wrapper MUST NOT silently fall back.
+   *   It synthesizes a JSON-RPC error with code `-32042` and
+   *   `data: { reason: error.message, type: 'payment_handler_error' }`.
+   * - Transient payment-provider failures should reject with an Error whose
+   *   `message` contains the provider error details.
+   */
+  onPaymentRequired?: (params: {
+    options: import('./types.js').PaymentOption[];
+    instructions?: string;
+    originalRequest: import('@modelcontextprotocol/sdk/types.js').JSONRPCRequest;
+  }) => Promise<{ paid: boolean; reason?: string }>;
 }
 
 type ProgressToken = string;
@@ -79,6 +107,31 @@ function supportsOnmessageWithContext(
   return Object.prototype.hasOwnProperty.call(
     transport,
     'onmessageWithContext',
+  );
+}
+
+function isExplicitPaymentRequiredError(
+  msg: JSONRPCMessage,
+): msg is import('@modelcontextprotocol/sdk/types.js').JSONRPCErrorResponse {
+  return (
+    isJSONRPCErrorResponse(msg) &&
+    msg.error.code === PAYMENT_REQUIRED_ERROR_CODE &&
+    typeof msg.error.data === 'object' &&
+    msg.error.data !== null &&
+    Array.isArray((msg.error.data as any).payment_options) &&
+    (msg.error.data as any).payment_options.length > 0
+  );
+}
+
+function isExplicitPaymentPendingError(
+  msg: JSONRPCMessage,
+): msg is import('@modelcontextprotocol/sdk/types.js').JSONRPCErrorResponse {
+  return (
+    isJSONRPCErrorResponse(msg) &&
+    msg.error.code === PAYMENT_PENDING_ERROR_CODE &&
+    typeof msg.error.data === 'object' &&
+    msg.error.data !== null &&
+    typeof (msg.error.data as any).retry_after === 'number'
   );
 }
 
@@ -177,6 +230,12 @@ export function withClientPayments(
     logger.debug('advertised client PMIs', {
       pmis: options.handlers.map((h) => h.pmi),
     });
+    if (options.paymentInteraction === 'explicit_gating') {
+      transport.setPaymentInteraction('explicit_gating');
+      logger.debug('advertised requested payment interaction mode', {
+        mode: 'explicit_gating',
+      });
+    }
   }
 
   const handlersByPmi = new Map(
@@ -205,6 +264,233 @@ export function withClientPayments(
     message: JSONRPCMessage,
     requestEventId: string,
   ): Promise<void> {
+    if (isExplicitPaymentRequiredError(message)) {
+      // Explicit gating lifecycle (-32042 Payment Required)
+      const data = message.error.data as import('./types.js').PaymentRequiredErrorData;
+      
+      for (const option of data.payment_options) {
+        const handler = handlersByPmi.get(option.pmi);
+        if (!handler) continue;
+
+        const isNostrTransport = transport instanceof NostrClientTransport;
+        const pending = isNostrTransport
+          ? transport.getPendingRequestForEventId(requestEventId)
+          : undefined;
+
+        if (isNostrTransport && !pending) {
+          logger.warn('dropping uncorrelated explicit payment error', {
+            requestEventId,
+            pmi: option.pmi,
+          });
+          onmessage?.(message);
+          return;
+        }
+
+        const originalContext = pending
+          ? {
+              method: pending.method,
+              capability: pending.capability,
+              id: pending.id,
+            }
+          : undefined;
+
+        const request: PaymentHandlerRequest = {
+          amount: option.amount,
+          pay_req: option.pay_req,
+          pmi: option.pmi,
+          description: option.description,
+          ttl: option.ttl,
+          _meta: option._meta,
+          requestEventId,
+        };
+
+        const allow = options.paymentPolicy
+          ? await options.paymentPolicy(request, originalContext)
+          : true;
+
+        if (!allow) {
+          logger.debug('payment_required rejected by policy', {
+            requestEventId,
+            pmi: option.pmi,
+          });
+          continue; // Try next option if rejected by policy
+        }
+
+        const canHandle = handler.canHandle
+          ? await handler.canHandle(request)
+          : true;
+
+        if (!canHandle) {
+          logger.debug('payment_required cannot be handled by handler', {
+            requestEventId,
+            pmi: option.pmi,
+          });
+          continue; // Try next option if handler can't handle
+        }
+
+        logger.info('executing payment handler for explicit gating', {
+          requestEventId,
+          pmi: option.pmi,
+          amount: option.amount,
+        });
+
+        try {
+          await handler.handle(request);
+          logger.info('payment handler succeeded, retrying request', {
+            requestEventId,
+            pmi: option.pmi,
+          });
+
+          // In explicit gating, the client MUST retry the exact same request
+          // to trigger authorization consumption and get the result.
+          // Since we intercepted the error, we need the original request.
+          // For NostrClientTransport, we don't have the original raw request cached perfectly, 
+          // but we can reconstruct it or we should just let the error propagate 
+          // and let the caller handle retry.
+          
+          if (!options.onPaymentRequired) {
+            // We have a payment required error but the transport level onPaymentRequired handler
+            // wasn't configured. The client didn't supply an explicit gating handler. 
+            // We'll let the error propagate.
+            onmessage?.(message);
+            return;
+          }
+          
+          if (!pending?.originalRequestContext?.method) {
+            logger.warn('missing original request method, cannot retry explicit payment', { requestEventId });
+            onmessage?.(message);
+            return;
+          }
+          
+          const rawRequest = transport.correlationStore.getRawRequest(requestEventId);
+          if (!rawRequest) {
+            logger.warn('missing raw original request, cannot retry explicit payment', { requestEventId });
+            onmessage?.(message);
+            return;
+          }
+
+          const result = await options.onPaymentRequired({
+            options: data.payment_options,
+            instructions: data.instructions,
+            originalRequest: rawRequest,
+          });
+          
+          if (result.paid) {
+            logger.info('explicit payment satisfied, retrying original request', {
+              requestEventId,
+              method: rawRequest.method,
+            });
+            
+            // Re-send the exact request, updating the ID if necessary (or letting MCP SDK handle it)
+            // But actually we are the transport, we can just resend the raw request through the transport.
+            // Wait, we need to create a new ID so the proxy can track it properly.
+            // Oh right, we can't easily resend and magically stitch it back to the original Promise in the MCP Client.
+            // Actually, if we just send() it, the original promise in the MCP Client is already waiting 
+            // for the response with the *original* ID.
+            // Wait, no, the server sent us an error response with the *original* ID. 
+            // The MCP Client will resolve that promise with an Error.
+            // So we MUST NOT deliver the error response to `onmessage` if we want to intercept and retry.
+            // We intercepted the error! We haven't called `onmessage` yet.
+            // So if we just resend the raw request to the server, with a new requestEventId,
+            // we will need to map the NEW response back to the OLD request ID.
+            
+            // This requires transport level support. 
+            // The plan says: "When onPaymentRequired returns { paid: true }, the wrapper re-sends the original JSONRPCRequest with the same method and params (new id is fine per spec). This is transparent to the upstream MCP Client."
+            // Wait, if it has a new id, how does the upstream MCP Client know it's the response?
+            // Actually, we must use the original ID when communicating with the upstream client.
+            // But when we send it to the server, we just pass the original request exactly as it was.
+            // We don't change the ID. The `NostrClientTransport` wraps the `id` inside a new `requestId`.
+            
+            await transport.send(rawRequest);
+            return; // WE SUCCESSFULLY RETRIED! Do not deliver the error to `onmessage`.
+          } else {
+            // User cancelled or returned paid=false
+            logger.debug('onPaymentRequired returned paid=false', { requestEventId, reason: result.reason });
+            const errorMsg: import('@modelcontextprotocol/sdk/types.js').JSONRPCMessage = {
+              jsonrpc: '2.0',
+              id: message.id,
+              error: {
+                code: PAYMENT_REQUIRED_ERROR_CODE,
+                message: 'Payment Required',
+                data: { reason: result.reason || 'user_cancelled' }
+              }
+            };
+            onmessage?.(errorMsg);
+            return;
+          }
+        } catch (err) {
+          logger.error('payment handler failed', {
+            requestEventId,
+            pmi: option.pmi,
+            error: err instanceof Error ? err.message : String(err),
+          });
+          // Spec: onPaymentRequired rejection MUST cause the original JSON-RPC request to fail.
+          const errorMsg: import('@modelcontextprotocol/sdk/types.js').JSONRPCMessage = {
+            jsonrpc: '2.0',
+            id: message.id,
+            error: {
+              code: PAYMENT_REQUIRED_ERROR_CODE,
+              message: 'Payment Required',
+              data: { reason: err instanceof Error ? err.message : String(err), type: 'payment_handler_error' }
+            }
+          };
+          onmessage?.(errorMsg);
+          return;
+        }
+
+        // We handled (or attempted) the payment. Stop evaluating other options.
+        // If we failed, we break and the -32042 will be emitted to `onmessage`.
+        // Actually we already returned if we handled it.
+      }
+      
+      // If we got here, we either:
+      // 1. Paid successfully but we need to signal the caller to retry (if we don't retry ourselves)
+      // 2. Failed to pay (policy, unhandled, or error)
+      // In both cases, for now we will just emit the -32042 error to `onmessage` and let 
+      // the caller retry. To implement transparent retry at the transport level, we'd need
+      // to cache every outbound request, which is expensive.
+      onmessage?.(message);
+      return;
+    }
+
+    if (isExplicitPaymentPendingError(message)) {
+      const data = message.error.data as import('./types.js').PaymentPendingErrorData;
+      const retryAfterSeconds = data.retry_after;
+      
+      const isNostrTransport = transport instanceof NostrClientTransport;
+      const pending = isNostrTransport
+        ? transport.getPendingRequestForEventId(requestEventId)
+        : undefined;
+        
+      if (!isNostrTransport || !pending) {
+        logger.warn('dropping uncorrelated explicit payment pending error', {
+          requestEventId,
+        });
+        onmessage?.(message);
+        return;
+      }
+      
+      const rawRequest = transport.correlationStore.getRawRequest(requestEventId);
+      if (!rawRequest) {
+        logger.warn('missing raw original request, cannot retry explicit payment pending', { requestEventId });
+        onmessage?.(message);
+        return;
+      }
+      
+      logger.info('payment pending, retrying after backoff', {
+        requestEventId,
+        retryAfterSeconds,
+      });
+      
+      setTimeout(() => {
+        transport.send(rawRequest).catch(err => {
+          logger.error('failed to retry pending request', { requestEventId, error: err instanceof Error ? err.message : String(err) });
+        });
+      }, retryAfterSeconds * 1000);
+      
+      return; // Intercept the error so the client waits
+    }
+
     if (!isPaymentRequiredNotification(message)) {
       return;
     }
@@ -440,6 +726,12 @@ export function withClientPayments(
           },
         );
 
+        // If it's an explicit gating error, we intercept it here because
+        // maybeHandlePaymentRequired takes responsibility for re-emitting it if unhandled.
+        if (isExplicitPaymentRequiredError(message) || isExplicitPaymentPendingError(message)) {
+          return;
+        }
+
         onmessage?.(message);
       };
 
@@ -490,6 +782,12 @@ export function withClientPayments(
               onerror?.(error);
             },
           );
+
+          // If it's an explicit gating error, we intercept it here because
+          // maybeHandlePaymentRequired takes responsibility for re-emitting it if unhandled.
+          if (isExplicitPaymentRequiredError(message) || isExplicitPaymentPendingError(message)) {
+            return;
+          }
 
           // Forward exactly once (see duplicate-delivery guard in `transport.onmessage`).
           onmessage?.(message);

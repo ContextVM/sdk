@@ -62,6 +62,48 @@ export type PaymentRequiredNotification = JSONRPCNotification & {
   };
 };
 
+/** CEP-8 payment interaction modes. */
+export type PaymentInteractionMode = 'transparent' | 'explicit_gating';
+
+/** A single payment option inside a -32042 error.data.payment_options entry. */
+export interface PaymentOption {
+  amount: number;
+  pmi: string;
+  pay_req: string;
+  description?: string;
+  ttl?: number;
+  _meta?: Record<string, unknown>;
+}
+
+/** Shape of error.data for -32042 Payment Required. */
+export interface PaymentRequiredErrorData {
+  instructions?: string;
+  payment_options: PaymentOption[];
+}
+
+/** Shape of error.data for -32043 Payment Pending. */
+export interface PaymentPendingErrorData {
+  instructions?: string;
+  retry_after?: number;
+}
+
+/** Nostr `payment_interaction` tag as defined by CEP-8. */
+export type PaymentInteractionTag = ['payment_interaction', PaymentInteractionMode];
+
+/**
+ * Canonical invocation identity for explicit-gating authorization matching.
+ *
+ * `invocationHash` is SHA-256 over JCS({method, params}). This means `params` MUST be
+ * deterministic — no timestamps, UUIDs, or ephemeral IDs that change across retries.
+ * Clients MUST preserve the exact original `params` object when retrying after payment
+ * so the retry computes the same `invocationHash` and matches the paid authorization.
+ */
+export interface CanonicalInvocationIdentity {
+  clientPubkey: string;
+  /** Hex-encoded SHA-256 of JCS({method, params}). */
+  invocationHash: string;
+}
+
 /** A CEP-8 payment-accepted notification (JSON-RPC notification). */
 export type PaymentAcceptedNotification = JSONRPCNotification & {
   method: 'notifications/payment_accepted';

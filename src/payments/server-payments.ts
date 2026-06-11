@@ -1,17 +1,15 @@
 import { type JSONRPCRequest } from '@contextvm/mcp-sdk/types.js';
-import {
+import { isJsonRpcRequest } from './types.js';
+import type {
   CorrelatedNotificationSender,
   PaymentAcceptedNotification,
   PaymentProcessor,
   PaymentRejectedNotification,
   PaymentRequiredNotification,
   PricedCapability,
-  ResolvePriceRejection,
-  ResolvePriceWaiver,
-  ResolvePriceResult,
   ResolvePriceFn,
   ServerMiddlewareFn,
-  isJsonRpcRequest,
+  PaymentInteractionMode,
 } from './types.js';
 import { LruCache } from '../core/utils/lru-cache.js';
 import { withTimeout } from '../core/utils/utils.js';
@@ -22,6 +20,13 @@ import {
   PAYMENT_REJECTED_METHOD,
   PAYMENT_REQUIRED_METHOD,
 } from './constants.js';
+import {
+  getVerificationTimeoutMs,
+  matchPricedCapability,
+  isResolvePriceRejection,
+  isResolvePriceWaiver,
+} from './server-payments-utils.js';
+
 
 export interface ServerPaymentsOptions {
   processors: readonly PaymentProcessor[];
@@ -47,6 +52,9 @@ export interface ServerPaymentsOptions {
    * @default 1000
    */
   maxPendingPayments?: number;
+
+  /** Effective payment interaction mode for this server instance. @default 'transparent' */
+  paymentInteraction?: PaymentInteractionMode;
 }
 
 function purgeExpiredPending<T extends { expiresAtMs: number }>(params: {
@@ -71,55 +79,7 @@ type PendingPaymentState = {
   inFlight: Promise<void>;
 };
 
-function getVerificationTimeoutMs(params: {
-  ttlSeconds: number | undefined;
-}): number {
-  // CEP-8 TTL is in seconds. If TTL is absent, default is 5 minutes.
-  const ttlSeconds = params.ttlSeconds;
-  if (ttlSeconds === undefined) {
-    return 5 * 60 * 1000;
-  }
-  if (!Number.isFinite(ttlSeconds) || ttlSeconds <= 0) {
-    return 5 * 60 * 1000;
-  }
-  return Math.floor(ttlSeconds * 1000);
-}
 
-function matchPricedCapability(
-  message: JSONRPCRequest,
-  priced: readonly PricedCapability[],
-): PricedCapability | undefined {
-  const capabilityName = getCapabilityNameForPricing(message);
-
-  return priced.find((p) => {
-    if (p.method !== message.method) return false;
-    if (p.name === undefined) return true;
-    return p.name === capabilityName;
-  });
-}
-
-function getCapabilityNameForPricing(
-  message: JSONRPCRequest,
-): string | undefined {
-  const params = message.params as Record<string, unknown> | undefined;
-
-  switch (message.method) {
-    case 'tools/call': {
-      const name = params?.name;
-      return typeof name === 'string' ? name : undefined;
-    }
-    case 'prompts/get': {
-      const name = params?.name;
-      return typeof name === 'string' ? name : undefined;
-    }
-    case 'resources/read': {
-      const uri = params?.uri;
-      return typeof uri === 'string' ? uri : undefined;
-    }
-    default:
-      return undefined;
-  }
-}
 
 function createPaymentRequiredNotification(params: {
   amount: number;
@@ -160,17 +120,7 @@ function createPaymentRejectedNotification(params: {
   };
 }
 
-function isResolvePriceRejection(
-  quote: ResolvePriceResult,
-): quote is ResolvePriceRejection {
-  return 'reject' in quote && quote.reject;
-}
 
-function isResolvePriceWaiver(
-  quote: ResolvePriceResult,
-): quote is ResolvePriceWaiver {
-  return 'waive' in quote && quote.waive;
-}
 
 /**
  * Creates a server-side middleware that gates priced requests until payment is verified.

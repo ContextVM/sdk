@@ -144,7 +144,7 @@ export class ClientInboundCoordinator {
           }
         }
 
-        this.deps.handleResponse(eTag, mcpMessage);
+        this.deps.handleResponse(eTag, mcpMessage, nostrEvent.id);
         return;
       }
 
@@ -204,6 +204,15 @@ export class ClientInboundCoordinator {
         },
       );
       return;
+    }
+
+    const paymentInteractionTag = event.tags.find(
+      (tag) => tag[0] === 'payment_interaction' && typeof tag[1] === 'string'
+    );
+    if (paymentInteractionTag) {
+      this.deps.metadataStore.setEffectivePaymentInteraction(
+        paymentInteractionTag[1] as import('../../payments/types.js').PaymentInteractionMode
+      );
     }
 
     const currentHasInitializeResult = InitializeResultSchema.safeParse(

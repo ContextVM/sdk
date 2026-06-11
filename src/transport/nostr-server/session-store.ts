@@ -26,6 +26,12 @@ export interface ClientSession {
   supportsOversizedTransfer: boolean;
   /** Whether the client has advertised CEP-41 open stream support. */
   supportsOpenStream: boolean;
+  /** Client-requested payment interaction mode (from first message). */
+  requestedPaymentInteraction?: import('../../payments/types.js').PaymentInteractionMode;
+  /** Effective payment interaction mode for this session. */
+  effectivePaymentInteraction?: import('../../payments/types.js').PaymentInteractionMode;
+  /** Whether the effective mode has been disclosed on the first response. */
+  hasDisclosedPaymentInteraction?: boolean;
 }
 
 /**

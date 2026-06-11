@@ -146,6 +146,7 @@ export class ClientOutboundSender {
           progressToken:
             progressToken !== undefined ? String(progressToken) : undefined,
           originalRequestContext,
+          rawRequest: isRequest ? (message as import('@modelcontextprotocol/sdk/types.js').JSONRPCRequest) : undefined,
         });
       },
       giftWrapKind,
@@ -213,6 +214,7 @@ export class ClientOutboundSender {
         progressToken,
         originalRequestContext:
           this.deps.getOriginalRequestContext(originalMessage),
+        rawRequest: originalMessage as import('@modelcontextprotocol/sdk/types.js').JSONRPCRequest,
       });
     }
 

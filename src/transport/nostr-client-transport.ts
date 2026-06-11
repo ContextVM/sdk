@@ -584,6 +584,20 @@ export class NostrClientTransport
     return this.metadataStore.getServerInitializePicture();
   }
 
+  /**
+   * Sets the requested payment interaction mode for negotiation.
+   */
+  public setPaymentInteraction(mode: import('../payments/types.js').PaymentInteractionMode): void {
+    this.capabilityNegotiator.setPaymentInteraction(mode);
+  }
+
+  /**
+   * Gets the effective payment interaction mode disclosed by the server.
+   */
+  public getEffectivePaymentInteraction(): import('../payments/types.js').PaymentInteractionMode | undefined {
+    return this.metadataStore.getEffectivePaymentInteraction();
+  }
+
   /** Gets the server's most recently observed tools/list event envelope, if any. */
   public getServerToolsListEvent(): NostrEvent | undefined {
     return this.metadataStore.getServerToolsListEvent();
@@ -628,6 +642,7 @@ export class NostrClientTransport
   private handleResponse(
     correlatedEventId: string,
     mcpMessage: JSONRPCMessage,
+    eventId?: string,
   ): void {
     try {
       const resolved = this.correlationStore.resolveResponse(
@@ -637,6 +652,10 @@ export class NostrClientTransport
 
       if (resolved) {
         this.onmessage?.(mcpMessage);
+        this.onmessageWithContext?.(mcpMessage, {
+          eventId: eventId ?? correlatedEventId,
+          correlatedEventId,
+        });
       } else {
         this.logger.warn('Response for unknown request', {
           eventId: correlatedEventId,

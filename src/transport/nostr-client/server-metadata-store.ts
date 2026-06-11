@@ -20,6 +20,15 @@ export class ServerMetadataStore {
   private serverResourceTemplatesListEvent: NostrEvent | undefined;
   private supportsOversizedTransfer = false;
   private supportsOpenStream = false;
+  private effectivePaymentInteraction?: import('../../payments/types.js').PaymentInteractionMode;
+
+  public setEffectivePaymentInteraction(mode: import('../../payments/types.js').PaymentInteractionMode): void {
+    this.effectivePaymentInteraction = mode;
+  }
+
+  public getEffectivePaymentInteraction(): import('../../payments/types.js').PaymentInteractionMode | undefined {
+    return this.effectivePaymentInteraction;
+  }
 
   public clear(): void {
     this.serverInitializeEvent = undefined;
@@ -29,6 +38,7 @@ export class ServerMetadataStore {
     this.serverResourceTemplatesListEvent = undefined;
     this.supportsOversizedTransfer = false;
     this.supportsOpenStream = false;
+    this.effectivePaymentInteraction = undefined;
   }
 
   public setServerInitializeEvent(event: NostrEvent): void {

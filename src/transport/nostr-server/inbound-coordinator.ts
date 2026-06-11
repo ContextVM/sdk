@@ -38,6 +38,7 @@ export interface ServerInboundCoordinatorDeps {
   oversizedEnabled: boolean;
   openStreamEnabled: boolean;
   giftWrapMode: GiftWrapMode;
+  supportedPaymentInteraction?: import('../../payments/types.js').PaymentInteractionMode;
   sendMcpMessage: (
     msg: JSONRPCMessage,
     pubkey: string,
@@ -73,6 +74,10 @@ export class ServerInboundCoordinator {
     dispatcher: InboundNotificationDispatcher,
   ): void {
     this.inboundNotificationDispatcher = dispatcher;
+  }
+
+  public setSupportedPaymentInteraction(mode: import('../../payments/types.js').PaymentInteractionMode | undefined): void {
+    this.deps.supportedPaymentInteraction = mode;
   }
 
   /**
@@ -164,9 +169,25 @@ export class ServerInboundCoordinator {
       const clientPmis = event.tags
         .filter((tag) => tag[0] === 'pmi' && typeof tag[1] === 'string')
         .map((tag) => tag[1] as string);
+        
+      const serverSupportsExplicitGating =
+        this.deps.supportedPaymentInteraction === 'explicit_gating';
+
+      const paymentInteractionTag = event.tags.find(
+        (tag) => tag[0] === 'payment_interaction' && typeof tag[1] === 'string'
+      );
+      
+      if (paymentInteractionTag && !session.requestedPaymentInteraction) {
+        session.requestedPaymentInteraction = paymentInteractionTag[1] as import('../../payments/types.js').PaymentInteractionMode;
+        session.effectivePaymentInteraction = serverSupportsExplicitGating
+          ? session.requestedPaymentInteraction
+          : 'transparent';
+      }
+
       const ctx = {
         clientPubkey: event.pubkey,
         clientPmis: clientPmis.length > 0 ? clientPmis : undefined,
+        paymentInteraction: session.effectivePaymentInteraction,
       };
       const middlewares = this.deps.inboundMiddlewares;
 

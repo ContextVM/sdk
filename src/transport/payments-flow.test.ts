@@ -1009,4 +1009,91 @@ describe.serial('payments fake flow (transport-level)', () => {
     await client.close();
     await mcpServer.close();
   }, 20000);
+
+  test('explicit gating: gates tools/call via -32042 error and auto-retries', async () => {
+    const serverSK = generateSecretKey();
+    const serverPrivateKey = bytesToHex(serverSK);
+    const serverPublicKey = getPublicKey(serverSK);
+
+    const mcpServer = new McpServer({ name: 'explicit-server', version: '1.0.0' });
+    let toolCallCount = 0;
+    mcpServer.registerTool(
+      'add',
+      {
+        title: 'Addition Tool',
+        description: 'Add two numbers',
+        inputSchema: { a: z.number(), b: z.number() },
+      },
+      async ({ a, b }: { a: number; b: number }) => {
+        toolCallCount++;
+        return { content: [{ type: 'text', text: String(a + b) }] };
+      },
+    );
+
+    const processor = new FakePaymentProcessor({ verifyDelayMs: 20 });
+    const pricedCapabilities = [
+      {
+        method: 'tools/call',
+        name: 'add',
+        amount: 1,
+        currencyUnit: 'test',
+        description: 'explicit test payment',
+      },
+    ] as const;
+
+    const serverTransport = withServerPayments(
+      new NostrServerTransport({
+        signer: new PrivateKeySigner(serverPrivateKey),
+        relayHandler: new ApplesauceRelayPool([relayUrl]),
+        encryptionMode: EncryptionMode.DISABLED,
+      }),
+      {
+        processors: [processor],
+        pricedCapabilities: [...pricedCapabilities],
+        paymentInteraction: 'explicit_gating',
+      },
+    );
+
+    await mcpServer.connect(serverTransport);
+
+    const clientSK = generateSecretKey();
+    const clientPrivateKey = bytesToHex(clientSK);
+    
+    // Track if onPaymentRequired was called
+    let explicitPaymentHandled = false;
+
+    const clientTransport = new NostrClientTransport({
+      signer: new PrivateKeySigner(clientPrivateKey),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      serverPubkey: serverPublicKey,
+      encryptionMode: EncryptionMode.DISABLED,
+    });
+    const paidClientTransport = withClientPayments(clientTransport, {
+      handlers: [new FakePaymentHandler({ delayMs: 20 })],
+      paymentInteraction: 'explicit_gating',
+      onPaymentRequired: async () => {
+        explicitPaymentHandled = true;
+        return { paid: true };
+      }
+    });
+
+    const client = new Client({ name: 'explicit-client', version: '1.0.0' });
+    await client.connect(paidClientTransport);
+
+    const result = await client.callTool({
+      name: 'add',
+      arguments: { a: 10, b: 20 },
+    });
+
+    const typedResult = result as {
+      content: Array<{ type: string; text?: string }>;
+    };
+    expect(typedResult.content[0]).toMatchObject({ type: 'text', text: '30' });
+    
+    expect(explicitPaymentHandled).toBe(true);
+    expect(toolCallCount).toBe(1);
+
+    await client.close();
+    await mcpServer.close();
+  }, 20000);
 });

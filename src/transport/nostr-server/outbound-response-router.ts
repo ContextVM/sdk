@@ -229,6 +229,17 @@ export class OutboundResponseRouter {
       baseTags: this.deps.createResponseTags(route.clientPubkey, nostrEventId),
       session,
     });
+    
+    // CEP-8: Disclose effective mode on first response if client requested a non-default mode
+    if (
+      session.requestedPaymentInteraction && 
+      session.requestedPaymentInteraction !== 'transparent' && 
+      !session.hasDisclosedPaymentInteraction &&
+      session.effectivePaymentInteraction
+    ) {
+      tags.push(['payment_interaction', session.effectivePaymentInteraction]);
+      session.hasDisclosedPaymentInteraction = true;
+    }
 
     const giftWrapKind = this.deps.chooseGiftWrapKind({
       session,

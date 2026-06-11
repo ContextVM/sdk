@@ -180,6 +180,7 @@ export class ServerCapabilityNegotiator {
 export class ClientCapabilityNegotiator {
   private hasSentDiscoveryTags = false;
   private clientPmis?: readonly string[];
+  private paymentInteraction?: import('../payments/types.js').PaymentInteractionMode;
   private serverSupportsEphemeralGiftWraps = false;
   private _serverInitializeEvent?: NostrEvent;
 
@@ -202,6 +203,13 @@ export class ClientCapabilityNegotiator {
    */
   public setClientPmis(pmis: readonly string[]): void {
     this.clientPmis = pmis;
+  }
+
+  /**
+   * Sets the requested payment interaction mode for negotiation.
+   */
+  public setPaymentInteraction(mode: import('../payments/types.js').PaymentInteractionMode): void {
+    this.paymentInteraction = mode;
   }
 
   /**
@@ -252,6 +260,9 @@ export class ClientCapabilityNegotiator {
     const tags: string[][] = [];
     if (this.clientPmis) {
       tags.push(...this.clientPmis.map((pmi) => ['pmi', pmi]));
+    }
+    if (this.paymentInteraction && this.paymentInteraction !== 'transparent') {
+      tags.push(['payment_interaction', this.paymentInteraction]);
     }
     return tags;
   }

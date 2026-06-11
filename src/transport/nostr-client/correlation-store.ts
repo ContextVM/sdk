@@ -15,6 +15,8 @@ export interface PendingRequest {
   progressToken?: string;
   /** Minimal context about the original request (safe to store; no arguments). */
   originalRequestContext?: OriginalRequestContext;
+  /** The full raw original JSON-RPC request for explicit gating retries. */
+  rawRequest?: import('@modelcontextprotocol/sdk/types.js').JSONRPCRequest;
 }
 
 /**
@@ -72,6 +74,13 @@ export class ClientCorrelationStore {
    */
   getPendingRequest(eventId: string): PendingRequest | undefined {
     return this.pendingRequests.get(eventId);
+  }
+
+  /**
+   * Gets the raw original JSON-RPC request for explicit gating retries.
+   */
+  getRawRequest(eventId: string): import('@modelcontextprotocol/sdk/types.js').JSONRPCRequest | undefined {
+    return this.pendingRequests.get(eventId)?.rawRequest;
   }
 
   /**

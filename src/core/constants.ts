@@ -121,6 +121,9 @@ export const NOSTR_TAGS = {
    * Support CEP-41 open-ended stream transfer via notifications/progress framing.
    */
   SUPPORT_OPEN_STREAM: 'support_open_stream',
+
+  /** CEP-8 payment interaction negotiation tag. */
+  PAYMENT_INTERACTION: 'payment_interaction',
 } as const;
 
 export const DEFAULT_LRU_SIZE = 5000;

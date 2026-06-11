@@ -488,6 +488,13 @@ export class NostrServerTransport
   }
 
   /**
+   * Sets the supported payment interaction mode for this server.
+   */
+  public setSupportedPaymentInteraction(mode: import('../payments/types.js').PaymentInteractionMode | undefined): void {
+    this.inboundCoordinator.setSupportedPaymentInteraction(mode);
+  }
+
+  /**
    * Adds a provider for extra tags on public tools/list announcement events.
    */
   public addListToolsAnnouncementTagsProducer(
