@@ -14,10 +14,10 @@ export function withServerPayments(
   options: ServerPaymentsOptions,
 ): NostrServerTransport {
   // CEP-8 discovery tags: advertise supported PMIs + reference pricing on announcement/list events.
-  const extraTags = createPmiTagsFromProcessors(options.processors);
+  const extraTags: string[][] = createPmiTagsFromProcessors(options.processors);
   
   if (options.paymentInteraction === 'explicit_gating') {
-    extraTags.push(['payment_interaction', 'explicit_gating'] as any);
+    extraTags.push(['payment_interaction', 'explicit_gating']);
   }
   
   transport.setAnnouncementExtraTags(extraTags);

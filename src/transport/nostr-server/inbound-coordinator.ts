@@ -26,6 +26,7 @@ import {
 } from '../../core/index.js';
 import { GiftWrapMode } from '../../core/interfaces.js';
 import { type OpenStreamWriter } from '../open-stream/index.js';
+import { UNSUPPORTED_PAYMENT_INTERACTION_ERROR_CODE } from '../../payments/constants.js';
 
 export interface ServerInboundCoordinatorDeps {
   sessionStore: SessionStore;
@@ -181,6 +182,43 @@ export class ServerInboundCoordinator {
         const mode = paymentInteractionTag[1];
         if (mode === 'transparent' || mode === 'explicit_gating') {
           session.requestedPaymentInteraction = mode as import('../../payments/types.js').PaymentInteractionMode;
+          
+          if (mode === 'explicit_gating' && !serverSupportsExplicitGating) {
+            if (isJSONRPCRequest(inboundMessage)) {
+              const errorResponse: JSONRPCErrorResponse = {
+                jsonrpc: '2.0',
+                id: inboundMessage.id,
+                error: {
+                  code: UNSUPPORTED_PAYMENT_INTERACTION_ERROR_CODE,
+                  message: 'Unsupported payment_interaction mode: explicit_gating',
+                },
+              };
+              const tags = this.deps.createResponseTags(event.pubkey, event.id);
+              this.deps
+                .sendMcpMessage(
+                  errorResponse,
+                  event.pubkey,
+                  CTXVM_MESSAGES_KIND,
+                  tags,
+                  isEncrypted,
+                  undefined,
+                  isEncrypted
+                    ? this.deps.giftWrapMode === GiftWrapMode.EPHEMERAL
+                      ? EPHEMERAL_GIFT_WRAP_KIND
+                      : this.deps.giftWrapMode === GiftWrapMode.PERSISTENT
+                        ? GIFT_WRAP_KIND
+                        : wrapKind
+                    : undefined,
+                )
+                .catch((err) => {
+                  this.deps.logger.error('Failed to send negotiation error response', {
+                    error: err instanceof Error ? err.message : String(err),
+                  });
+                });
+              return;
+            }
+          }
+
           session.effectivePaymentInteraction = serverSupportsExplicitGating
             ? session.requestedPaymentInteraction
             : 'transparent';
