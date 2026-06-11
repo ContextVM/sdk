@@ -142,6 +142,16 @@ export class AuthorizationStore {
     return true;
   }
 
+  /** Updates the TTL of an already pending authorization. No-op if not pending. */
+  public updatePendingTtl(identity: CanonicalInvocationIdentity, ttlMs: number): void {
+    const key = this.getKey(identity);
+    const existingExpiry = this.pending.get(key);
+    if (existingExpiry !== undefined && Date.now() <= existingExpiry) {
+      this.pending.set(key, Date.now() + ttlMs);
+      this.logger.debug('authorization pending TTL updated', { key, ttlMs });
+    }
+  }
+
   /** Gets the remaining TTL in milliseconds for a pending authorization, or 0 if not pending. */
   public getPendingRemainingMs(identity: CanonicalInvocationIdentity): number {
     const key = this.getKey(identity);

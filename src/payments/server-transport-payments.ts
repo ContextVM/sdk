@@ -35,7 +35,7 @@ export function withServerPayments(
         options,
         authorizationStore,
         sendResponse: async (clientPubkey, response, requestEventId) => {
-          await transport.send(response);
+          await transport.sendTargetedResponse(clientPubkey, response, requestEventId);
         },
       }),
     );

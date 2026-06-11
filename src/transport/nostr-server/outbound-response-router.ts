@@ -280,4 +280,54 @@ export class OutboundResponseRouter {
       throw error;
     }
   }
+
+  /**
+   * Routes a response back to a specifically targeted client and request event.
+   * This bypasses the normal correlation lookup, which is useful when
+   * middleware needs to reject a request early (e.g. for explicit gating).
+   */
+  public async routeTargeted(
+    clientPubkey: string,
+    response: JSONRPCResponse | JSONRPCErrorResponse,
+    requestEventId: string,
+  ): Promise<void> {
+    const session = this.deps.getSession(clientPubkey);
+    if (!session) {
+      this.deps.logger.warn(
+        'Cannot route targeted response: no active session found',
+        { clientPubkey, requestEventId },
+      );
+      return;
+    }
+
+    const tags = this.deps.buildOutboundTags({
+      baseTags: this.deps.createResponseTags(clientPubkey, requestEventId),
+      session,
+    });
+    
+    // CEP-8: Disclose effective mode on first response if client requested a non-default mode
+    if (
+      session.requestedPaymentInteraction && 
+      session.requestedPaymentInteraction !== 'transparent' && 
+      !session.hasDisclosedPaymentInteraction &&
+      session.effectivePaymentInteraction
+    ) {
+      tags.push(['payment_interaction', session.effectivePaymentInteraction]);
+      session.hasDisclosedPaymentInteraction = true;
+    }
+
+    const giftWrapKind = this.deps.chooseGiftWrapKind({
+      session,
+    });
+
+    await this.deps.sendMcpMessage(
+      response,
+      clientPubkey,
+      CTXVM_MESSAGES_KIND,
+      tags,
+      session.isEncrypted,
+      undefined,
+      giftWrapKind,
+    );
+  }
 }

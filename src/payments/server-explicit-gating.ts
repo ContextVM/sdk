@@ -175,8 +175,8 @@ export function createExplicitGatingMiddleware(
       });
       const effectiveTimeoutMs = Math.min(verifyTimeoutMs, paymentTtlMs);
       
-      // Note: Pending TTL was set to paymentTtlMs at line 74, which is >= effectiveTimeoutMs
-      // This ensures pending state covers the entire verification period.
+      // Update pending with the precise TTL
+      authorizationStore.updatePendingTtl(identity, effectiveTimeoutMs);
 
       const errorResponse: JSONRPCErrorResponse = {
         jsonrpc: '2.0',

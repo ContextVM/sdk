@@ -216,7 +216,8 @@ export function withClientPayments(
   };
 
   const pendingTimers = new Set<ReturnType<typeof setTimeout>>();
-  const retryCounts = new Map<string, number>();
+  const retryCounts = new Map<string | number, number>();
+  const rawRequestCache = new Map<string | number, JSONRPCRequest>();
   const MAX_RETRIES = 5;
 
   const stopAllSyntheticProgress = (): void => {
@@ -229,6 +230,8 @@ export function withClientPayments(
       clearTimeout(timer);
     }
     pendingTimers.clear();
+    retryCounts.clear();
+    rawRequestCache.clear();
   };
 
   // Ensure CEP-8 discovery/negotiation: when using Nostr transports, always advertise
@@ -367,8 +370,8 @@ export function withClientPayments(
             return;
           }
           
-          const nostrTransport = transport as NostrClientTransport;
-          const rawRequest = nostrTransport.correlationStore.getRawRequest(requestEventId);
+          const requestId = message.id;
+          const rawRequest = requestId != null ? rawRequestCache.get(requestId) : undefined;
           if (!rawRequest) {
             logger.warn('missing raw original request, cannot retry explicit payment', { requestEventId });
             onmessage?.(message);
@@ -477,22 +480,23 @@ export function withClientPayments(
         return;
       }
       
-      const nostrTransport = transport as NostrClientTransport;
-      const rawRequest = nostrTransport.correlationStore.getRawRequest(requestEventId);
+      const requestId = message.id;
+      const rawRequest = requestId != null ? rawRequestCache.get(requestId) : undefined;
       if (!rawRequest) {
         logger.warn('missing raw original request, cannot retry explicit payment pending', { requestEventId });
         onmessage?.(message);
         return;
       }
       
-      const retries = retryCounts.get(requestEventId) ?? 0;
+      const requestIdKey = message.id as string | number;
+      const retries = retryCounts.get(requestIdKey) ?? 0;
       if (retries >= MAX_RETRIES) {
-        logger.error('max explicit payment retries exceeded', { requestEventId, maxRetries: MAX_RETRIES });
+        logger.error('max explicit payment retries exceeded', { requestEventId, id: requestIdKey, maxRetries: MAX_RETRIES });
         onmessage?.(message);
         return;
       }
 
-      retryCounts.set(requestEventId, retries + 1);
+      retryCounts.set(requestIdKey, retries + 1);
       
       logger.info('payment pending, retrying after backoff', {
         requestEventId,
@@ -736,6 +740,11 @@ export function withClientPayments(
           isJSONRPCErrorResponse(message)
         ) {
           stopSyntheticProgress(String(message.id));
+          if (!isExplicitPaymentRequiredError(message) && !isExplicitPaymentPendingError(message)) {
+            const reqId = message.id as string | number;
+            rawRequestCache.delete(reqId);
+            retryCounts.delete(reqId);
+          }
         }
 
         // Best-effort: execute handler asynchronously, but never block delivery.
@@ -823,6 +832,9 @@ export function withClientPayments(
     },
 
     async send(message: JSONRPCMessage): Promise<void> {
+      if ('method' in message && 'id' in message && message.id != null) {
+        rawRequestCache.set(message.id, message as JSONRPCRequest);
+      }
       await transport.send(message);
     },
 

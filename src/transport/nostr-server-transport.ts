@@ -694,6 +694,23 @@ export class NostrServerTransport
   }
 
   /**
+   * Sends a targeted response explicitly bypassing the correlation store lookup.
+   * Useful for middleware that needs to proactively reject requests without
+   * letting them reach the MCP application.
+   *
+   * @param clientPubkey The target client's public key.
+   * @param response The JSON-RPC response or error to send.
+   * @param requestEventId The original Nostr event ID of the request being responded to.
+   */
+  public async sendTargetedResponse(
+    clientPubkey: string,
+    response: JSONRPCResponse | JSONRPCErrorResponse,
+    requestEventId: string,
+  ): Promise<void> {
+    await this.outboundResponseRouter.routeTargeted(clientPubkey, response, requestEventId);
+  }
+
+  /**
    * Handles notification messages with routing.
    * @param notification The JSON-RPC notification to send.
    */

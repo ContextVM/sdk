@@ -1,4 +1,4 @@
-import { canonicalize } from 'json-canonicalize';
+import canonicalize from 'canonicalize';
 import { createHash } from 'crypto';
 import type { CanonicalInvocationIdentity } from './types.js';
 
