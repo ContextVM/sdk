@@ -83,7 +83,8 @@ export function createExplicitGatingMiddleware(
           message: 'Payment Pending',
           data: {
             instructions: 'A payment is already pending for this invocation. Wait and retry.',
-            retry_after: Math.ceil(authorizationStore.getPendingRemainingMs(identity) / 1000) || 5,
+            // Suggest a short polling interval (e.g. 2 seconds) rather than the full TTL
+            retry_after: Math.min(2, Math.ceil(authorizationStore.getPendingRemainingMs(identity) / 1000)) || 2,
           },
         },
       };
@@ -246,7 +247,13 @@ export function createExplicitGatingMiddleware(
         } finally {
           controller.abort();
         }
-      })();
+      })().catch((err) => {
+        logger.error('unhandled exception in async payment verification', {
+          requestEventId,
+          pmi: paymentRequired.pmi,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
     } catch (err) {
       authorizationStore.clearPending(identity);
       throw err;

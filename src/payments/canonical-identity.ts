@@ -1,4 +1,6 @@
-import canonicalize from 'canonicalize';
+import canonicalizePackage from 'canonicalize';
+type CanonicalizeFn = (input: unknown) => string | undefined;
+const canonicalize = canonicalizePackage as unknown as CanonicalizeFn;
 import { createHash } from 'crypto';
 import type { CanonicalInvocationIdentity } from './types.js';
 
@@ -17,6 +19,9 @@ export function computeCanonicalInvocationHash(
 ): string {
   const payload = { method, params };
   const canonicalString = canonicalize(payload);
+  if (canonicalString === undefined) {
+    throw new Error('Failed to canonicalize invocation payload');
+  }
   
   return createHash('sha256')
     .update(canonicalString)

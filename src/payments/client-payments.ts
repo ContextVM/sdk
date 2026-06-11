@@ -5,6 +5,7 @@ import {
   isJSONRPCErrorResponse,
   JSONRPCNotification,
   type JSONRPCMessage,
+  type JSONRPCRequest,
 } from '@contextvm/mcp-sdk/types.js';
 import { NostrClientTransport } from '../transport/nostr-client-transport.js';
 import {
@@ -118,8 +119,8 @@ function isExplicitPaymentRequiredError(
     msg.error.code === PAYMENT_REQUIRED_ERROR_CODE &&
     typeof msg.error.data === 'object' &&
     msg.error.data !== null &&
-    Array.isArray((msg.error.data as any).payment_options) &&
-    (msg.error.data as any).payment_options.length > 0
+    Array.isArray((msg.error.data as { payment_options?: unknown }).payment_options) &&
+    ((msg.error.data as { payment_options: unknown[] }).payment_options).length > 0
   );
 }
 
@@ -131,7 +132,7 @@ function isExplicitPaymentPendingError(
     msg.error.code === PAYMENT_PENDING_ERROR_CODE &&
     typeof msg.error.data === 'object' &&
     msg.error.data !== null &&
-    typeof (msg.error.data as any).retry_after === 'number'
+    typeof (msg.error.data as { retry_after?: unknown }).retry_after === 'number'
   );
 }
 
@@ -281,7 +282,7 @@ export function withClientPayments(
       
       for (const option of data.payment_options) {
         const handler = handlersByPmi.get(option.pmi);
-        if (!handler) continue;
+        if (!handler && !options.onPaymentRequired) continue;
 
         const isNostrTransport = transport instanceof NostrClientTransport;
         const pending = isNostrTransport
@@ -297,11 +298,11 @@ export function withClientPayments(
           return;
         }
 
-        const originalContext = pending
+        const originalContext = pending?.originalRequestContext
           ? {
-              method: pending.method,
-              capability: pending.capability,
-              id: pending.id,
+              method: pending.originalRequestContext.method,
+              capability: pending.originalRequestContext.capability,
+              id: pending.originalRequestId,
             }
           : undefined;
 
@@ -327,7 +328,7 @@ export function withClientPayments(
           continue; // Try next option if rejected by policy
         }
 
-        const canHandle = handler.canHandle
+        const canHandle = handler?.canHandle
           ? await handler.canHandle(request)
           : true;
 
@@ -360,12 +361,6 @@ export function withClientPayments(
             // We have a payment required error but the transport level onPaymentRequired handler
             // wasn't configured. The client didn't supply an explicit gating handler. 
             // We'll let the error propagate.
-            onmessage?.(message);
-            return;
-          }
-          
-          if (!pending?.originalRequestContext?.method) {
-            logger.warn('missing original request method, cannot retry explicit payment', { requestEventId });
             onmessage?.(message);
             return;
           }
@@ -509,7 +504,7 @@ export function withClientPayments(
         transport.send(rawRequest).catch(err => {
           logger.error('failed to retry pending request', { requestEventId, error: err instanceof Error ? err.message : String(err) });
         });
-      }, retryAfterSeconds * 1000);
+      }, (retryAfterSeconds ?? 1) * 1000);
       pendingTimers.add(timer);
       
       return; // Intercept the error so the client waits
@@ -745,6 +740,10 @@ export function withClientPayments(
             rawRequestCache.delete(reqId);
             retryCounts.delete(reqId);
           }
+        }
+
+        if (hasContextPath) {
+          return;
         }
 
         // Best-effort: execute handler asynchronously, but never block delivery.

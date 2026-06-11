@@ -619,6 +619,10 @@ describe('withClientPayments()', () => {
     paid.onmessage = (msg) => observed.push(msg);
     await paid.start();
 
+    // Populate the wrapper's cache with the original request
+    await paid.send({ jsonrpc: '2.0', id: 77, method: 'tools/call', params: { name: 'test' } });
+    sentMessage = undefined; // Reset mock state so we can observe the retry
+
     // Deliver -32042 Payment Required error
     transport.onmessageWithContext!(
       {
@@ -668,6 +672,9 @@ describe('withClientPayments()', () => {
     paid.onmessage = (msg) => observed.push(msg);
     await paid.start();
 
+    // Populate the wrapper's cache with the original request
+    await paid.send({ jsonrpc: '2.0', id: 88, method: 'tools/call', params: { name: 'test' } });
+
     // Deliver -32042 Payment Required error
     transport.onmessageWithContext!(
       {
@@ -691,7 +698,7 @@ describe('withClientPayments()', () => {
     const errResp = observed[0] as JSONRPCMessage;
     expect(errResp.id).toBe(88);
     expect('error' in errResp && errResp.error?.code).toBe(-32042);
-    expect('error' in errResp && (errResp.error?.data as any)?.reason).toBe('user_cancelled');
+    expect('error' in errResp && (errResp.error?.data as { reason?: string })?.reason).toBe('user_cancelled');
 
     await paid.close();
   });
@@ -719,6 +726,10 @@ describe('withClientPayments()', () => {
     });
     paid.onmessage = (msg) => observed.push(msg);
     await paid.start();
+
+    // Populate the wrapper's cache with the original request
+    await paid.send({ jsonrpc: '2.0', id: 99, method: 'tools/call', params: { name: 'test_pending' } });
+    sentMessage = undefined; // Reset mock state so we can observe the retry
 
     // Deliver -32043 Payment Pending error
     transport.onmessageWithContext!(

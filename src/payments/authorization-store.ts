@@ -43,6 +43,10 @@ export class AuthorizationStore {
     ttlMs: number,
     count: number = 1,
   ): void {
+    if (count <= 0) {
+      throw new RangeError('Authorization count must be greater than 0');
+    }
+
     const key = this.getKey(identity);
     const expiresAtMs = Date.now() + ttlMs;
 
@@ -142,7 +146,13 @@ export class AuthorizationStore {
     return true;
   }
 
-  /** Updates the TTL of an already pending authorization. No-op if not pending. */
+  /**
+   * Updates the TTL of an already pending authorization. No-op if not pending.
+   *
+   * @param identity The canonical invocation identity.
+   * @param ttlMs The new TTL in milliseconds to apply from now.
+   * @returns void
+   */
   public updatePendingTtl(identity: CanonicalInvocationIdentity, ttlMs: number): void {
     const key = this.getKey(identity);
     const existingExpiry = this.pending.get(key);

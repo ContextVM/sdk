@@ -291,7 +291,7 @@ export class OutboundResponseRouter {
     response: JSONRPCResponse | JSONRPCErrorResponse,
     requestEventId: string,
   ): Promise<void> {
-    const session = this.deps.getSession(clientPubkey);
+    const session = this.deps.sessionStore.getSession(clientPubkey);
     if (!session) {
       this.deps.logger.warn(
         'Cannot route targeted response: no active session found',

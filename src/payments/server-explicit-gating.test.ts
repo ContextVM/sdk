@@ -74,7 +74,7 @@ describe('Explicit Gating Middleware', () => {
     const response = sentResponses[0];
     expect(response.error.code).toBe(PAYMENT_REQUIRED_ERROR_CODE);
     
-    const data = response.error.data as any;
+    const data = response.error.data as { payment_options: { amount: number; pay_req: string }[] };
     expect(data.payment_options.length).toBe(1);
     expect(data.payment_options[0].amount).toBe(10);
     expect(data.payment_options[0].pay_req).toBe('pay_req');
@@ -168,5 +168,32 @@ describe('Explicit Gating Middleware', () => {
 
     expect(sentResponses.length).toBe(0);
     expect(forwarded).toBe(true);
+  });
+
+  test('rejects request immediately if resolvePrice rejects', async () => {
+    const store = new AuthorizationStore();
+    const sentResponses: JSONRPCErrorResponse[] = [];
+    
+    const mw = createExplicitGatingMiddleware({
+      options: {
+        processors: [processor],
+        pricedCapabilities: [...pricedCapabilities],
+        resolvePrice: async () => ({ reject: true, message: 'Rate limited' }),
+      },
+      authorizationStore: store,
+      sendResponse: async (pubkey, response) => {
+        sentResponses.push(response as JSONRPCErrorResponse);
+      },
+    });
+
+    let forwarded = false;
+    await mw(message, ctx, async () => {
+      forwarded = true;
+    });
+
+    expect(forwarded).toBe(false);
+    expect(sentResponses.length).toBe(1);
+    expect(sentResponses[0].error.code).toBe(-32000);
+    expect(sentResponses[0].error.message).toBe('Rate limited');
   });
 });

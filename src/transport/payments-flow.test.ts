@@ -5,6 +5,7 @@ import {
   describe,
   expect,
   test,
+  spyOn,
 } from 'bun:test';
 import { sleep } from 'bun';
 import { Client } from '@contextvm/mcp-sdk/client';
@@ -1031,6 +1032,8 @@ describe.serial('payments fake flow (transport-level)', () => {
     );
 
     const processor = new FakePaymentProcessor({ verifyDelayMs: 20 });
+    const createSpy = spyOn(processor, 'createPaymentRequired');
+    const verifySpy = spyOn(processor, 'verifyPayment');
     const pricedCapabilities = [
       {
         method: 'tools/call',
@@ -1069,7 +1072,7 @@ describe.serial('payments fake flow (transport-level)', () => {
       encryptionMode: EncryptionMode.DISABLED,
     });
     const paidClientTransport = withClientPayments(clientTransport, {
-      handlers: [new FakePaymentHandler({ delayMs: 20 })],
+      handlers: [],
       paymentInteraction: 'explicit_gating',
       onPaymentRequired: async () => {
         explicitPaymentHandled = true;
@@ -1092,6 +1095,8 @@ describe.serial('payments fake flow (transport-level)', () => {
     
     expect(explicitPaymentHandled).toBe(true);
     expect(toolCallCount).toBe(1);
+    expect(createSpy).toHaveBeenCalled();
+    expect(verifySpy).toHaveBeenCalled();
 
     await client.close();
     await mcpServer.close();

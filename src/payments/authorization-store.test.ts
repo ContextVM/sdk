@@ -101,4 +101,50 @@ describe('AuthorizationStore', () => {
     expect(store.claim(id2)).toBe(true);
     expect(store.claim(id3)).toBe(true);
   });
+
+  test('pending LRU eviction works when maxEntries is exceeded', () => {
+    const store = new AuthorizationStore({ maxEntries: 2 });
+    
+    const id1 = { clientPubkey: 'client', invocationHash: 'p1' };
+    const id2 = { clientPubkey: 'client', invocationHash: 'p2' };
+    const id3 = { clientPubkey: 'client', invocationHash: 'p3' };
+    
+    store.trySetPending(id1, 10000);
+    store.trySetPending(id2, 10000);
+    store.trySetPending(id3, 10000); // This should evict id1
+    
+    expect(store.hasPending(id1)).toBe(false);
+    expect(store.hasPending(id2)).toBe(true);
+    expect(store.hasPending(id3)).toBe(true);
+  });
+
+  test('updatePendingTtl and getPendingRemainingMs behave correctly', async () => {
+    const store = new AuthorizationStore();
+    
+    // (1) verify getPendingRemainingMs right after trySetPending
+    expect(store.trySetPending(identity, 100)).toBe(true);
+    const remainingAfterSet = store.getPendingRemainingMs(identity);
+    expect(remainingAfterSet).toBeGreaterThan(0);
+    expect(remainingAfterSet).toBeLessThanOrEqual(100);
+
+    // (2) verify updatePendingTtl extends the pending TTL
+    store.updatePendingTtl(identity, 500);
+    const remainingAfterUpdate = store.getPendingRemainingMs(identity);
+    expect(remainingAfterUpdate).toBeGreaterThan(100);
+    expect(remainingAfterUpdate).toBeLessThanOrEqual(500);
+
+    // (3) verify getPendingRemainingMs returns 0 after waiting past TTL
+    await new Promise((resolve) => setTimeout(resolve, 550));
+    expect(store.getPendingRemainingMs(identity)).toBe(0);
+
+    // (4) verify updatePendingTtl is a no-op when there is no active pending entry
+    store.updatePendingTtl(identity, 1000);
+    expect(store.getPendingRemainingMs(identity)).toBe(0);
+    
+    // And after clearPending
+    store.trySetPending(identity, 1000);
+    store.clearPending(identity);
+    store.updatePendingTtl(identity, 1000);
+    expect(store.getPendingRemainingMs(identity)).toBe(0);
+  });
 });

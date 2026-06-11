@@ -193,7 +193,7 @@ export class ServerInboundCoordinator {
       const ctx = {
         clientPubkey: event.pubkey,
         clientPmis: clientPmis.length > 0 ? clientPmis : undefined,
-        paymentInteraction: session.effectivePaymentInteraction,
+        paymentInteraction: session.effectivePaymentInteraction ?? 'transparent',
       };
       const middlewares = this.deps.inboundMiddlewares;
 

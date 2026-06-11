@@ -17,7 +17,7 @@ export function withServerPayments(
   const extraTags = createPmiTagsFromProcessors(options.processors);
   
   if (options.paymentInteraction === 'explicit_gating') {
-    extraTags.push(['payment_interaction', 'explicit_gating']);
+    extraTags.push(['payment_interaction', 'explicit_gating'] as any);
   }
   
   transport.setAnnouncementExtraTags(extraTags);
