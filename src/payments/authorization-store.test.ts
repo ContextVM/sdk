@@ -32,9 +32,9 @@ describe('AuthorizationStore', () => {
   test('claim fails after TTL expires', async () => {
     const store = new AuthorizationStore();
     
-    store.grant(identity, 10);
+    store.grant(identity, 50);
     
-    await new Promise((resolve) => setTimeout(resolve, 15));
+    await new Promise((resolve) => setTimeout(resolve, 75));
     
     expect(store.claim(identity)).toBe(false);
   });
@@ -66,12 +66,12 @@ describe('AuthorizationStore', () => {
   test('trySetPending allows setting again after pending state expires', async () => {
     const store = new AuthorizationStore();
     
-    expect(store.trySetPending(identity, 10)).toBe(true);
-    expect(store.trySetPending(identity, 10)).toBe(false);
+    expect(store.trySetPending(identity, 50)).toBe(true);
+    expect(store.trySetPending(identity, 50)).toBe(false);
     
-    await new Promise((resolve) => setTimeout(resolve, 15));
+    await new Promise((resolve) => setTimeout(resolve, 75));
     
-    expect(store.trySetPending(identity, 10)).toBe(true);
+    expect(store.trySetPending(identity, 50)).toBe(true);
   });
 
   test('grant clears pending state', () => {

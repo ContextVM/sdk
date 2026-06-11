@@ -178,10 +178,16 @@ export class ServerInboundCoordinator {
       );
       
       if (paymentInteractionTag && !session.requestedPaymentInteraction) {
-        session.requestedPaymentInteraction = paymentInteractionTag[1] as import('../../payments/types.js').PaymentInteractionMode;
-        session.effectivePaymentInteraction = serverSupportsExplicitGating
-          ? session.requestedPaymentInteraction
-          : 'transparent';
+        const mode = paymentInteractionTag[1];
+        if (mode === 'transparent' || mode === 'explicit_gating') {
+          session.requestedPaymentInteraction = mode as import('../../payments/types.js').PaymentInteractionMode;
+          session.effectivePaymentInteraction = serverSupportsExplicitGating
+            ? session.requestedPaymentInteraction
+            : 'transparent';
+        } else {
+          session.requestedPaymentInteraction = 'transparent';
+          session.effectivePaymentInteraction = 'transparent';
+        }
       }
 
       const ctx = {

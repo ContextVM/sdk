@@ -28,7 +28,7 @@ export interface ClientInboundCoordinatorDeps {
   metadataStore: ServerMetadataStore;
   unwrapEvent: (event: NostrEvent) => Promise<UnwrappedClientEvent | null>;
   convertNostrEventToMcpMessage: (event: NostrEvent) => JSONRPCMessage | null;
-  handleResponse: (correlatedEventId: string, msg: JSONRPCMessage) => void;
+  handleResponse: (correlatedEventId: string, msg: JSONRPCMessage, eventId?: string) => void;
   handleNotification: (
     eventId: string,
     correlatedEventId: string | undefined,
@@ -210,9 +210,12 @@ export class ClientInboundCoordinator {
       (tag) => tag[0] === 'payment_interaction' && typeof tag[1] === 'string'
     );
     if (paymentInteractionTag) {
-      this.deps.metadataStore.setEffectivePaymentInteraction(
-        paymentInteractionTag[1] as import('../../payments/types.js').PaymentInteractionMode
-      );
+      const mode = paymentInteractionTag[1];
+      if (mode === 'transparent' || mode === 'explicit_gating') {
+        this.deps.metadataStore.setEffectivePaymentInteraction(
+          mode as import('../../payments/types.js').PaymentInteractionMode
+        );
+      }
     }
 
     const currentHasInitializeResult = InitializeResultSchema.safeParse(

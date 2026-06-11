@@ -14,6 +14,11 @@ export interface PaidAuthorization {
  * A bounded, TTL-aware store for explicit gating authorizations.
  * It manages both the pending state (waiting for payment verification)
  * and the granted state (paid and ready to consume).
+ *
+ * NOTE: The atomicity provided by `trySetPending` relies on in-memory maps,
+ * meaning it is strictly single-process. For multi-process horizontal scaling,
+ * implementers should use a distributed lock (e.g. Redis Redlock) keyed by
+ * the canonical invocation identity to prevent duplicate payments.
  */
 export class AuthorizationStore {
   private readonly authorizations: LruCache<PaidAuthorization>;
@@ -79,6 +84,8 @@ export class AuthorizationStore {
       if (auth.remaining === 0) {
         this.authorizations.delete(key);
       } else {
+        // Explicitly delete and set to guarantee LRU position is refreshed
+        this.authorizations.delete(key);
         this.authorizations.set(key, auth);
       }
       this.logger.debug('authorization claimed', { key, remaining: auth.remaining });
@@ -96,6 +103,7 @@ export class AuthorizationStore {
    *
    * This atomic check-and-set prevents concurrent requests from both receiving
    * -32042 and triggering duplicate payment flows.
+   * NOTE: This is single-process only. Distributed setups must use an external lock.
    */
   public trySetPending(identity: CanonicalInvocationIdentity, ttlMs: number): boolean {
     const key = this.getKey(identity);
@@ -132,6 +140,15 @@ export class AuthorizationStore {
     }
     
     return true;
+  }
+
+  /** Gets the remaining TTL in milliseconds for a pending authorization, or 0 if not pending. */
+  public getPendingRemainingMs(identity: CanonicalInvocationIdentity): number {
+    const key = this.getKey(identity);
+    const expiry = this.pending.get(key);
+    if (expiry === undefined) return 0;
+    const remaining = expiry - Date.now();
+    return remaining > 0 ? remaining : 0;
   }
 
   /** Clears pending state (e.g. on verification failure or expiry). */

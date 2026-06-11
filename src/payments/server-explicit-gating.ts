@@ -83,7 +83,7 @@ export function createExplicitGatingMiddleware(
           message: 'Payment Pending',
           data: {
             instructions: 'A payment is already pending for this invocation. Wait and retry.',
-            retry_after: 5,
+            retry_after: Math.ceil(authorizationStore.getPendingRemainingMs(identity) / 1000) || 5,
           },
         },
       };
@@ -175,8 +175,8 @@ export function createExplicitGatingMiddleware(
       });
       const effectiveTimeoutMs = Math.min(verifyTimeoutMs, paymentTtlMs);
       
-      // Update pending with the precise TTL
-      authorizationStore.trySetPending(identity, effectiveTimeoutMs);
+      // Note: Pending TTL was set to paymentTtlMs at line 74, which is >= effectiveTimeoutMs
+      // This ensures pending state covers the entire verification period.
 
       const errorResponse: JSONRPCErrorResponse = {
         jsonrpc: '2.0',

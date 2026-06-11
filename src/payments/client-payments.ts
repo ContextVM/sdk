@@ -215,12 +215,20 @@ export function withClientPayments(
     maybeStopScheduler();
   };
 
+  const pendingTimers = new Set<ReturnType<typeof setTimeout>>();
+  const retryCounts = new Map<string, number>();
+  const MAX_RETRIES = 5;
+
   const stopAllSyntheticProgress = (): void => {
     syntheticProgress.clear();
     if (syntheticProgressScheduler) {
       clearInterval(syntheticProgressScheduler);
       syntheticProgressScheduler = undefined;
     }
+    for (const timer of pendingTimers) {
+      clearTimeout(timer);
+    }
+    pendingTimers.clear();
   };
 
   // Ensure CEP-8 discovery/negotiation: when using Nostr transports, always advertise
@@ -335,11 +343,8 @@ export function withClientPayments(
         });
 
         try {
-          await handler.handle(request);
-          logger.info('payment handler succeeded, retrying request', {
-            requestEventId,
-            pmi: option.pmi,
-          });
+          // In explicit gating, we do NOT call handler.handle(request) directly.
+          // Instead, we delegate entirely to options.onPaymentRequired.
 
           // In explicit gating, the client MUST retry the exact same request
           // to trigger authorization consumption and get the result.
@@ -362,7 +367,8 @@ export function withClientPayments(
             return;
           }
           
-          const rawRequest = transport.correlationStore.getRawRequest(requestEventId);
+          const nostrTransport = transport as NostrClientTransport;
+          const rawRequest = nostrTransport.correlationStore.getRawRequest(requestEventId);
           if (!rawRequest) {
             logger.warn('missing raw original request, cannot retry explicit payment', { requestEventId });
             onmessage?.(message);
@@ -375,14 +381,15 @@ export function withClientPayments(
             originalRequest: rawRequest,
           });
           
-          if (result.paid) {
-            logger.info('explicit payment satisfied, retrying original request', {
-              requestEventId,
-              method: rawRequest.method,
-            });
-            
-            // Re-send the exact request, updating the ID if necessary (or letting MCP SDK handle it)
-            // But actually we are the transport, we can just resend the raw request through the transport.
+            if (result.paid) {
+              // Only if they successfully paid via onPaymentRequired do we proceed to retry
+              logger.info('explicit payment satisfied, retrying original request', {
+                requestEventId,
+                method: rawRequest.method,
+              });
+              
+              // Re-send the exact request, updating the ID if necessary (or letting MCP SDK handle it)
+              // But actually we are the transport, we can just resend the raw request through the transport.
             // Wait, we need to create a new ID so the proxy can track it properly.
             // Oh right, we can't easily resend and magically stitch it back to the original Promise in the MCP Client.
             // Actually, if we just send() it, the original promise in the MCP Client is already waiting 
@@ -470,23 +477,36 @@ export function withClientPayments(
         return;
       }
       
-      const rawRequest = transport.correlationStore.getRawRequest(requestEventId);
+      const nostrTransport = transport as NostrClientTransport;
+      const rawRequest = nostrTransport.correlationStore.getRawRequest(requestEventId);
       if (!rawRequest) {
         logger.warn('missing raw original request, cannot retry explicit payment pending', { requestEventId });
         onmessage?.(message);
         return;
       }
       
+      const retries = retryCounts.get(requestEventId) ?? 0;
+      if (retries >= MAX_RETRIES) {
+        logger.error('max explicit payment retries exceeded', { requestEventId, maxRetries: MAX_RETRIES });
+        onmessage?.(message);
+        return;
+      }
+
+      retryCounts.set(requestEventId, retries + 1);
+      
       logger.info('payment pending, retrying after backoff', {
         requestEventId,
         retryAfterSeconds,
+        retryCount: retries + 1,
       });
       
-      setTimeout(() => {
+      const timer = setTimeout(() => {
+        pendingTimers.delete(timer);
         transport.send(rawRequest).catch(err => {
           logger.error('failed to retry pending request', { requestEventId, error: err instanceof Error ? err.message : String(err) });
         });
       }, retryAfterSeconds * 1000);
+      pendingTimers.add(timer);
       
       return; // Intercept the error so the client waits
     }
