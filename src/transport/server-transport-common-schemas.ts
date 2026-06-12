@@ -1,4 +1,4 @@
-import type { ListToolsResult, Tool } from '@modelcontextprotocol/sdk/types.js';
+import type { ListToolsResult, Tool } from '@contextvm/mcp-sdk/types.js';
 import { computeCommonSchemaHash } from '../core/utils/common-schema.js';
 import type { NostrServerTransport } from './nostr-server-transport.js';
 

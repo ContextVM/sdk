@@ -1,7 +1,7 @@
 import {
   type InitializeResult,
   InitializeResultSchema,
-} from '@modelcontextprotocol/sdk/types.js';
+} from '@contextvm/mcp-sdk/types.js';
 import { type NostrEvent } from 'nostr-tools';
 import { NOSTR_TAGS } from '../../core/constants.js';
 import { getNostrEventTag } from '../../core/utils/serializers.js';

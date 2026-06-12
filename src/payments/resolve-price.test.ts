@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import type { JSONRPCRequest } from '@modelcontextprotocol/sdk/types.js';
+import type { JSONRPCRequest } from '@contextvm/mcp-sdk/types.js';
 import { createServerPaymentsMiddleware } from './server-payments.js';
 
 describe('resolvePrice (server payments)', () => {

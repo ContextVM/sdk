@@ -13,7 +13,7 @@ import {
   DEFAULT_MAX_BUFFERED_CHUNKS_PER_STREAM,
 } from '../open-stream/constants.js';
 import type { OpenStreamTransportPolicy } from '../open-stream-policy.js';
-import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js';
+import type { JSONRPCMessage } from '@contextvm/mcp-sdk/types.js';
 import type { Logger } from '../../core/utils/logger.js';
 
 /** Dependencies for the ClientOpenStreamFactory. */

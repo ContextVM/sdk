@@ -13,7 +13,7 @@ import {
   JSONRPCMessage,
   JSONRPCMessageSchema,
   JSONRPCNotification,
-} from '@modelcontextprotocol/sdk/types.js';
+} from '@contextvm/mcp-sdk/types.js';
 import type { Logger } from '../../core/utils/logger.js';
 import type {
   AbortFrame,

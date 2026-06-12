@@ -7,16 +7,16 @@ import {
   expect,
 } from 'bun:test';
 import { sleep } from 'bun';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { Client } from '@contextvm/mcp-sdk/client';
 import {
   StdioClientTransport,
   StdioClientTransport as StdioClientTransportForGateway,
-} from '@modelcontextprotocol/sdk/client/stdio.js';
+} from '@contextvm/mcp-sdk/client/stdio';
 import { NostrMCPGateway } from '../gateway/index.js';
 import { PrivateKeySigner } from '../signer/private-key-signer.js';
 import { generateSecretKey, getPublicKey } from 'nostr-tools';
 import { bytesToHex, hexToBytes } from 'nostr-tools/utils';
-import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import type { CallToolResult } from '@contextvm/mcp-sdk/types.js';
 import { ApplesauceRelayPool } from '../relay/applesauce-relay-pool.js';
 import {
   spawnMockRelayWithEnv,

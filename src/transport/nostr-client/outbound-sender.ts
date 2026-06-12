@@ -1,7 +1,7 @@
 import {
   type JSONRPCMessage,
   isJSONRPCRequest,
-} from '@modelcontextprotocol/sdk/types.js';
+} from '@contextvm/mcp-sdk/types.js';
 import { CTXVM_MESSAGES_KIND, INITIALIZE_METHOD } from '../../core/index.js';
 import { type Logger } from '../../core/utils/logger.js';
 import {

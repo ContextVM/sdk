@@ -1,4 +1,4 @@
-import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js';
+import type { JSONRPCMessage } from '@contextvm/mcp-sdk/types.js';
 import type { NostrEvent } from 'nostr-tools';
 import type { Logger } from '../../core/utils/logger.js';
 import { CTXVM_MESSAGES_KIND } from '../../core/constants.js';

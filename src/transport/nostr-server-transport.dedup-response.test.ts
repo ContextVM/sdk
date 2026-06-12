@@ -6,7 +6,7 @@ import {
   generateSecretKey,
   getPublicKey,
 } from 'nostr-tools/pure';
-import type { JSONRPCResponse } from '@modelcontextprotocol/sdk/types.js';
+import type { JSONRPCResponse } from '@contextvm/mcp-sdk/types.js';
 import { NostrServerTransport } from './nostr-server-transport.js';
 import { PrivateKeySigner } from '../signer/private-key-signer.js';
 import { EncryptionMode } from '../core/interfaces.js';

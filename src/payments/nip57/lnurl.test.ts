@@ -72,11 +72,4 @@ describe('nip57/lnurl', () => {
       globalThis.fetch = originalFetch;
     }
   });
-
-  // Real-network smoke test (skipped by default).
-  test('fetchLnurlPayParams() works against ContextVM@coinos.io', async () => {
-    const res = await fetchLnurlPayParams({ lnAddress: 'ContextVM@coinos.io' });
-    expect(typeof res.callback).toBe('string');
-    expect(res.callback.length).toBeGreaterThan(0);
-  });
 });

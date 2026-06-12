@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import type { ListToolsResult } from '@modelcontextprotocol/sdk/types.js';
+import type { ListToolsResult } from '@contextvm/mcp-sdk/types.js';
 import { computeCommonSchemaHash } from '../core/utils/common-schema.js';
 import { COMMON_SCHEMA_META_NAMESPACE } from '../core/constants.js';
 import {

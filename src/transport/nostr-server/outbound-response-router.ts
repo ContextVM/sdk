@@ -9,7 +9,7 @@ import {
   ListPromptsResultSchema,
   type ListToolsResult,
   type JSONRPCMessage,
-} from '@modelcontextprotocol/sdk/types.js';
+} from '@contextvm/mcp-sdk/types.js';
 import { type Logger } from '../../core/utils/logger.js';
 import { type CorrelationStore } from './correlation-store.js';
 import { type ClientSession, type SessionStore } from './session-store.js';
