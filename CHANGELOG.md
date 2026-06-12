@@ -1,5 +1,11 @@
 # @contextvm/sdk
 
+## 0.12.0
+
+### Minor Changes
+
+- d90bb9e: chore(deps): replace @modelcontextprotocol/sdk with @contextvm/mcp-sdk
+
 ## 0.11.14
 
 ### Patch Changes
