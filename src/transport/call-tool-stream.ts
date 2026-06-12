@@ -1,5 +1,5 @@
-import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import type { CallToolRequest } from '@modelcontextprotocol/sdk/types.js';
+import type { Client } from '@contextvm/mcp-sdk/client';
+import type { CallToolRequest } from '@contextvm/mcp-sdk/types.js';
 import type { OpenStreamSession } from './open-stream/index.js';
 import type { NostrClientTransport } from './nostr-client-transport.js';
 

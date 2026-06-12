@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import type { CallToolRequest } from '@modelcontextprotocol/sdk/types.js';
+import { Client } from '@contextvm/mcp-sdk/client';
+import type { CallToolRequest } from '@contextvm/mcp-sdk/types.js';
 import { callToolStream } from './call-tool-stream.js';
 import { OpenStreamSession } from './open-stream/index.js';
 

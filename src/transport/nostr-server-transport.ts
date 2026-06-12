@@ -6,8 +6,8 @@ import {
   isJSONRPCResultResponse,
   isJSONRPCErrorResponse,
   JSONRPCErrorResponse,
-} from '@modelcontextprotocol/sdk/types.js';
-import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
+} from '@contextvm/mcp-sdk/types.js';
+import type { Transport } from '@contextvm/mcp-sdk/shared/transport';
 import {
   BaseNostrTransport,
   BaseNostrTransportOptions,

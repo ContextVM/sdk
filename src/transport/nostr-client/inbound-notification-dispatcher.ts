@@ -4,7 +4,7 @@ import {
   isJSONRPCNotification,
   isJSONRPCResultResponse,
   isJSONRPCErrorResponse,
-} from '@modelcontextprotocol/sdk/types.js';
+} from '@contextvm/mcp-sdk/types.js';
 import { type Logger } from '../../core/utils/logger.js';
 import { OpenStreamReceiver } from '../open-stream/index.js';
 import { OversizedTransferReceiver } from '../oversized-transfer/index.js';

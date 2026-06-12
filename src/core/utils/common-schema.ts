@@ -1,5 +1,5 @@
 import canonicalizePackage from 'canonicalize';
-import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import type { Tool } from '@contextvm/mcp-sdk/types.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
 

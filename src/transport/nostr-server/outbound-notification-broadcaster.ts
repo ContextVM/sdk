@@ -1,7 +1,7 @@
 import {
   type JSONRPCMessage,
   isJSONRPCNotification,
-} from '@modelcontextprotocol/sdk/types.js';
+} from '@contextvm/mcp-sdk/types.js';
 import { type Logger } from '../../core/utils/logger.js';
 import { type CorrelationStore } from './correlation-store.js';
 import { type SessionStore } from './session-store.js';

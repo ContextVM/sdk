@@ -4,7 +4,7 @@ import {
   type JSONRPCErrorResponse,
   isJSONRPCRequest,
   isJSONRPCNotification,
-} from '@modelcontextprotocol/sdk/types.js';
+} from '@contextvm/mcp-sdk/types.js';
 import { type NostrEvent } from 'nostr-tools';
 import { type Logger } from '../../core/utils/logger.js';
 import { type SessionStore, type ClientSession } from './session-store.js';

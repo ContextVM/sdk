@@ -12,7 +12,7 @@ import { type ClientSession, type SessionStore } from './session-store.js';
 import {
   type JSONRPCMessage,
   type JSONRPCResponse,
-} from '@modelcontextprotocol/sdk/types.js';
+} from '@contextvm/mcp-sdk/types.js';
 
 /**
  * Dependencies for the ServerOpenStreamFactory.

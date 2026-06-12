@@ -8,11 +8,11 @@ import {
   INITIALIZE_METHOD,
   NOTIFICATIONS_INITIALIZED_METHOD,
 } from '../../core/constants.js';
-import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js';
+import type { JSONRPCMessage } from '@contextvm/mcp-sdk/types.js';
 import {
   isJSONRPCRequest,
   isJSONRPCNotification,
-} from '@modelcontextprotocol/sdk/types.js';
+} from '@contextvm/mcp-sdk/types.js';
 
 /**
  * Represents a capability exclusion pattern that can bypass whitelisting.

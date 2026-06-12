@@ -1,12 +1,12 @@
 import { afterAll, describe, test, expect } from 'bun:test';
 import { sleep } from 'bun';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { Client } from '@contextvm/mcp-sdk/client';
 import { NostrServerTransport } from './nostr-server-transport.js';
 import { NostrClientTransport } from './nostr-client-transport.js';
 import { PrivateKeySigner } from '../signer/private-key-signer.js';
 import { generateSecretKey, getPublicKey } from 'nostr-tools';
 import { bytesToHex, hexToBytes } from 'nostr-tools/utils';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { McpServer } from '@contextvm/mcp-sdk/server/mcp';
 import { EncryptionMode } from '../core/interfaces.js';
 import { MockRelayHub } from '../__mocks__/mock-relay-handler.js';
 

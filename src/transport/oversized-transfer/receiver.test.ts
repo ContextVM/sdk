@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import type { JSONRPCNotification } from '@modelcontextprotocol/sdk/types.js';
+import type { JSONRPCNotification } from '@contextvm/mcp-sdk/types.js';
 import { buildOversizedTransferFrames } from './sender.js';
 import {
   OversizedTransferDigestError,

@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { sleep } from 'bun';
-import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js';
-import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
+import type { JSONRPCMessage } from '@contextvm/mcp-sdk/types.js';
+import type { Transport } from '@contextvm/mcp-sdk/shared/transport';
 import { generateSecretKey, getPublicKey } from 'nostr-tools';
 import { bytesToHex, hexToBytes } from 'nostr-tools/utils';
 import { createLogger } from '../core/utils/logger.js';

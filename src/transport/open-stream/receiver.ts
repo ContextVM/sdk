@@ -1,4 +1,4 @@
-import type { JSONRPCNotification } from '@modelcontextprotocol/sdk/types.js';
+import type { JSONRPCNotification } from '@contextvm/mcp-sdk/types.js';
 import {
   OpenStreamRegistry,
   type OpenStreamRegistryOptions,

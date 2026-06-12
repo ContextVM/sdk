@@ -16,11 +16,11 @@ import {
   type ListToolsResult,
   type JSONRPCResponse,
   isJSONRPCResultResponse,
-} from '@modelcontextprotocol/sdk/types.js';
+} from '@contextvm/mcp-sdk/types.js';
 import type { Filter } from 'nostr-tools';
 import { NostrEvent } from 'nostr-tools';
 import { EventDeletion } from 'nostr-tools/kinds';
-import { LATEST_PROTOCOL_VERSION } from '@modelcontextprotocol/sdk/types.js';
+import { LATEST_PROTOCOL_VERSION } from '@contextvm/mcp-sdk/types.js';
 import {
   announcementMethods,
   DEFAULT_BOOTSTRAP_RELAY_URLS,
