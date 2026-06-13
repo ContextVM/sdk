@@ -284,27 +284,9 @@ export function withClientPayments(
         const handler = handlersByPmi.get(option.pmi);
         if (!handler && !options.onPaymentRequired) continue;
 
-        const isNostrTransport = transport instanceof NostrClientTransport;
-        const pending = isNostrTransport
-          ? transport.getPendingRequestForEventId(requestEventId)
-          : undefined;
-
-        if (isNostrTransport && !pending) {
-          logger.warn('dropping uncorrelated explicit payment error', {
-            requestEventId,
-            pmi: option.pmi,
-          });
-          onmessage?.(message);
-          return;
-        }
-
-        const originalContext = pending?.originalRequestContext
-          ? {
-              method: pending.originalRequestContext.method,
-              capability: pending.originalRequestContext.capability,
-              id: pending.originalRequestId,
-            }
-          : undefined;
+        // Note: For explicit gating errors (JSON-RPC error responses), the transport's
+        // correlation store has already consumed the pending entry via resolveResponse().
+        // We rely on rawRequestCache for the retry rather than the correlation store.
 
         const request: PaymentHandlerRequest = {
           amount: option.amount,
@@ -317,7 +299,7 @@ export function withClientPayments(
         };
 
         const allow = options.paymentPolicy
-          ? await options.paymentPolicy(request, originalContext)
+          ? await options.paymentPolicy(request)
           : true;
 
         if (!allow) {
@@ -462,18 +444,9 @@ export function withClientPayments(
       const data = message.error.data as import('./types.js').PaymentPendingErrorData;
       const retryAfterSeconds = data.retry_after;
       
-      const isNostrTransport = transport instanceof NostrClientTransport;
-      const pending = isNostrTransport
-        ? transport.getPendingRequestForEventId(requestEventId)
-        : undefined;
-        
-      if (!isNostrTransport || !pending) {
-        logger.warn('dropping uncorrelated explicit payment pending error', {
-          requestEventId,
-        });
-        onmessage?.(message);
-        return;
-      }
+      // Note: For explicit gating errors (JSON-RPC error responses), the transport's
+      // correlation store has already consumed the pending entry via resolveResponse().
+      // We rely on rawRequestCache for the retry rather than the correlation store.
       
       const requestId = message.id;
       const rawRequest = requestId != null ? rawRequestCache.get(requestId) : undefined;

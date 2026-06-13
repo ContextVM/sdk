@@ -58,7 +58,7 @@ describe('Explicit Gating Middleware', () => {
         pricedCapabilities: [...pricedCapabilities],
       },
       authorizationStore: store,
-      sendResponse: async (pubkey, response) => {
+      sendResponse: async (_pubkey, response) => {
         sentResponses.push(response);
       },
     });
@@ -90,7 +90,7 @@ describe('Explicit Gating Middleware', () => {
         pricedCapabilities: [...pricedCapabilities],
       },
       authorizationStore: store,
-      sendResponse: async (pubkey, response) => {
+      sendResponse: async (_pubkey, response) => {
         sentResponses.push(response);
       },
     });
@@ -113,7 +113,7 @@ describe('Explicit Gating Middleware', () => {
         pricedCapabilities: [...pricedCapabilities],
       },
       authorizationStore: store,
-      sendResponse: async (pubkey, response) => {
+      sendResponse: async (_pubkey, response) => {
         sentResponses.push(response);
       },
     });
@@ -156,7 +156,7 @@ describe('Explicit Gating Middleware', () => {
         resolvePrice: async () => ({ waive: true }),
       },
       authorizationStore: store,
-      sendResponse: async (pubkey, response) => {
+      sendResponse: async (_pubkey, response) => {
         sentResponses.push(response);
       },
     });
@@ -181,7 +181,7 @@ describe('Explicit Gating Middleware', () => {
         resolvePrice: async () => ({ reject: true, message: 'Rate limited' }),
       },
       authorizationStore: store,
-      sendResponse: async (pubkey, response) => {
+      sendResponse: async (_pubkey, response) => {
         sentResponses.push(response as JSONRPCErrorResponse);
       },
     });

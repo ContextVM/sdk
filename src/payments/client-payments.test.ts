@@ -646,7 +646,7 @@ describe('withClientPayments()', () => {
     expect(observed).toHaveLength(0);
 
     // Original request should be retried
-    expect(sentMessage).toEqual({ jsonrpc: '2.0', id: 77, method: 'tools/call', params: { name: 'test' } });
+    expect(sentMessage as unknown).toEqual({ jsonrpc: '2.0', id: 77, method: 'tools/call', params: { name: 'test' } });
 
     await paid.close();
   });
@@ -695,10 +695,10 @@ describe('withClientPayments()', () => {
 
     // Error should be delivered to caller with reason
     expect(observed).toHaveLength(1);
-    const errResp = observed[0] as JSONRPCMessage;
+    const errResp = observed[0] as { id?: unknown; error?: { code?: number; data?: { reason?: string } } };
     expect(errResp.id).toBe(88);
-    expect('error' in errResp && errResp.error?.code).toBe(-32042);
-    expect('error' in errResp && (errResp.error?.data as { reason?: string })?.reason).toBe('user_cancelled');
+    expect(errResp.error?.code).toBe(-32042);
+    expect(errResp.error?.data?.reason).toBe('user_cancelled');
 
     await paid.close();
   });
@@ -760,7 +760,7 @@ describe('withClientPayments()', () => {
     expect(observed).toHaveLength(0);
 
     // Original request should be retried
-    expect(sentMessage).toEqual({ jsonrpc: '2.0', id: 99, method: 'tools/call', params: { name: 'test_pending' } });
+    expect(sentMessage as unknown).toEqual({ jsonrpc: '2.0', id: 99, method: 'tools/call', params: { name: 'test_pending' } });
 
     await paid.close();
   });
