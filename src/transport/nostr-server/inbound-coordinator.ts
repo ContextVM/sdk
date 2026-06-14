@@ -184,6 +184,8 @@ export class ServerInboundCoordinator {
           session.requestedPaymentInteraction = mode as import('../../payments/types.js').PaymentInteractionMode;
           
           if (mode === 'explicit_gating' && !serverSupportsExplicitGating) {
+            session.effectivePaymentInteraction = 'transparent';
+
             if (isJSONRPCRequest(inboundMessage)) {
               const errorResponse: JSONRPCErrorResponse = {
                 jsonrpc: '2.0',

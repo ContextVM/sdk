@@ -195,17 +195,6 @@ export class ClientInboundCoordinator {
       discovered.supportsOpenStream,
     );
 
-    if (!this.deps.metadataStore.getServerInitializeEvent()) {
-      this.setInitializeEvent(event);
-      this.deps.logger.info(
-        'Learned server discovery tags from inbound event',
-        {
-          eventId: event.id,
-        },
-      );
-      return;
-    }
-
     const paymentInteractionTag = event.tags.find(
       (tag) => tag[0] === 'payment_interaction' && typeof tag[1] === 'string'
     );
@@ -216,6 +205,17 @@ export class ClientInboundCoordinator {
           mode as import('../../payments/types.js').PaymentInteractionMode
         );
       }
+    }
+
+    if (!this.deps.metadataStore.getServerInitializeEvent()) {
+      this.setInitializeEvent(event);
+      this.deps.logger.info(
+        'Learned server discovery tags from inbound event',
+        {
+          eventId: event.id,
+        },
+      );
+      return;
     }
 
     const currentHasInitializeResult = InitializeResultSchema.safeParse(
