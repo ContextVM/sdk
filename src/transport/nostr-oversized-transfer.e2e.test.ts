@@ -1,8 +1,9 @@
 import { describe, expect, test } from 'bun:test';
-import type {
-  JSONRPCMessage,
-  JSONRPCRequest,
-  JSONRPCResponse,
+import {
+  type JSONRPCMessage,
+  type JSONRPCRequest,
+  type JSONRPCResponse,
+  isJSONRPCResultResponse,
 } from '@contextvm/mcp-sdk/types.js';
 import type { NostrEvent } from 'nostr-tools';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
@@ -233,7 +234,9 @@ describe('Nostr oversized transfer end-to-end', () => {
     const capturedRequests: JSONRPCRequest[] = [];
     const sendErrors: Error[] = [];
     clientTransport.onmessage = (message: JSONRPCMessage) => {
-      receivedResponses.push(message as JSONRPCResponse);
+      if (isJSONRPCResultResponse(message)) {
+        receivedResponses.push(message);
+      }
     };
 
     serverTransport.onmessage = (message: JSONRPCMessage) => {
@@ -472,7 +475,9 @@ describe('Nostr oversized transfer end-to-end', () => {
     const receivedResponses: JSONRPCResponse[] = [];
     const sendErrors: Error[] = [];
     clientTransport.onmessage = (message: JSONRPCMessage) => {
-      receivedResponses.push(message as JSONRPCResponse);
+      if (isJSONRPCResultResponse(message)) {
+        receivedResponses.push(message);
+      }
     };
 
     serverTransport.onmessage = (message: JSONRPCMessage) => {

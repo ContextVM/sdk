@@ -67,6 +67,10 @@ export class ClientInboundNotificationDispatcher {
       mcpMessage.method === 'notifications/progress' &&
       OversizedTransferReceiver.isOversizedFrame(mcpMessage)
     ) {
+      // Forward the progress notification so that resetTimeoutOnProgress
+      // works for oversized transfers (CEP-22 § timeout semantics).
+      this.deps.handleNotification(eventId, correlatedEventId, mcpMessage);
+
       this.deps.oversizedReceiver
         .processFrame(mcpMessage)
         .then((synthetic) => {
