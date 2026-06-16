@@ -20,6 +20,7 @@ import { type ClientCorrelationStore } from './correlation-store.js';
 import { type UnwrappedClientEvent } from './event-pipeline.js';
 import { type ClientInboundNotificationDispatcher } from './inbound-notification-dispatcher.js';
 import { type ServerMetadataStore } from './server-metadata-store.js';
+import type { PaymentInteractionMode } from '../../payments/types.js';
 
 export interface ClientInboundCoordinatorDeps {
   capabilityNegotiator: ClientCapabilityNegotiator;
@@ -28,7 +29,11 @@ export interface ClientInboundCoordinatorDeps {
   metadataStore: ServerMetadataStore;
   unwrapEvent: (event: NostrEvent) => Promise<UnwrappedClientEvent | null>;
   convertNostrEventToMcpMessage: (event: NostrEvent) => JSONRPCMessage | null;
-  handleResponse: (correlatedEventId: string, msg: JSONRPCMessage, eventId?: string) => void;
+  handleResponse: (
+    correlatedEventId: string,
+    msg: JSONRPCMessage,
+    eventId?: string,
+  ) => void;
   handleNotification: (
     eventId: string,
     correlatedEventId: string | undefined,
@@ -196,13 +201,13 @@ export class ClientInboundCoordinator {
     );
 
     const paymentInteractionTag = event.tags.find(
-      (tag) => tag[0] === 'payment_interaction' && typeof tag[1] === 'string'
+      (tag) => tag[0] === 'payment_interaction' && typeof tag[1] === 'string',
     );
     if (paymentInteractionTag) {
       const mode = paymentInteractionTag[1];
       if (mode === 'transparent' || mode === 'explicit_gating') {
         this.deps.metadataStore.setEffectivePaymentInteraction(
-          mode as import('../../payments/types.js').PaymentInteractionMode
+          mode as PaymentInteractionMode,
         );
       }
     }

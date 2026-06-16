@@ -1016,7 +1016,10 @@ describe.serial('payments fake flow (transport-level)', () => {
     const serverPrivateKey = bytesToHex(serverSK);
     const serverPublicKey = getPublicKey(serverSK);
 
-    const mcpServer = new McpServer({ name: 'explicit-server', version: '1.0.0' });
+    const mcpServer = new McpServer({
+      name: 'explicit-server',
+      version: '1.0.0',
+    });
     let toolCallCount = 0;
     mcpServer.registerTool(
       'add',
@@ -1061,7 +1064,7 @@ describe.serial('payments fake flow (transport-level)', () => {
 
     const clientSK = generateSecretKey();
     const clientPrivateKey = bytesToHex(clientSK);
-    
+
     // Track if onPaymentRequired was called
     let explicitPaymentHandled = false;
 
@@ -1077,7 +1080,7 @@ describe.serial('payments fake flow (transport-level)', () => {
       onPaymentRequired: async () => {
         explicitPaymentHandled = true;
         return { paid: true };
-      }
+      },
     });
 
     const client = new Client({ name: 'explicit-client', version: '1.0.0' });
@@ -1092,7 +1095,7 @@ describe.serial('payments fake flow (transport-level)', () => {
       content: Array<{ type: string; text?: string }>;
     };
     expect(typedResult.content[0]).toMatchObject({ type: 'text', text: '30' });
-    
+
     expect(explicitPaymentHandled).toBe(true);
     expect(toolCallCount).toBe(1);
     expect(createSpy).toHaveBeenCalled();

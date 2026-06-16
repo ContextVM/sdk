@@ -4,6 +4,7 @@ import type {
   ResolvePriceRejection,
   ResolvePriceWaiver,
   ResolvePriceResult,
+  PaymentProcessor,
 } from './types.js';
 
 export function getVerificationTimeoutMs(params: {
@@ -17,7 +18,8 @@ export function getVerificationTimeoutMs(params: {
   if (!Number.isFinite(ttlSeconds) || ttlSeconds <= 0) {
     return 5 * 60 * 1000;
   }
-  return Math.floor(ttlSeconds * 1000);
+  const ms = ttlSeconds * 1000;
+  return Number.isFinite(ms) ? Math.floor(ms) : 5 * 60 * 1000;
 }
 
 export function matchPricedCapability(
@@ -39,10 +41,7 @@ export function getCapabilityNameForPricing(
   const params = message.params as Record<string, unknown> | undefined;
 
   switch (message.method) {
-    case 'tools/call': {
-      const name = params?.name;
-      return typeof name === 'string' ? name : undefined;
-    }
+    case 'tools/call':
     case 'prompts/get': {
       const name = params?.name;
       return typeof name === 'string' ? name : undefined;
@@ -66,4 +65,24 @@ export function isResolvePriceWaiver(
   quote: ResolvePriceResult,
 ): quote is ResolvePriceWaiver {
   return 'waive' in quote && quote.waive;
+}
+
+export function resolvePaymentProcessor(
+  clientPmis: readonly string[] | undefined,
+  processorsByPmi: Map<string, PaymentProcessor>,
+  processors: readonly PaymentProcessor[],
+): PaymentProcessor {
+  const chosenPmi = clientPmis
+    ? clientPmis.find((pmi) => processorsByPmi.has(pmi))
+    : undefined;
+
+  const chosenProcessor = chosenPmi
+    ? processorsByPmi.get(chosenPmi)
+    : processors[0];
+
+  if (!chosenProcessor) {
+    throw new Error('No payment processors configured');
+  }
+
+  return chosenProcessor;
 }

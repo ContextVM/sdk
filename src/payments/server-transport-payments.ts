@@ -15,11 +15,11 @@ export function withServerPayments(
 ): NostrServerTransport {
   // CEP-8 discovery tags: advertise supported PMIs + reference pricing on announcement/list events.
   const extraTags: string[][] = createPmiTagsFromProcessors(options.processors);
-  
+
   if (options.paymentInteraction === 'explicit_gating') {
     extraTags.push(['payment_interaction', 'explicit_gating']);
   }
-  
+
   transport.setAnnouncementExtraTags(extraTags);
   transport.setAnnouncementPricingTags(
     createCapTagsFromPricedCapabilities(options.pricedCapabilities),
@@ -28,6 +28,10 @@ export function withServerPayments(
   // Expose the configured payment interaction mode to the transport coordinator.
   transport.setSupportedPaymentInteraction(options.paymentInteraction);
 
+  transport.addInboundMiddleware(
+    createServerPaymentsMiddleware({ sender: transport, options }),
+  );
+
   if (options.paymentInteraction === 'explicit_gating') {
     const authorizationStore = new AuthorizationStore({});
     transport.addInboundMiddleware(
@@ -35,13 +39,13 @@ export function withServerPayments(
         options,
         authorizationStore,
         sendResponse: async (clientPubkey, response, requestEventId) => {
-          await transport.sendTargetedResponse(clientPubkey, response, requestEventId);
+          await transport.sendTargetedResponse(
+            clientPubkey,
+            response,
+            requestEventId,
+          );
         },
       }),
-    );
-  } else {
-    transport.addInboundMiddleware(
-      createServerPaymentsMiddleware({ sender: transport, options }),
     );
   }
   return transport;

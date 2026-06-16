@@ -27,6 +27,7 @@ import {
 import { GiftWrapMode } from '../../core/interfaces.js';
 import { type OpenStreamWriter } from '../open-stream/index.js';
 import { UNSUPPORTED_PAYMENT_INTERACTION_ERROR_CODE } from '../../payments/constants.js';
+import type { PaymentInteractionMode } from '../../payments/types.js';
 
 export interface ServerInboundCoordinatorDeps {
   sessionStore: SessionStore;
@@ -39,7 +40,7 @@ export interface ServerInboundCoordinatorDeps {
   oversizedEnabled: boolean;
   openStreamEnabled: boolean;
   giftWrapMode: GiftWrapMode;
-  supportedPaymentInteraction?: import('../../payments/types.js').PaymentInteractionMode;
+  supportedPaymentInteraction?: PaymentInteractionMode;
   sendMcpMessage: (
     msg: JSONRPCMessage,
     pubkey: string,
@@ -77,7 +78,9 @@ export class ServerInboundCoordinator {
     this.inboundNotificationDispatcher = dispatcher;
   }
 
-  public setSupportedPaymentInteraction(mode: import('../../payments/types.js').PaymentInteractionMode | undefined): void {
+  public setSupportedPaymentInteraction(
+    mode: PaymentInteractionMode | undefined,
+  ): void {
     this.deps.supportedPaymentInteraction = mode;
   }
 
@@ -170,19 +173,19 @@ export class ServerInboundCoordinator {
       const clientPmis = event.tags
         .filter((tag) => tag[0] === 'pmi' && typeof tag[1] === 'string')
         .map((tag) => tag[1] as string);
-        
+
       const serverSupportsExplicitGating =
         this.deps.supportedPaymentInteraction === 'explicit_gating';
 
       const paymentInteractionTag = event.tags.find(
-        (tag) => tag[0] === 'payment_interaction' && typeof tag[1] === 'string'
+        (tag) => tag[0] === 'payment_interaction' && typeof tag[1] === 'string',
       );
-      
+
       if (paymentInteractionTag && !session.requestedPaymentInteraction) {
         const mode = paymentInteractionTag[1];
         if (mode === 'transparent' || mode === 'explicit_gating') {
-          session.requestedPaymentInteraction = mode as import('../../payments/types.js').PaymentInteractionMode;
-          
+          session.requestedPaymentInteraction = mode as PaymentInteractionMode;
+
           if (mode === 'explicit_gating' && !serverSupportsExplicitGating) {
             session.effectivePaymentInteraction = 'transparent';
 
@@ -192,7 +195,8 @@ export class ServerInboundCoordinator {
                 id: inboundMessage.id,
                 error: {
                   code: UNSUPPORTED_PAYMENT_INTERACTION_ERROR_CODE,
-                  message: 'Unsupported payment_interaction mode: explicit_gating',
+                  message:
+                    'Unsupported payment_interaction mode: explicit_gating',
                 },
               };
               const tags = this.deps.createResponseTags(event.pubkey, event.id);
@@ -213,9 +217,12 @@ export class ServerInboundCoordinator {
                     : undefined,
                 )
                 .catch((err) => {
-                  this.deps.logger.error('Failed to send negotiation error response', {
-                    error: err instanceof Error ? err.message : String(err),
-                  });
+                  this.deps.logger.error(
+                    'Failed to send negotiation error response',
+                    {
+                      error: err instanceof Error ? err.message : String(err),
+                    },
+                  );
                 });
               return;
             }
@@ -233,7 +240,8 @@ export class ServerInboundCoordinator {
       const ctx = {
         clientPubkey: event.pubkey,
         clientPmis: clientPmis.length > 0 ? clientPmis : undefined,
-        paymentInteraction: session.effectivePaymentInteraction ?? 'transparent',
+        paymentInteraction:
+          session.effectivePaymentInteraction ?? 'transparent',
       };
       const middlewares = this.deps.inboundMiddlewares;
 

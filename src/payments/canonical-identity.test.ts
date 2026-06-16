@@ -12,7 +12,7 @@ describe('Canonical Invocation Identity', () => {
         b: 2,
         name: 'test',
       });
-      
+
       const hash2 = computeCanonicalInvocationHash('tools/call', {
         name: 'test',
         b: 2,
@@ -27,7 +27,7 @@ describe('Canonical Invocation Identity', () => {
     test('handles empty params', () => {
       const hash1 = computeCanonicalInvocationHash('tools/call', undefined);
       const hash2 = computeCanonicalInvocationHash('tools/call', null);
-      
+
       expect(hash1).not.toBe(hash2);
       expect(hash1).toMatch(/^[0-9a-f]{64}$/);
     });
@@ -37,7 +37,7 @@ describe('Canonical Invocation Identity', () => {
         nested: { z: 1, y: 2, x: 3 },
         arr: [1, 2, 3],
       });
-      
+
       const hash2 = computeCanonicalInvocationHash('tools/call', {
         arr: [1, 2, 3],
         nested: { x: 3, z: 1, y: 2 },
@@ -50,7 +50,7 @@ describe('Canonical Invocation Identity', () => {
       const hash1 = computeCanonicalInvocationHash('tools/call', {
         text: 'Hello 🌍',
       });
-      
+
       const hash2 = computeCanonicalInvocationHash('tools/call', {
         text: 'Hello 🌍',
       });
@@ -64,12 +64,43 @@ describe('Canonical Invocation Identity', () => {
 
       expect(hash1).not.toBe(hash2);
     });
-    
+
     test('differs for different param values', () => {
       const hash1 = computeCanonicalInvocationHash('tools/call', { a: 1 });
       const hash2 = computeCanonicalInvocationHash('tools/call', { a: 2 });
 
       expect(hash1).not.toBe(hash2);
+    });
+
+    test('throws error for circular references', () => {
+      const obj: any = {};
+      obj.self = obj;
+      expect(() => computeCanonicalInvocationHash('tools/call', obj)).toThrow(
+        "Failed to canonicalize invocation payload for method 'tools/call'. Ensure params contain only JSON-serializable values (no circular references, functions, symbols, or BigInt).",
+      );
+    });
+
+    test('throws error for non-serializable values', () => {
+      expect(() =>
+        computeCanonicalInvocationHash('tools/call', { fn: () => {} }),
+      ).toThrow(
+        "Failed to canonicalize invocation payload for method 'tools/call'. Ensure params contain only JSON-serializable values (no circular references, functions, symbols, or BigInt).",
+      );
+      expect(() =>
+        computeCanonicalInvocationHash('tools/call', { sym: Symbol('test') }),
+      ).toThrow(
+        "Failed to canonicalize invocation payload for method 'tools/call'. Ensure params contain only JSON-serializable values (no circular references, functions, symbols, or BigInt).",
+      );
+      expect(() =>
+        computeCanonicalInvocationHash('tools/call', { big: BigInt('9007199254740991') }),
+      ).toThrow(
+        "Failed to canonicalize invocation payload for method 'tools/call'. Ensure params contain only JSON-serializable values (no circular references, functions, symbols, or BigInt).",
+      );
+    });
+
+    test('handles empty string method', () => {
+      const hash1 = computeCanonicalInvocationHash('', { a: 1 });
+      expect(hash1).toMatch(/^[0-9a-f]{64}$/);
     });
   });
 
@@ -79,10 +110,16 @@ describe('Canonical Invocation Identity', () => {
       const method = 'tools/call';
       const params = { name: 'test' };
 
-      const identity = computeCanonicalInvocationIdentity(pubkey, method, params);
+      const identity = computeCanonicalInvocationIdentity(
+        pubkey,
+        method,
+        params,
+      );
 
       expect(identity.clientPubkey).toBe(pubkey);
-      expect(identity.invocationHash).toBe(computeCanonicalInvocationHash(method, params));
+      expect(identity.invocationHash).toBe(
+        computeCanonicalInvocationHash(method, params),
+      );
     });
   });
 });

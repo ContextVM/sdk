@@ -606,8 +606,13 @@ describe('withClientPayments()', () => {
       .correlationStore.registerRequest('req-event-id-3', {
         originalRequestId: 77,
         isInitialize: false,
-        rawRequest: { jsonrpc: '2.0', id: 77, method: 'tools/call', params: { name: 'test' } },
-        originalRequestContext: { method: 'tools/call' }
+        rawRequest: {
+          jsonrpc: '2.0',
+          id: 77,
+          method: 'tools/call',
+          params: { name: 'test' },
+        },
+        originalRequestContext: { method: 'tools/call' },
       });
 
     const observed: JSONRPCMessage[] = [];
@@ -620,7 +625,12 @@ describe('withClientPayments()', () => {
     await paid.start();
 
     // Populate the wrapper's cache with the original request
-    await paid.send({ jsonrpc: '2.0', id: 77, method: 'tools/call', params: { name: 'test' } });
+    await paid.send({
+      jsonrpc: '2.0',
+      id: 77,
+      method: 'tools/call',
+      params: { name: 'test' },
+    });
     sentMessage = undefined; // Reset mock state so we can observe the retry
 
     // Deliver -32042 Payment Required error
@@ -632,9 +642,9 @@ describe('withClientPayments()', () => {
           code: -32042,
           message: 'Payment Required',
           data: {
-            payment_options: [{ amount: 10, pmi: 'fake', pay_req: 'pr1' }]
-          }
-        }
+            payment_options: [{ amount: 10, pmi: 'fake', pay_req: 'pr1' }],
+          },
+        },
       },
       { eventId: 'evt4', correlatedEventId: 'req-event-id-3' },
     );
@@ -646,34 +656,52 @@ describe('withClientPayments()', () => {
     expect(observed).toHaveLength(0);
 
     // Original request should be retried
-    expect(sentMessage as unknown).toEqual({ jsonrpc: '2.0', id: 77, method: 'tools/call', params: { name: 'test' } });
+    expect(sentMessage as unknown).toEqual({
+      jsonrpc: '2.0',
+      id: 77,
+      method: 'tools/call',
+      params: { name: 'test' },
+    });
 
     await paid.close();
   });
 
   test('propagates -32042 error if onPaymentRequired returns paid: false', async () => {
     const transport = createMockNostrTransport();
-    
+
     transport
       .getInternalStateForTesting()
       .correlationStore.registerRequest('req-event-id-4', {
         originalRequestId: 88,
         isInitialize: false,
-        rawRequest: { jsonrpc: '2.0', id: 88, method: 'tools/call', params: { name: 'test' } },
-        originalRequestContext: { method: 'tools/call' }
+        rawRequest: {
+          jsonrpc: '2.0',
+          id: 88,
+          method: 'tools/call',
+          params: { name: 'test' },
+        },
+        originalRequestContext: { method: 'tools/call' },
       });
 
     const observed: JSONRPCMessage[] = [];
     const paid = withClientPayments(transport, {
       handlers: [{ pmi: 'fake', async handle(): Promise<void> {} }],
       paymentInteraction: 'explicit_gating',
-      onPaymentRequired: async () => ({ paid: false, reason: 'user_cancelled' }),
+      onPaymentRequired: async () => ({
+        paid: false,
+        reason: 'user_cancelled',
+      }),
     });
     paid.onmessage = (msg) => observed.push(msg);
     await paid.start();
 
     // Populate the wrapper's cache with the original request
-    await paid.send({ jsonrpc: '2.0', id: 88, method: 'tools/call', params: { name: 'test' } });
+    await paid.send({
+      jsonrpc: '2.0',
+      id: 88,
+      method: 'tools/call',
+      params: { name: 'test' },
+    });
 
     // Deliver -32042 Payment Required error
     transport.onmessageWithContext!(
@@ -684,9 +712,9 @@ describe('withClientPayments()', () => {
           code: -32042,
           message: 'Payment Required',
           data: {
-            payment_options: [{ amount: 10, pmi: 'fake', pay_req: 'pr2' }]
-          }
-        }
+            payment_options: [{ amount: 10, pmi: 'fake', pay_req: 'pr2' }],
+          },
+        },
       },
       { eventId: 'evt5', correlatedEventId: 'req-event-id-4' },
     );
@@ -695,7 +723,10 @@ describe('withClientPayments()', () => {
 
     // Error should be delivered to caller with reason
     expect(observed).toHaveLength(1);
-    const errResp = observed[0] as { id?: unknown; error?: { code?: number; data?: { reason?: string } } };
+    const errResp = observed[0] as {
+      id?: unknown;
+      error?: { code?: number; data?: { reason?: string } };
+    };
     expect(errResp.id).toBe(88);
     expect(errResp.error?.code).toBe(-32042);
     expect(errResp.error?.data?.reason).toBe('user_cancelled');
@@ -715,8 +746,13 @@ describe('withClientPayments()', () => {
       .correlationStore.registerRequest('req-event-id-5', {
         originalRequestId: 99,
         isInitialize: false,
-        rawRequest: { jsonrpc: '2.0', id: 99, method: 'tools/call', params: { name: 'test_pending' } },
-        originalRequestContext: { method: 'tools/call' }
+        rawRequest: {
+          jsonrpc: '2.0',
+          id: 99,
+          method: 'tools/call',
+          params: { name: 'test_pending' },
+        },
+        originalRequestContext: { method: 'tools/call' },
       });
 
     const observed: JSONRPCMessage[] = [];
@@ -728,7 +764,12 @@ describe('withClientPayments()', () => {
     await paid.start();
 
     // Populate the wrapper's cache with the original request
-    await paid.send({ jsonrpc: '2.0', id: 99, method: 'tools/call', params: { name: 'test_pending' } });
+    await paid.send({
+      jsonrpc: '2.0',
+      id: 99,
+      method: 'tools/call',
+      params: { name: 'test_pending' },
+    });
     sentMessage = undefined; // Reset mock state so we can observe the retry
 
     // Deliver -32043 Payment Pending error
@@ -741,9 +782,9 @@ describe('withClientPayments()', () => {
           message: 'Payment Pending',
           data: {
             instructions: 'Wait and retry.',
-            retry_after: 0.05 // 50ms for test
-          }
-        }
+            retry_after: 0.05, // 50ms for test
+          },
+        },
       },
       { eventId: 'evt6', correlatedEventId: 'req-event-id-5' },
     );
@@ -760,7 +801,12 @@ describe('withClientPayments()', () => {
     expect(observed).toHaveLength(0);
 
     // Original request should be retried
-    expect(sentMessage as unknown).toEqual({ jsonrpc: '2.0', id: 99, method: 'tools/call', params: { name: 'test_pending' } });
+    expect(sentMessage as unknown).toEqual({
+      jsonrpc: '2.0',
+      id: 99,
+      method: 'tools/call',
+      params: { name: 'test_pending' },
+    });
 
     await paid.close();
   });

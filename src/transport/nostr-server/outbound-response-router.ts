@@ -229,17 +229,8 @@ export class OutboundResponseRouter {
       baseTags: this.deps.createResponseTags(route.clientPubkey, nostrEventId),
       session,
     });
-    
-    // CEP-8: Disclose effective mode on first response if client requested a non-default mode
-    if (
-      session.requestedPaymentInteraction && 
-      session.requestedPaymentInteraction !== 'transparent' && 
-      !session.hasDisclosedPaymentInteraction &&
-      session.effectivePaymentInteraction
-    ) {
-      tags.push(['payment_interaction', session.effectivePaymentInteraction]);
-      session.hasDisclosedPaymentInteraction = true;
-    }
+
+    this.maybeAppendPaymentInteractionDisclosure(tags, session);
 
     const giftWrapKind = this.deps.chooseGiftWrapKind({
       session,
@@ -304,17 +295,8 @@ export class OutboundResponseRouter {
       baseTags: this.deps.createResponseTags(clientPubkey, requestEventId),
       session,
     });
-    
-    // CEP-8: Disclose effective mode on first response if client requested a non-default mode
-    if (
-      session.requestedPaymentInteraction && 
-      session.requestedPaymentInteraction !== 'transparent' && 
-      !session.hasDisclosedPaymentInteraction &&
-      session.effectivePaymentInteraction
-    ) {
-      tags.push(['payment_interaction', session.effectivePaymentInteraction]);
-      session.hasDisclosedPaymentInteraction = true;
-    }
+
+    this.maybeAppendPaymentInteractionDisclosure(tags, session);
 
     const giftWrapKind = this.deps.chooseGiftWrapKind({
       session,
@@ -329,5 +311,21 @@ export class OutboundResponseRouter {
       undefined,
       giftWrapKind,
     );
+  }
+
+  private maybeAppendPaymentInteractionDisclosure(
+    tags: string[][],
+    session: ClientSession,
+  ): void {
+    // CEP-8: Disclose effective mode on first response if client requested a non-default mode
+    if (
+      session.requestedPaymentInteraction &&
+      session.requestedPaymentInteraction !== 'transparent' &&
+      !session.hasDisclosedPaymentInteraction &&
+      session.effectivePaymentInteraction
+    ) {
+      tags.push(['payment_interaction', session.effectivePaymentInteraction]);
+      session.hasDisclosedPaymentInteraction = true;
+    }
   }
 }

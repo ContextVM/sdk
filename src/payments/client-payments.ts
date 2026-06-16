@@ -3,9 +3,10 @@ import {
   isJSONRPCNotification,
   isJSONRPCResultResponse,
   isJSONRPCErrorResponse,
-  JSONRPCNotification,
+  type JSONRPCNotification,
   type JSONRPCMessage,
   type JSONRPCRequest,
+  type JSONRPCErrorResponse,
 } from '@contextvm/mcp-sdk/types.js';
 import { NostrClientTransport } from '../transport/nostr-client-transport.js';
 import {
@@ -14,8 +15,16 @@ import {
   PaymentRequiredNotification,
   PaymentHandlerRequest,
 } from './types.js';
+import { LruCache } from '../core/utils/lru-cache.js';
 import { createLogger } from '../core/utils/logger.js';
 import type { OriginalRequestContext } from '../transport/nostr-client/correlation-store.js';
+import type {
+  PaymentInteractionMode,
+  PaymentOption,
+  PaymentRequiredErrorData,
+  PaymentPendingErrorData,
+} from './types.js';
+
 import {
   DEFAULT_SYNTHETIC_PROGRESS_INTERVAL_MS,
   DEFAULT_PAYMENT_TTL_MS,
@@ -61,7 +70,7 @@ export interface ClientPaymentsOptions {
   ) => boolean | Promise<boolean>;
 
   /** Requested payment interaction mode. @default 'transparent' */
-  paymentInteraction?: import('./types.js').PaymentInteractionMode;
+  paymentInteraction?: PaymentInteractionMode;
 
   /**
    * Handler for explicit-gating -32042 errors.
@@ -81,9 +90,9 @@ export interface ClientPaymentsOptions {
    *   `message` contains the provider error details.
    */
   onPaymentRequired?: (params: {
-    options: import('./types.js').PaymentOption[];
+    options: PaymentOption[];
     instructions?: string;
-    originalRequest: import('@modelcontextprotocol/sdk/types.js').JSONRPCRequest;
+    originalRequest: JSONRPCRequest;
   }) => Promise<{ paid: boolean; reason?: string }>;
 }
 
@@ -113,26 +122,30 @@ function supportsOnmessageWithContext(
 
 function isExplicitPaymentRequiredError(
   msg: JSONRPCMessage,
-): msg is import('@modelcontextprotocol/sdk/types.js').JSONRPCErrorResponse {
+): msg is JSONRPCErrorResponse {
   return (
     isJSONRPCErrorResponse(msg) &&
     msg.error.code === PAYMENT_REQUIRED_ERROR_CODE &&
     typeof msg.error.data === 'object' &&
     msg.error.data !== null &&
-    Array.isArray((msg.error.data as { payment_options?: unknown }).payment_options) &&
-    ((msg.error.data as { payment_options: unknown[] }).payment_options).length > 0
+    Array.isArray(
+      (msg.error.data as { payment_options?: unknown }).payment_options,
+    ) &&
+    (msg.error.data as { payment_options: unknown[] }).payment_options.length >
+      0
   );
 }
 
 function isExplicitPaymentPendingError(
   msg: JSONRPCMessage,
-): msg is import('@modelcontextprotocol/sdk/types.js').JSONRPCErrorResponse {
+): msg is JSONRPCErrorResponse {
   return (
     isJSONRPCErrorResponse(msg) &&
     msg.error.code === PAYMENT_PENDING_ERROR_CODE &&
     typeof msg.error.data === 'object' &&
     msg.error.data !== null &&
-    typeof (msg.error.data as { retry_after?: unknown }).retry_after === 'number'
+    typeof (msg.error.data as { retry_after?: unknown }).retry_after ===
+      'number'
   );
 }
 
@@ -218,7 +231,7 @@ export function withClientPayments(
 
   const pendingTimers = new Set<ReturnType<typeof setTimeout>>();
   const retryCounts = new Map<string | number, number>();
-  const rawRequestCache = new Map<string | number, JSONRPCRequest>();
+  const rawRequestCache = new LruCache<JSONRPCRequest>(1000);
   const MAX_RETRIES = 5;
 
   const stopAllSyntheticProgress = (): void => {
@@ -277,158 +290,9 @@ export function withClientPayments(
     requestEventId: string,
   ): Promise<void> {
     if (isExplicitPaymentRequiredError(message)) {
-      // Explicit gating lifecycle (-32042 Payment Required)
-      const data = message.error.data as import('./types.js').PaymentRequiredErrorData;
-      
-      for (const option of data.payment_options) {
-        const handler = handlersByPmi.get(option.pmi);
-        if (!handler && !options.onPaymentRequired) continue;
+      const errorMsg = message as JSONRPCErrorResponse;
+      const data = errorMsg.error.data as PaymentRequiredErrorData;
 
-        // Note: For explicit gating errors (JSON-RPC error responses), the transport's
-        // correlation store has already consumed the pending entry via resolveResponse().
-        // We rely on rawRequestCache for the retry rather than the correlation store.
-
-        const request: PaymentHandlerRequest = {
-          amount: option.amount,
-          pay_req: option.pay_req,
-          pmi: option.pmi,
-          description: option.description,
-          ttl: option.ttl,
-          _meta: option._meta,
-          requestEventId,
-        };
-
-        const allow = options.paymentPolicy
-          ? await options.paymentPolicy(request)
-          : true;
-
-        if (!allow) {
-          logger.debug('payment_required rejected by policy', {
-            requestEventId,
-            pmi: option.pmi,
-          });
-          continue; // Try next option if rejected by policy
-        }
-
-        const canHandle = handler?.canHandle
-          ? await handler.canHandle(request)
-          : true;
-
-        if (!canHandle) {
-          logger.debug('payment_required cannot be handled by handler', {
-            requestEventId,
-            pmi: option.pmi,
-          });
-          continue; // Try next option if handler can't handle
-        }
-
-        logger.info('executing payment handler for explicit gating', {
-          requestEventId,
-          pmi: option.pmi,
-          amount: option.amount,
-        });
-
-        try {
-          // In explicit gating, we do NOT call handler.handle(request) directly.
-          // Instead, we delegate entirely to options.onPaymentRequired.
-
-          // In explicit gating, the client MUST retry the exact same request
-          // to trigger authorization consumption and get the result.
-          // Since we intercepted the error, we need the original request.
-          // For NostrClientTransport, we don't have the original raw request cached perfectly, 
-          // but we can reconstruct it or we should just let the error propagate 
-          // and let the caller handle retry.
-          
-          if (!options.onPaymentRequired) {
-            // We have a payment required error but the transport level onPaymentRequired handler
-            // wasn't configured. The client didn't supply an explicit gating handler. 
-            // We'll let the error propagate.
-            onmessage?.(message);
-            return;
-          }
-          
-          const requestId = message.id;
-          const rawRequest = requestId != null ? rawRequestCache.get(requestId) : undefined;
-          if (!rawRequest) {
-            logger.warn('missing raw original request, cannot retry explicit payment', { requestEventId });
-            onmessage?.(message);
-            return;
-          }
-
-          const result = await options.onPaymentRequired({
-            options: data.payment_options,
-            instructions: data.instructions,
-            originalRequest: rawRequest,
-          });
-          
-            if (result.paid) {
-              // Only if they successfully paid via onPaymentRequired do we proceed to retry
-              logger.info('explicit payment satisfied, retrying original request', {
-                requestEventId,
-                method: rawRequest.method,
-              });
-              
-              // Re-send the exact request, updating the ID if necessary (or letting MCP SDK handle it)
-              // But actually we are the transport, we can just resend the raw request through the transport.
-            // Wait, we need to create a new ID so the proxy can track it properly.
-            // Oh right, we can't easily resend and magically stitch it back to the original Promise in the MCP Client.
-            // Actually, if we just send() it, the original promise in the MCP Client is already waiting 
-            // for the response with the *original* ID.
-            // Wait, no, the server sent us an error response with the *original* ID. 
-            // The MCP Client will resolve that promise with an Error.
-            // So we MUST NOT deliver the error response to `onmessage` if we want to intercept and retry.
-            // We intercepted the error! We haven't called `onmessage` yet.
-            // So if we just resend the raw request to the server, with a new requestEventId,
-            // we will need to map the NEW response back to the OLD request ID.
-            
-            // This requires transport level support. 
-            // The plan says: "When onPaymentRequired returns { paid: true }, the wrapper re-sends the original JSONRPCRequest with the same method and params (new id is fine per spec). This is transparent to the upstream MCP Client."
-            // Wait, if it has a new id, how does the upstream MCP Client know it's the response?
-            // Actually, we must use the original ID when communicating with the upstream client.
-            // But when we send it to the server, we just pass the original request exactly as it was.
-            // We don't change the ID. The `NostrClientTransport` wraps the `id` inside a new `requestId`.
-            
-            await transport.send(rawRequest);
-            return; // WE SUCCESSFULLY RETRIED! Do not deliver the error to `onmessage`.
-          } else {
-            // User cancelled or returned paid=false
-            logger.debug('onPaymentRequired returned paid=false', { requestEventId, reason: result.reason });
-            const errorMsg: import('@modelcontextprotocol/sdk/types.js').JSONRPCMessage = {
-              jsonrpc: '2.0',
-              id: message.id,
-              error: {
-                code: PAYMENT_REQUIRED_ERROR_CODE,
-                message: 'Payment Required',
-                data: { reason: result.reason || 'user_cancelled' }
-              }
-            };
-            onmessage?.(errorMsg);
-            return;
-          }
-        } catch (err) {
-          logger.error('payment handler failed', {
-            requestEventId,
-            pmi: option.pmi,
-            error: err instanceof Error ? err.message : String(err),
-          });
-          // Spec: onPaymentRequired rejection MUST cause the original JSON-RPC request to fail.
-          const errorMsg: import('@modelcontextprotocol/sdk/types.js').JSONRPCMessage = {
-            jsonrpc: '2.0',
-            id: message.id,
-            error: {
-              code: PAYMENT_REQUIRED_ERROR_CODE,
-              message: 'Payment Required',
-              data: { reason: err instanceof Error ? err.message : String(err), type: 'payment_handler_error' }
-            }
-          };
-          onmessage?.(errorMsg);
-          return;
-        }
-
-        // We handled (or attempted) the payment. Stop evaluating other options.
-        // If we failed, we break and the -32042 will be emitted to `onmessage`.
-        // Actually we already returned if we handled it.
-      }
       
       // If we got here, we either:
       // 1. Paid successfully but we need to signal the caller to retry (if we don't retry ourselves)
@@ -452,34 +316,148 @@ export function withClientPayments(
       const rawRequest = requestId != null ? rawRequestCache.get(requestId) : undefined;
       if (!rawRequest) {
         logger.warn('missing raw original request, cannot retry explicit payment pending', { requestEventId });
+=======
+      if (!options.onPaymentRequired) {
+>>>>>>> e0d4c5b (Fix final review findings for CEP-8 explicit gating)
         onmessage?.(message);
         return;
       }
-      
-      const requestIdKey = message.id as string | number;
+
+      const requestId = errorMsg.id;
+      const rawRequest =
+        requestId != null ? rawRequestCache.get(String(requestId)) : undefined;
+      if (!rawRequest) {
+        logger.warn(
+          'missing raw original request, cannot retry explicit payment',
+          { requestEventId },
+        );
+        onmessage?.(message);
+        return;
+      }
+
+      logger.info('invoking onPaymentRequired for explicit gating', {
+        requestEventId,
+        optionsCount: data.payment_options.length,
+      });
+
+      try {
+        const result = await options.onPaymentRequired({
+          options: data.payment_options,
+          instructions: data.instructions,
+          originalRequest: rawRequest,
+        });
+
+        if (result.paid) {
+          logger.info('explicit payment satisfied, retrying original request', {
+            requestEventId,
+            method: rawRequest.method,
+          });
+          await transport.send(rawRequest);
+          return;
+        } else {
+          logger.debug('onPaymentRequired returned paid=false', {
+            requestEventId,
+            reason: result.reason,
+          });
+          const newErrorMsg: JSONRPCMessage = {
+            jsonrpc: '2.0',
+            id: errorMsg.id,
+            error: {
+              code: PAYMENT_REQUIRED_ERROR_CODE,
+              message: 'Payment Required',
+              data: { reason: result.reason || 'user_cancelled' },
+            },
+          };
+          onmessage?.(newErrorMsg);
+          return;
+        }
+      } catch (err) {
+        logger.error('onPaymentRequired callback failed', {
+          requestEventId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        const newErrorMsg: JSONRPCMessage = {
+          jsonrpc: '2.0',
+          id: errorMsg.id,
+          error: {
+            code: PAYMENT_REQUIRED_ERROR_CODE,
+            message: 'Payment Required',
+            data: {
+              reason: err instanceof Error ? err.message : String(err),
+              type: 'payment_handler_error',
+            },
+          },
+        };
+        onmessage?.(newErrorMsg);
+        return;
+      }
+    }
+
+    if (isExplicitPaymentPendingError(message)) {
+      const errorMsg = message as JSONRPCErrorResponse;
+      const data = errorMsg.error.data as PaymentPendingErrorData;
+      const retryAfterSeconds = data.retry_after;
+
+      const requestId = errorMsg.id;
+      const rawRequest =
+        requestId != null ? rawRequestCache.get(String(requestId)) : undefined;
+      if (!rawRequest) {
+        logger.warn(
+          'missing raw original request, cannot retry explicit payment pending',
+          { requestEventId },
+        );
+        onmessage?.(message);
+        return;
+      }
+
+      const requestIdKey = errorMsg.id as string | number;
       const retries = retryCounts.get(requestIdKey) ?? 0;
       if (retries >= MAX_RETRIES) {
-        logger.error('max explicit payment retries exceeded', { requestEventId, id: requestIdKey, maxRetries: MAX_RETRIES });
+        logger.error('max explicit payment retries exceeded', {
+          requestEventId,
+          id: requestIdKey,
+          maxRetries: MAX_RETRIES,
+        });
         onmessage?.(message);
         return;
       }
 
       retryCounts.set(requestIdKey, retries + 1);
-      
+
       logger.info('payment pending, retrying after backoff', {
         requestEventId,
         retryAfterSeconds,
         retryCount: retries + 1,
       });
-      
+
+      const baseDelayMs = (retryAfterSeconds ?? 1) * 1000;
+      const exponentialMultiplier = Math.pow(1.5, retries);
+      const delayMs = Math.min(baseDelayMs * exponentialMultiplier, 10000);
+
       const timer = setTimeout(() => {
         pendingTimers.delete(timer);
-        transport.send(rawRequest).catch(err => {
-          logger.error('failed to retry pending request', { requestEventId, error: err instanceof Error ? err.message : String(err) });
+        transport.send(rawRequest).catch((err) => {
+          logger.error('failed to retry pending request', {
+            requestEventId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+          const errorMsg: JSONRPCErrorResponse =
+            {
+              jsonrpc: '2.0',
+              id: rawRequest.id,
+              error: {
+                code: PAYMENT_PENDING_ERROR_CODE,
+                message: 'Failed to retry pending request',
+                data: {
+                  reason: err instanceof Error ? err.message : String(err),
+                },
+              },
+            };
+          onmessage?.(errorMsg);
         });
-      }, (retryAfterSeconds ?? 1) * 1000);
+      }, delayMs);
       pendingTimers.add(timer);
-      
+
       return; // Intercept the error so the client waits
     }
 
@@ -708,9 +686,12 @@ export function withClientPayments(
           isJSONRPCErrorResponse(message)
         ) {
           stopSyntheticProgress(String(message.id));
-          if (!isExplicitPaymentRequiredError(message) && !isExplicitPaymentPendingError(message)) {
+          if (
+            !isExplicitPaymentRequiredError(message) &&
+            !isExplicitPaymentPendingError(message)
+          ) {
             const reqId = message.id as string | number;
-            rawRequestCache.delete(reqId);
+            rawRequestCache.delete(String(reqId));
             retryCounts.delete(reqId);
           }
         }
@@ -729,7 +710,10 @@ export function withClientPayments(
 
         // If it's an explicit gating error, we intercept it here because
         // maybeHandlePaymentRequired takes responsibility for re-emitting it if unhandled.
-        if (isExplicitPaymentRequiredError(message) || isExplicitPaymentPendingError(message)) {
+        if (
+          isExplicitPaymentRequiredError(message) ||
+          isExplicitPaymentPendingError(message)
+        ) {
           return;
         }
 
@@ -786,7 +770,10 @@ export function withClientPayments(
 
           // If it's an explicit gating error, we intercept it here because
           // maybeHandlePaymentRequired takes responsibility for re-emitting it if unhandled.
-          if (isExplicitPaymentRequiredError(message) || isExplicitPaymentPendingError(message)) {
+          if (
+            isExplicitPaymentRequiredError(message) ||
+            isExplicitPaymentPendingError(message)
+          ) {
             return;
           }
 
@@ -805,7 +792,7 @@ export function withClientPayments(
 
     async send(message: JSONRPCMessage): Promise<void> {
       if ('method' in message && 'id' in message && message.id != null) {
-        rawRequestCache.set(message.id, message as JSONRPCRequest);
+        rawRequestCache.set(String(message.id), message as JSONRPCRequest);
       }
       await transport.send(message);
     },

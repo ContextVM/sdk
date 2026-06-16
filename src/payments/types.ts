@@ -88,7 +88,10 @@ export interface PaymentPendingErrorData {
 }
 
 /** Nostr `payment_interaction` tag as defined by CEP-8. */
-export type PaymentInteractionTag = ['payment_interaction', PaymentInteractionMode];
+export type PaymentInteractionTag = [
+  'payment_interaction',
+  PaymentInteractionMode,
+];
 
 /**
  * Canonical invocation identity for explicit-gating authorization matching.
@@ -288,6 +291,11 @@ export interface ServerPaymentsContext {
    * Source: Nostr event tags (e.g. multiple `['pmi', '<pmi>']`).
    */
   clientPmis?: readonly string[];
+
+  /**
+   * The negotiated payment interaction mode for the session.
+   */
+  paymentInteraction?: PaymentInteractionMode;
 }
 
 /**

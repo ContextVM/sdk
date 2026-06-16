@@ -7,6 +7,7 @@ import { EncryptionMode, GiftWrapMode } from '../core/interfaces.js';
 import { type NostrEvent } from 'nostr-tools';
 import { type ClientSession } from './nostr-server/session-store.js';
 import { queryTags } from '../core/utils/utils.js';
+import type { PaymentInteractionMode } from '../payments/types.js';
 
 const NON_DISCOVERY_TAG_NAMES = new Set<string>(['e', 'p']);
 
@@ -180,9 +181,10 @@ export class ServerCapabilityNegotiator {
 export class ClientCapabilityNegotiator {
   private hasSentDiscoveryTags = false;
   private clientPmis?: readonly string[];
-  private paymentInteraction?: import('../payments/types.js').PaymentInteractionMode;
+  private paymentInteraction?: PaymentInteractionMode;
   private serverSupportsEphemeralGiftWraps = false;
   private _serverInitializeEvent?: NostrEvent;
+  private hasSentPaymentInteraction = false;
 
   constructor(
     private deps: {
@@ -208,7 +210,7 @@ export class ClientCapabilityNegotiator {
   /**
    * Sets the requested payment interaction mode for negotiation.
    */
-  public setPaymentInteraction(mode: import('../payments/types.js').PaymentInteractionMode): void {
+  public setPaymentInteraction(mode: PaymentInteractionMode): void {
     this.paymentInteraction = mode;
   }
 
@@ -261,7 +263,11 @@ export class ClientCapabilityNegotiator {
     if (this.clientPmis) {
       tags.push(...this.clientPmis.map((pmi) => ['pmi', pmi]));
     }
-    if (this.paymentInteraction && this.paymentInteraction !== 'transparent') {
+    if (
+      this.paymentInteraction &&
+      this.paymentInteraction !== 'transparent' &&
+      !this.hasSentPaymentInteraction
+    ) {
       tags.push(['payment_interaction', this.paymentInteraction]);
     }
     return tags;
@@ -295,6 +301,9 @@ export class ClientCapabilityNegotiator {
   public markDiscoveryTagsSent(): void {
     if (this.getPendingDiscoveryTags().length > 0) {
       this.hasSentDiscoveryTags = true;
+    }
+    if (this.paymentInteraction && this.paymentInteraction !== 'transparent') {
+      this.hasSentPaymentInteraction = true;
     }
   }
 

@@ -1,8 +1,15 @@
 import { describe, expect, test } from 'bun:test';
-import type { JSONRPCErrorResponse, JSONRPCRequest } from '@modelcontextprotocol/sdk/types.js';
+import type {
+  JSONRPCErrorResponse,
+  JSONRPCRequest,
+} from '@contextvm/mcp-sdk/types.js';
 import { createExplicitGatingMiddleware } from './server-explicit-gating.js';
+import type { ServerPaymentsContext } from './types.js';
 import { AuthorizationStore } from './authorization-store.js';
-import { PAYMENT_PENDING_ERROR_CODE, PAYMENT_REQUIRED_ERROR_CODE } from './constants.js';
+import {
+  PAYMENT_PENDING_ERROR_CODE,
+  PAYMENT_REQUIRED_ERROR_CODE,
+} from './constants.js';
 
 describe('Explicit Gating Middleware', () => {
   const processor = {
@@ -37,8 +44,9 @@ describe('Explicit Gating Middleware', () => {
     },
   ] as const;
 
-  const ctx: { clientPubkey: string; clientPmis?: readonly string[] } = {
+  const ctx: ServerPaymentsContext = {
     clientPubkey: 'test-client',
+    paymentInteraction: 'explicit_gating',
   };
 
   const message: JSONRPCRequest = {
@@ -51,7 +59,7 @@ describe('Explicit Gating Middleware', () => {
   test('emits -32042 Payment Required on first request', async () => {
     const store = new AuthorizationStore();
     const sentResponses: JSONRPCErrorResponse[] = [];
-    
+
     const mw = createExplicitGatingMiddleware({
       options: {
         processors: [processor],
@@ -70,11 +78,13 @@ describe('Explicit Gating Middleware', () => {
 
     expect(forwarded).toBe(false);
     expect(sentResponses.length).toBe(1);
-    
+
     const response = sentResponses[0];
     expect(response.error.code).toBe(PAYMENT_REQUIRED_ERROR_CODE);
-    
-    const data = response.error.data as { payment_options: { amount: number; pay_req: string }[] };
+
+    const data = response.error.data as {
+      payment_options: { amount: number; pay_req: string }[];
+    };
     expect(data.payment_options.length).toBe(1);
     expect(data.payment_options[0].amount).toBe(10);
     expect(data.payment_options[0].pay_req).toBe('pay_req');
@@ -83,7 +93,7 @@ describe('Explicit Gating Middleware', () => {
   test('emits -32043 Payment Pending if already pending', async () => {
     const store = new AuthorizationStore();
     const sentResponses: JSONRPCErrorResponse[] = [];
-    
+
     const mw = createExplicitGatingMiddleware({
       options: {
         processors: [processor],
@@ -106,7 +116,7 @@ describe('Explicit Gating Middleware', () => {
   test('forwards request if authorization is granted', async () => {
     const store = new AuthorizationStore();
     const sentResponses: JSONRPCErrorResponse[] = [];
-    
+
     const mw = createExplicitGatingMiddleware({
       options: {
         processors: [processor],
@@ -122,8 +132,13 @@ describe('Explicit Gating Middleware', () => {
     // The canonical identity depends on the method and params
     // JCS of { method: "tools/call", params: { name: "add", arguments: { a: 1, b: 2 } } }
     // We can just use the utility to compute it
-    const { computeCanonicalInvocationIdentity } = await import('./canonical-identity.js');
-    const identity = computeCanonicalInvocationIdentity(ctx.clientPubkey, message.method, message.params);
+    const { computeCanonicalInvocationIdentity } =
+      await import('./canonical-identity.js');
+    const identity = computeCanonicalInvocationIdentity(
+      ctx.clientPubkey,
+      message.method,
+      message.params,
+    );
     store.grant(identity, 10000);
 
     let forwarded = false;
@@ -133,22 +148,22 @@ describe('Explicit Gating Middleware', () => {
 
     expect(sentResponses.length).toBe(0);
     expect(forwarded).toBe(true);
-    
+
     // Auth should be consumed, second call should trigger payment required
     let forwarded2 = false;
     await mw(message, ctx, async () => {
       forwarded2 = true;
     });
-    
+
     expect(forwarded2).toBe(false);
     expect(sentResponses.length).toBe(1);
     expect(sentResponses[0].error.code).toBe(PAYMENT_REQUIRED_ERROR_CODE);
   });
-  
+
   test('forwards request directly if resolvePrice waives payment', async () => {
     const store = new AuthorizationStore();
     const sentResponses: JSONRPCErrorResponse[] = [];
-    
+
     const mw = createExplicitGatingMiddleware({
       options: {
         processors: [processor],
@@ -173,7 +188,7 @@ describe('Explicit Gating Middleware', () => {
   test('rejects request immediately if resolvePrice rejects', async () => {
     const store = new AuthorizationStore();
     const sentResponses: JSONRPCErrorResponse[] = [];
-    
+
     const mw = createExplicitGatingMiddleware({
       options: {
         processors: [processor],

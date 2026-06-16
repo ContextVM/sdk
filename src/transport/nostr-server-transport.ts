@@ -52,6 +52,7 @@ import { ServerOpenStreamFactory } from './nostr-server/open-stream-factory.js';
 import { ServerEventPipeline } from './nostr-server/event-pipeline.js';
 import { ServerInboundCoordinator } from './nostr-server/inbound-coordinator.js';
 import type { InboundMiddlewareFn } from './middleware.js';
+import type { PaymentInteractionMode } from '../payments/types.js';
 
 export type { InboundMiddlewareFn } from './middleware.js';
 /**
@@ -490,7 +491,9 @@ export class NostrServerTransport
   /**
    * Sets the supported payment interaction mode for this server.
    */
-  public setSupportedPaymentInteraction(mode: import('../payments/types.js').PaymentInteractionMode | undefined): void {
+  public setSupportedPaymentInteraction(
+    mode: PaymentInteractionMode | undefined,
+  ): void {
     this.inboundCoordinator.setSupportedPaymentInteraction(mode);
   }
 
@@ -707,7 +710,11 @@ export class NostrServerTransport
     response: JSONRPCResponse | JSONRPCErrorResponse,
     requestEventId: string,
   ): Promise<void> {
-    await this.outboundResponseRouter.routeTargeted(clientPubkey, response, requestEventId);
+    await this.outboundResponseRouter.routeTargeted(
+      clientPubkey,
+      response,
+      requestEventId,
+    );
   }
 
   /**

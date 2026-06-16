@@ -6,6 +6,7 @@ import { type NostrEvent } from 'nostr-tools';
 import { NOSTR_TAGS } from '../../core/constants.js';
 import { getNostrEventTag } from '../../core/utils/serializers.js';
 import { queryTags } from '../../core/utils/utils.js';
+import type { PaymentInteractionMode } from '../../payments/types.js';
 
 export type ListEnvelopeType = 'tools' | 'resources' | 'templates' | 'prompts';
 
@@ -20,13 +21,13 @@ export class ServerMetadataStore {
   private serverResourceTemplatesListEvent: NostrEvent | undefined;
   private supportsOversizedTransfer = false;
   private supportsOpenStream = false;
-  private effectivePaymentInteraction?: import('../../payments/types.js').PaymentInteractionMode;
+  private effectivePaymentInteraction?: PaymentInteractionMode;
 
-  public setEffectivePaymentInteraction(mode: import('../../payments/types.js').PaymentInteractionMode): void {
+  public setEffectivePaymentInteraction(mode: PaymentInteractionMode): void {
     this.effectivePaymentInteraction = mode;
   }
 
-  public getEffectivePaymentInteraction(): import('../../payments/types.js').PaymentInteractionMode | undefined {
+  public getEffectivePaymentInteraction(): PaymentInteractionMode | undefined {
     return this.effectivePaymentInteraction;
   }
 

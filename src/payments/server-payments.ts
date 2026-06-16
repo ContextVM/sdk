@@ -25,8 +25,8 @@ import {
   matchPricedCapability,
   isResolvePriceRejection,
   isResolvePriceWaiver,
+  resolvePaymentProcessor,
 } from './server-payments-utils.js';
-
 
 export interface ServerPaymentsOptions {
   processors: readonly PaymentProcessor[];
@@ -79,8 +79,6 @@ type PendingPaymentState = {
   inFlight: Promise<void>;
 };
 
-
-
 function createPaymentRequiredNotification(params: {
   amount: number;
   pay_req: string;
@@ -120,8 +118,6 @@ function createPaymentRejectedNotification(params: {
   };
 }
 
-
-
 /**
  * Creates a server-side middleware that gates priced requests until payment is verified.
  */
@@ -158,6 +154,14 @@ export function createServerPaymentsMiddleware(params: {
       return;
     }
 
+    if (
+      ctx.paymentInteraction !== undefined &&
+      ctx.paymentInteraction !== 'transparent'
+    ) {
+      await forward(message);
+      return;
+    }
+
     const priced = matchPricedCapability(message, options.pricedCapabilities);
     if (!priced) {
       await forward(message);
@@ -190,21 +194,11 @@ export function createServerPaymentsMiddleware(params: {
 
     // IMPORTANT: set pending state synchronously before any await to make idempotency atomic.
     const inFlight = (async (): Promise<void> => {
-      const clientPmis = ctx.clientPmis;
-
-      const chosenPmi = clientPmis
-        ? clientPmis.find((pmi) => processorsByPmi.has(pmi))
-        : undefined;
-
-      const chosenProcessor = chosenPmi
-        ? processorsByPmi.get(chosenPmi)
-        : options.processors[0];
-
-      if (!chosenProcessor) {
-        throw new Error('No payment processors configured');
-      }
-
-      const processor = chosenProcessor;
+      const processor = resolvePaymentProcessor(
+        ctx.clientPmis,
+        processorsByPmi,
+        options.processors,
+      );
 
       const quote = options.resolvePrice
         ? await options.resolvePrice({

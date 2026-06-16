@@ -48,6 +48,7 @@ import {
   DEFAULT_OVERSIZED_THRESHOLD,
 } from './oversized-transfer/constants.js';
 import type { OpenStreamTransportPolicy } from './open-stream-policy.js';
+import type { PaymentInteractionMode } from '../payments/types.js';
 
 /**
  * Options for configuring the NostrClientTransport.
@@ -587,14 +588,14 @@ export class NostrClientTransport
   /**
    * Sets the requested payment interaction mode for negotiation.
    */
-  public setPaymentInteraction(mode: import('../payments/types.js').PaymentInteractionMode): void {
+  public setPaymentInteraction(mode: PaymentInteractionMode): void {
     this.capabilityNegotiator.setPaymentInteraction(mode);
   }
 
   /**
    * Gets the effective payment interaction mode disclosed by the server.
    */
-  public getEffectivePaymentInteraction(): import('../payments/types.js').PaymentInteractionMode | undefined {
+  public getEffectivePaymentInteraction(): PaymentInteractionMode | undefined {
     return this.metadataStore.getEffectivePaymentInteraction();
   }
 

@@ -1,7 +1,8 @@
 import canonicalizePackage from 'canonicalize';
 type CanonicalizeFn = (input: unknown) => string | undefined;
 const canonicalize = canonicalizePackage as unknown as CanonicalizeFn;
-import { createHash } from 'crypto';
+import { sha256 } from '@noble/hashes/sha2.js';
+import { bytesToHex } from '@noble/hashes/utils.js';
 import type { CanonicalInvocationIdentity } from './types.js';
 
 /**
@@ -18,14 +19,34 @@ export function computeCanonicalInvocationHash(
   params: unknown,
 ): string {
   const payload = { method, params };
-  const canonicalString = canonicalize(payload);
-  if (canonicalString === undefined) {
-    throw new Error('Failed to canonicalize invocation payload');
+  let canonicalString: string | undefined;
+  try {
+    // Pre-validate that all values are strictly JSON-serializable.
+    // canonicalize() might ignore functions/symbols or throw stack overflows,
+    // so we use JSON.stringify as a strict validator first.
+    JSON.stringify(payload, (_key, value) => {
+      if (
+        typeof value === 'function' ||
+        typeof value === 'symbol' ||
+        typeof value === 'bigint'
+      ) {
+        throw new Error('Invalid type');
+      }
+      return value;
+    });
+    canonicalString = canonicalize(payload);
+  } catch {
+    canonicalString = undefined;
   }
-  
-  return createHash('sha256')
-    .update(canonicalString)
-    .digest('hex');
+
+  if (canonicalString === undefined) {
+    throw new Error(
+      `Failed to canonicalize invocation payload for method '${method}'. ` +
+        'Ensure params contain only JSON-serializable values (no circular references, functions, symbols, or BigInt).',
+    );
+  }
+
+  return bytesToHex(sha256(new TextEncoder().encode(canonicalString)));
 }
 
 /**

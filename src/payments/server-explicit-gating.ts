@@ -9,6 +9,7 @@ import {
   matchPricedCapability,
   isResolvePriceRejection,
   isResolvePriceWaiver,
+  resolvePaymentProcessor,
 } from './server-payments-utils.js';
 import { createLogger } from '../core/utils/logger.js';
 import { withTimeout } from '../core/utils/utils.js';
@@ -40,6 +41,11 @@ export function createExplicitGatingMiddleware(
   return async (message, ctx, forward) => {
     // Only gate requests.
     if (!isJsonRpcRequest(message)) {
+      await forward(message);
+      return;
+    }
+
+    if (ctx.paymentInteraction !== 'explicit_gating') {
       await forward(message);
       return;
     }
@@ -82,9 +88,16 @@ export function createExplicitGatingMiddleware(
           code: PAYMENT_PENDING_ERROR_CODE,
           message: 'Payment Pending',
           data: {
-            instructions: 'A payment is already pending for this invocation. Wait and retry.',
+            instructions:
+              'A payment is already pending for this invocation. Wait and retry.',
             // Suggest a short polling interval (e.g. 2 seconds) rather than the full TTL
-            retry_after: Math.min(2, Math.ceil(authorizationStore.getPendingRemainingMs(identity) / 1000)) || 2,
+            retry_after:
+              Math.min(
+                2,
+                Math.ceil(
+                  authorizationStore.getPendingRemainingMs(identity) / 1000,
+                ),
+              ) || 2,
           },
         },
       };
@@ -94,20 +107,11 @@ export function createExplicitGatingMiddleware(
 
     // 3. Resolve price and initiate new payment
     try {
-      const clientPmis = ctx.clientPmis;
-      const chosenPmi = clientPmis
-        ? clientPmis.find((pmi) => processorsByPmi.has(pmi))
-        : undefined;
-
-      const chosenProcessor = chosenPmi
-        ? processorsByPmi.get(chosenPmi)
-        : options.processors[0];
-
-      if (!chosenProcessor) {
-        throw new Error('No payment processors configured');
-      }
-
-      const processor = chosenProcessor;
+      const processor = resolvePaymentProcessor(
+        ctx.clientPmis,
+        processorsByPmi,
+        options.processors,
+      );
 
       const quote = options.resolvePrice
         ? await options.resolvePrice({
@@ -127,7 +131,7 @@ export function createExplicitGatingMiddleware(
         });
 
         authorizationStore.clearPending(identity);
-        
+
         // Spec: When a capability is rejected by policy, return a standard error.
         // We'll use -32000 (Internal error or application-defined error) since CEP-8 doesn't specify a special rejection code.
         const errorResponse: JSONRPCErrorResponse = {
@@ -162,8 +166,7 @@ export function createExplicitGatingMiddleware(
       });
 
       const mergedMeta =
-        resolvedQuote.meta === undefined &&
-        paymentRequired._meta === undefined
+        resolvedQuote.meta === undefined && paymentRequired._meta === undefined
           ? undefined
           : {
               ...(paymentRequired._meta ?? {}),
@@ -175,7 +178,7 @@ export function createExplicitGatingMiddleware(
         ttlSeconds: paymentRequired.ttl,
       });
       const effectiveTimeoutMs = Math.min(verifyTimeoutMs, paymentTtlMs);
-      
+
       // Update pending with the precise TTL
       authorizationStore.updatePendingTtl(identity, effectiveTimeoutMs);
 
@@ -186,6 +189,8 @@ export function createExplicitGatingMiddleware(
           code: PAYMENT_REQUIRED_ERROR_CODE,
           message: 'Payment Required',
           data: {
+            instructions:
+              'Payment is required to process this request. Please pay one of the following options and retry the request.',
             payment_options: [
               {
                 amount: paymentRequired.amount,

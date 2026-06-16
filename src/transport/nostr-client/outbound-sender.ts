@@ -10,6 +10,7 @@ import {
 } from './correlation-store.js';
 import { type ClientCapabilityNegotiator } from '../capability-negotiator.js';
 import { sendOversizedClientRequest } from './oversized-client-sender.js';
+import type { JSONRPCRequest } from '@contextvm/mcp-sdk/types.js';
 
 export interface ClientOutboundSenderDeps {
   serverPubkey: string;
@@ -146,7 +147,7 @@ export class ClientOutboundSender {
           progressToken:
             progressToken !== undefined ? String(progressToken) : undefined,
           originalRequestContext,
-          rawRequest: isRequest ? (message as import('@modelcontextprotocol/sdk/types.js').JSONRPCRequest) : undefined,
+          rawRequest: isRequest ? (message as JSONRPCRequest) : undefined,
         });
       },
       giftWrapKind,
@@ -214,7 +215,7 @@ export class ClientOutboundSender {
         progressToken,
         originalRequestContext:
           this.deps.getOriginalRequestContext(originalMessage),
-        rawRequest: originalMessage as import('@modelcontextprotocol/sdk/types.js').JSONRPCRequest,
+        rawRequest: originalMessage as JSONRPCRequest,
       });
     }
 

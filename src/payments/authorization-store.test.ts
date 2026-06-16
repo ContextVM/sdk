@@ -10,20 +10,20 @@ describe('AuthorizationStore', () => {
 
   test('grant and claim a single authorization', () => {
     const store = new AuthorizationStore();
-    
+
     expect(store.claim(identity)).toBe(false);
-    
+
     store.grant(identity, 10000);
-    
+
     expect(store.claim(identity)).toBe(true);
     expect(store.claim(identity)).toBe(false);
   });
 
   test('grant multiple executions', () => {
     const store = new AuthorizationStore();
-    
+
     store.grant(identity, 10000, 2);
-    
+
     expect(store.claim(identity)).toBe(true);
     expect(store.claim(identity)).toBe(true);
     expect(store.claim(identity)).toBe(false);
@@ -31,72 +31,72 @@ describe('AuthorizationStore', () => {
 
   test('claim fails after TTL expires', async () => {
     const store = new AuthorizationStore();
-    
+
     store.grant(identity, 50);
-    
+
     await new Promise((resolve) => setTimeout(resolve, 75));
-    
+
     expect(store.claim(identity)).toBe(false);
   });
 
   test('trySetPending prevents concurrent duplicates', () => {
     const store = new AuthorizationStore();
-    
+
     // First call transitions to pending -> true
     expect(store.trySetPending(identity, 10000)).toBe(true);
-    
+
     // Second call is blocked -> false
     expect(store.trySetPending(identity, 10000)).toBe(false);
-    
+
     // hasPending should reflect the state
     expect(store.hasPending(identity)).toBe(true);
   });
 
   test('trySetPending allows setting again after clearPending', () => {
     const store = new AuthorizationStore();
-    
+
     expect(store.trySetPending(identity, 10000)).toBe(true);
     expect(store.trySetPending(identity, 10000)).toBe(false);
-    
+
     store.clearPending(identity);
-    
+
     expect(store.trySetPending(identity, 10000)).toBe(true);
   });
 
   test('trySetPending allows setting again after pending state expires', async () => {
     const store = new AuthorizationStore();
-    
+
     expect(store.trySetPending(identity, 50)).toBe(true);
     expect(store.trySetPending(identity, 50)).toBe(false);
-    
+
     await new Promise((resolve) => setTimeout(resolve, 75));
-    
+
     expect(store.trySetPending(identity, 50)).toBe(true);
   });
 
   test('grant clears pending state', () => {
     const store = new AuthorizationStore();
-    
+
     store.trySetPending(identity, 10000);
     expect(store.hasPending(identity)).toBe(true);
-    
+
     store.grant(identity, 10000);
-    
+
     expect(store.hasPending(identity)).toBe(false);
     expect(store.claim(identity)).toBe(true);
   });
-  
+
   test('LRU eviction works when maxEntries is exceeded', () => {
     const store = new AuthorizationStore({ maxEntries: 2 });
-    
+
     const id1 = { clientPubkey: 'client', invocationHash: 'h1' };
     const id2 = { clientPubkey: 'client', invocationHash: 'h2' };
     const id3 = { clientPubkey: 'client', invocationHash: 'h3' };
-    
+
     store.grant(id1, 10000);
     store.grant(id2, 10000);
     store.grant(id3, 10000); // This should evict id1
-    
+
     expect(store.claim(id1)).toBe(false);
     expect(store.claim(id2)).toBe(true);
     expect(store.claim(id3)).toBe(true);
@@ -104,15 +104,15 @@ describe('AuthorizationStore', () => {
 
   test('pending LRU eviction works when maxEntries is exceeded', () => {
     const store = new AuthorizationStore({ maxEntries: 2 });
-    
+
     const id1 = { clientPubkey: 'client', invocationHash: 'p1' };
     const id2 = { clientPubkey: 'client', invocationHash: 'p2' };
     const id3 = { clientPubkey: 'client', invocationHash: 'p3' };
-    
+
     store.trySetPending(id1, 10000);
     store.trySetPending(id2, 10000);
     store.trySetPending(id3, 10000); // This should evict id1
-    
+
     expect(store.hasPending(id1)).toBe(false);
     expect(store.hasPending(id2)).toBe(true);
     expect(store.hasPending(id3)).toBe(true);
@@ -120,7 +120,7 @@ describe('AuthorizationStore', () => {
 
   test('updatePendingTtl and getPendingRemainingMs behave correctly', async () => {
     const store = new AuthorizationStore();
-    
+
     // (1) verify getPendingRemainingMs right after trySetPending
     expect(store.trySetPending(identity, 100)).toBe(true);
     const remainingAfterSet = store.getPendingRemainingMs(identity);
@@ -140,11 +140,23 @@ describe('AuthorizationStore', () => {
     // (4) verify updatePendingTtl is a no-op when there is no active pending entry
     store.updatePendingTtl(identity, 1000);
     expect(store.getPendingRemainingMs(identity)).toBe(0);
-    
+
     // And after clearPending
     store.trySetPending(identity, 1000);
     store.clearPending(identity);
     store.updatePendingTtl(identity, 1000);
     expect(store.getPendingRemainingMs(identity)).toBe(0);
+  });
+
+  test('grant throws RangeError when count is 0 or negative', () => {
+    const store = new AuthorizationStore();
+
+    expect(() => {
+      store.grant(identity, 1000, 0);
+    }).toThrow(RangeError);
+
+    expect(() => {
+      store.grant(identity, 1000, -1);
+    }).toThrow(RangeError);
   });
 });

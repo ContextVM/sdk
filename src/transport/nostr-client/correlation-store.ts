@@ -1,5 +1,6 @@
 import type { JSONRPCResponse } from '@contextvm/mcp-sdk/types.js';
 import { LruCache } from '../../core/utils/lru-cache.js';
+import type { JSONRPCRequest } from '@contextvm/mcp-sdk/types.js';
 
 /**
  * Represents a pending request waiting for a response from the server.
@@ -16,7 +17,7 @@ export interface PendingRequest {
   /** Minimal context about the original request (safe to store; no arguments). */
   originalRequestContext?: OriginalRequestContext;
   /** The full raw original JSON-RPC request for explicit gating retries. */
-  rawRequest?: import('@modelcontextprotocol/sdk/types.js').JSONRPCRequest;
+  rawRequest?: JSONRPCRequest;
 }
 
 /**
@@ -79,7 +80,7 @@ export class ClientCorrelationStore {
   /**
    * Gets the raw original JSON-RPC request for explicit gating retries.
    */
-  getRawRequest(eventId: string): import('@modelcontextprotocol/sdk/types.js').JSONRPCRequest | undefined {
+  getRawRequest(eventId: string): JSONRPCRequest | undefined {
     return this.pendingRequests.get(eventId)?.rawRequest;
   }
 

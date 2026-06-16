@@ -6,6 +6,7 @@
  */
 import { DEFAULT_LRU_SIZE } from '../../core/constants.js';
 import { LruCache } from '../../core/utils/lru-cache.js';
+import type { PaymentInteractionMode } from '../../payments/types.js';
 /**
  * Represents a connected client session.
  * Simplified from the original design - correlation data is now
@@ -27,9 +28,9 @@ export interface ClientSession {
   /** Whether the client has advertised CEP-41 open stream support. */
   supportsOpenStream: boolean;
   /** Client-requested payment interaction mode (from first message). */
-  requestedPaymentInteraction?: import('../../payments/types.js').PaymentInteractionMode;
+  requestedPaymentInteraction?: PaymentInteractionMode;
   /** Effective payment interaction mode for this session. */
-  effectivePaymentInteraction?: import('../../payments/types.js').PaymentInteractionMode;
+  effectivePaymentInteraction?: PaymentInteractionMode;
   /** Whether the effective mode has been disclosed on the first response. */
   hasDisclosedPaymentInteraction?: boolean;
 }

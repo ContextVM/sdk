@@ -55,7 +55,7 @@ export class AuthorizationStore {
       expiresAtMs,
       remaining: count,
     });
-    
+
     // Once granted, it's no longer pending
     this.pending.delete(key);
 
@@ -92,7 +92,10 @@ export class AuthorizationStore {
         this.authorizations.delete(key);
         this.authorizations.set(key, auth);
       }
-      this.logger.debug('authorization claimed', { key, remaining: auth.remaining });
+      this.logger.debug('authorization claimed', {
+        key,
+        remaining: auth.remaining,
+      });
       return true;
     }
 
@@ -109,10 +112,13 @@ export class AuthorizationStore {
    * -32042 and triggering duplicate payment flows.
    * NOTE: This is single-process only. Distributed setups must use an external lock.
    */
-  public trySetPending(identity: CanonicalInvocationIdentity, ttlMs: number): boolean {
+  public trySetPending(
+    identity: CanonicalInvocationIdentity,
+    ttlMs: number,
+  ): boolean {
     const key = this.getKey(identity);
     const now = Date.now();
-    
+
     const existingExpiry = this.pending.get(key);
     if (existingExpiry !== undefined) {
       if (now > existingExpiry) {
@@ -133,16 +139,16 @@ export class AuthorizationStore {
   public hasPending(identity: CanonicalInvocationIdentity): boolean {
     const key = this.getKey(identity);
     const expiry = this.pending.get(key);
-    
+
     if (expiry === undefined) {
       return false;
     }
-    
+
     if (Date.now() > expiry) {
       this.pending.delete(key);
       return false;
     }
-    
+
     return true;
   }
 
@@ -153,7 +159,10 @@ export class AuthorizationStore {
    * @param ttlMs The new TTL in milliseconds to apply from now.
    * @returns void
    */
-  public updatePendingTtl(identity: CanonicalInvocationIdentity, ttlMs: number): void {
+  public updatePendingTtl(
+    identity: CanonicalInvocationIdentity,
+    ttlMs: number,
+  ): void {
     const key = this.getKey(identity);
     const existingExpiry = this.pending.get(key);
     if (existingExpiry !== undefined && Date.now() <= existingExpiry) {
