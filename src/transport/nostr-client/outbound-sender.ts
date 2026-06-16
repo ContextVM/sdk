@@ -1,7 +1,7 @@
 import {
   type JSONRPCMessage,
   isJSONRPCRequest,
-} from '@contextvm/mcp-sdk/types.js';
+ JSONRPCRequest } from '@contextvm/mcp-sdk/types.js';
 import { CTXVM_MESSAGES_KIND, INITIALIZE_METHOD } from '../../core/index.js';
 import { type Logger } from '../../core/utils/logger.js';
 import {
@@ -10,7 +10,6 @@ import {
 } from './correlation-store.js';
 import { type ClientCapabilityNegotiator } from '../capability-negotiator.js';
 import { sendOversizedClientRequest } from './oversized-client-sender.js';
-import type { JSONRPCRequest } from '@contextvm/mcp-sdk/types.js';
 
 export interface ClientOutboundSenderDeps {
   serverPubkey: string;

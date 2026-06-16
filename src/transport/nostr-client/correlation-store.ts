@@ -1,6 +1,5 @@
-import type { JSONRPCResponse } from '@contextvm/mcp-sdk/types.js';
+import type { JSONRPCResponse , JSONRPCRequest } from '@contextvm/mcp-sdk/types.js';
 import { LruCache } from '../../core/utils/lru-cache.js';
-import type { JSONRPCRequest } from '@contextvm/mcp-sdk/types.js';
 
 /**
  * Represents a pending request waiting for a response from the server.

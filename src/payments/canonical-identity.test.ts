@@ -73,7 +73,7 @@ describe('Canonical Invocation Identity', () => {
     });
 
     test('throws error for circular references', () => {
-      const obj: any = {};
+      const obj: Record<string, unknown> = {};
       obj.self = obj;
       expect(() => computeCanonicalInvocationHash('tools/call', obj)).toThrow(
         "Failed to canonicalize invocation payload for method 'tools/call'. Ensure params contain only JSON-serializable values (no circular references, functions, symbols, or BigInt).",
