@@ -258,6 +258,19 @@ export type ResolvePriceFn = (params: {
 }) => Promise<ResolvePriceResult>;
 
 /**
+ * The structure returned by a PaymentProcessor when a new payment is issued.
+ */
+export interface PaymentRequired {
+  amount: number;
+  pay_req: string;
+  description?: string;
+  pmi: string;
+  /** Time-to-live in seconds (CEP-8). */
+  ttl?: number;
+  _meta?: Record<string, unknown>;
+}
+
+/**
  * Server-side module that can issue and verify payments for a single PMI.
  */
 export interface PaymentProcessor {
@@ -265,15 +278,9 @@ export interface PaymentProcessor {
   readonly pmi: string;
 
   /** Create a payment request for a specific capability invocation */
-  createPaymentRequired(params: PaymentProcessorCreateParams): Promise<{
-    amount: number;
-    pay_req: string;
-    description?: string;
-    pmi: string;
-    /** Time-to-live in seconds (CEP-8). */
-    ttl?: number;
-    _meta?: Record<string, unknown>;
-  }>;
+  createPaymentRequired(
+    params: PaymentProcessorCreateParams,
+  ): Promise<PaymentRequired>;
 
   /** Wait for and/or verify settlement for a previously issued pay_req */
   verifyPayment(
