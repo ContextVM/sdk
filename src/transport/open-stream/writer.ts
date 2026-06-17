@@ -50,6 +50,17 @@ export class OpenStreamWriter {
     return this.active;
   }
 
+  /**
+   * Whether the writer has begun streaming by emitting its first
+   * `start`/`write` frame. Distinct from {@link isActive}, which is `true`
+   * for any freshly-instantiated writer. Used to tell apart writers that a
+   * tool actually uses for streaming from ones that were only created
+   * because the request carried a progress token.
+   */
+  public get hasStarted(): boolean {
+    return this.started;
+  }
+
   public async start(): Promise<void> {
     await this.enqueue(async () => {
       await this.startInternal();

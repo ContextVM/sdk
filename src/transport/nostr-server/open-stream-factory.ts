@@ -174,9 +174,16 @@ export class ServerOpenStreamFactory {
     response: JSONRPCResponse,
   ): boolean {
     const existingWriter = this.writers.get(eventId);
-    if (existingWriter && existingWriter.isActive) {
+    if (existingWriter && existingWriter.hasStarted) {
       this.pendingResponses.set(eventId, response);
       return true;
+    }
+    // A writer was created (because the request carried a progress token) but
+    // the tool never streamed to it. Drop the unused writer so the response is
+    // sent normally instead of being deferred indefinitely, and so it does not
+    // leak. See docs/ISSUE-open-stream-progress-token-conflict.md (Part A).
+    if (existingWriter) {
+      this.writers.delete(eventId);
     }
     return false;
   }

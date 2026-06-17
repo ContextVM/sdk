@@ -3,6 +3,47 @@ import type { OpenStreamProgress } from './types.js';
 import { OpenStreamWriter } from './writer.js';
 
 describe('OpenStreamWriter', () => {
+  test('hasStarted reflects whether the writer has emitted a start/chunk frame', async () => {
+    const frames: OpenStreamProgress[] = [];
+    const writer = new OpenStreamWriter({
+      progressToken: 'token-started',
+      publishFrame: async (frame): Promise<string | undefined> => {
+        frames.push(frame);
+        return undefined;
+      },
+    });
+
+    // A freshly-created writer is "active" but has not begun streaming.
+    expect(writer.isActive).toBe(true);
+    expect(writer.hasStarted).toBe(false);
+
+    // Control frames (ping/pong) do not start the stream.
+    await writer.ping();
+    await writer.pong('nonce');
+    expect(writer.hasStarted).toBe(false);
+
+    await writer.write('hello');
+    expect(writer.hasStarted).toBe(true);
+  });
+
+  test('hasStarted becomes true after an explicit start()', async () => {
+    const frames: OpenStreamProgress[] = [];
+    const writer = new OpenStreamWriter({
+      progressToken: 'token-explicit-start',
+      publishFrame: async (frame): Promise<string | undefined> => {
+        frames.push(frame);
+        return undefined;
+      },
+    });
+
+    expect(writer.hasStarted).toBe(false);
+
+    await writer.start();
+
+    expect(writer.hasStarted).toBe(true);
+    expect(frames.map((frame) => frame.cvm.frameType)).toContain('start');
+  });
+
   test('emits ping and pong frames with matching nonce values', async () => {
     const frames: OpenStreamProgress[] = [];
     const writer = new OpenStreamWriter({

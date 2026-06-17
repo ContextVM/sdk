@@ -69,6 +69,23 @@ export class ClientOutboundSender {
   public async sendRequest(message: JSONRPCMessage): Promise<string> {
     const isRequest = isJSONRPCRequest(message);
 
+    // Bind any pending CEP-41 open-stream placeholder to this request's progress
+    // token SYNCHRONOUSLY, before the request is published. `callToolStream`
+    // pushes the placeholder and reaches this method within the same synchronous
+    // block, so binding here is deterministic and cannot be reordered relative
+    // to other token-bearing `tools/call` requests (e.g. a plain `callTool` that
+    // sets `onprogress`). See docs/ISSUE-open-stream-progress-token-conflict.md
+    // (Part B).
+    if (
+      isRequest &&
+      message.method === 'tools/call' &&
+      message.params?._meta?.progressToken !== undefined
+    ) {
+      this.deps.resolvePendingOpenStream(
+        String(message.params._meta.progressToken),
+      );
+    }
+
     // --- CEP-22 Oversized Transfer (proactive path) ---
     if (this.deps.oversizedEnabled && isRequest) {
       const progressToken = message.params?._meta?.progressToken;
@@ -130,14 +147,6 @@ export class ClientOutboundSender {
             progressToken !== undefined ? String(progressToken) : undefined,
           originalRequestContext,
         });
-
-        if (
-          isRequest &&
-          message.method === 'tools/call' &&
-          progressToken !== undefined
-        ) {
-          this.deps.resolvePendingOpenStream(String(progressToken));
-        }
       },
       giftWrapKind,
     );
