@@ -21,11 +21,8 @@ import {
   PAYMENT_REQUIRED_METHOD,
 } from './constants.js';
 import {
-  getVerificationTimeoutMs,
   matchPricedCapability,
-  isResolvePriceRejection,
-  isResolvePriceWaiver,
-  resolvePaymentProcessor,
+  resolveAndInitiatePayment,
 } from './server-payments-utils.js';
 
 export interface ServerPaymentsOptions {
@@ -194,34 +191,29 @@ export function createServerPaymentsMiddleware(params: {
 
     // IMPORTANT: set pending state synchronously before any await to make idempotency atomic.
     const inFlight = (async (): Promise<void> => {
-      const processor = resolvePaymentProcessor(
-        ctx.clientPmis,
+      const initResult = await resolveAndInitiatePayment({
+        message,
+        priced,
+        requestEventId,
+        clientPubkey: ctx.clientPubkey,
+        clientPmis: ctx.clientPmis,
+        options,
         processorsByPmi,
-        options.processors,
-      );
-
-      const quote = options.resolvePrice
-        ? await options.resolvePrice({
-            capability: priced,
-            request: message,
-            clientPubkey: ctx.clientPubkey,
-            requestEventId,
-          })
-        : { amount: priced.amount, description: priced.description };
+      });
 
       // Handle rejection: emit payment_rejected and do not forward.
-      if (isResolvePriceRejection(quote)) {
+      if (initResult.kind === 'rejected') {
         logger.info('payment rejected', {
           requestEventId,
-          pmi: processor.pmi,
+          pmi: initResult.pmi,
           amount: priced.amount,
-          reason: quote.message,
+          reason: initResult.message,
         });
 
         const rejectedNotification = createPaymentRejectedNotification({
-          pmi: processor.pmi,
+          pmi: initResult.pmi,
           amount: priced.amount,
-          message: quote.message,
+          message: initResult.message,
         });
 
         await sender.sendNotification(
@@ -229,62 +221,50 @@ export function createServerPaymentsMiddleware(params: {
           rejectedNotification,
           requestEventId,
         );
-      } else if (isResolvePriceWaiver(quote)) {
+        return;
+      }
+
+      if (initResult.kind === 'waived') {
         logger.debug('payment waived, forwarding priced request', {
           requestEventId,
           method: message.method,
         });
 
         await forward(message);
-      } else {
-        const resolvedQuote = quote;
-        const paymentRequired = await processor.createPaymentRequired({
-          amount: resolvedQuote.amount,
-          description: resolvedQuote.description,
-          requestEventId,
-          clientPubkey: ctx.clientPubkey,
-        });
+        return;
+      }
 
-        const mergedMeta =
-          resolvedQuote.meta === undefined &&
-          paymentRequired._meta === undefined
-            ? undefined
-            : {
-                ...(paymentRequired._meta ?? {}),
-                ...(resolvedQuote.meta ?? {}),
-              };
+      const { paymentRequired, mergedMeta, processor, verifyTimeoutMs } = initResult;
 
-        const requiredNotification = createPaymentRequiredNotification({
-          amount: paymentRequired.amount,
-          pay_req: paymentRequired.pay_req,
-          pmi: paymentRequired.pmi,
-          description: paymentRequired.description,
-          ttl: paymentRequired.ttl,
-          _meta: mergedMeta,
-        });
+      const requiredNotification = createPaymentRequiredNotification({
+        amount: paymentRequired.amount,
+        pay_req: paymentRequired.pay_req,
+        pmi: paymentRequired.pmi,
+        description: paymentRequired.description,
+        ttl: paymentRequired.ttl,
+        _meta: mergedMeta,
+      });
 
-        logger.info('payment required notification sent', {
-          requestEventId,
-          pmi: paymentRequired.pmi,
-          amount: paymentRequired.amount,
-          ttl: paymentRequired.ttl,
-        });
+      logger.info('payment required notification sent', {
+        requestEventId,
+        pmi: paymentRequired.pmi,
+        amount: paymentRequired.amount,
+        ttl: paymentRequired.ttl,
+      });
 
-        await sender.sendNotification(
-          ctx.clientPubkey,
-          requiredNotification,
-          requestEventId,
-        );
+      await sender.sendNotification(
+        ctx.clientPubkey,
+        requiredNotification,
+        requestEventId,
+      );
 
-        const verifyTimeoutMs = getVerificationTimeoutMs({
-          ttlSeconds: paymentRequired.ttl,
-        });
-        const effectiveTimeoutMs = Math.min(verifyTimeoutMs, paymentTtlMs);
+      // Use the strict verification timeout bound for polling
+      const pollingTimeoutMs = Math.min(verifyTimeoutMs, paymentTtlMs);
 
         logger.debug('verifying payment', {
           requestEventId,
           pmi: paymentRequired.pmi,
-          timeoutMs: effectiveTimeoutMs,
+          timeoutMs: pollingTimeoutMs,
         });
 
         const controller = new AbortController();
@@ -295,7 +275,7 @@ export function createServerPaymentsMiddleware(params: {
             clientPubkey: ctx.clientPubkey,
             abortSignal: controller.signal,
           }),
-          effectiveTimeoutMs,
+          pollingTimeoutMs,
           'verifyPayment timed out',
         ).finally(() => controller.abort());
 
@@ -323,7 +303,6 @@ export function createServerPaymentsMiddleware(params: {
         });
 
         await forward(message);
-      }
     })();
 
     const state: PendingPaymentState = {

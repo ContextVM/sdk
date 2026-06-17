@@ -269,6 +269,7 @@ export class ClientCapabilityNegotiator {
       !this.hasSentPaymentInteraction
     ) {
       tags.push(['payment_interaction', this.paymentInteraction]);
+      this.hasSentPaymentInteraction = true;
     }
     return tags;
   }
@@ -301,9 +302,6 @@ export class ClientCapabilityNegotiator {
   public markDiscoveryTagsSent(): void {
     if (this.getPendingDiscoveryTags().length > 0) {
       this.hasSentDiscoveryTags = true;
-    }
-    if (this.paymentInteraction && this.paymentInteraction !== 'transparent') {
-      this.hasSentPaymentInteraction = true;
     }
   }
 

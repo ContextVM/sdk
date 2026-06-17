@@ -5,11 +5,8 @@ import type { ServerPaymentsOptions } from './server-payments.js';
 import type { AuthorizationStore } from './authorization-store.js';
 import { computeCanonicalInvocationIdentity } from './canonical-identity.js';
 import {
-  getVerificationTimeoutMs,
   matchPricedCapability,
-  isResolvePriceRejection,
-  isResolvePriceWaiver,
-  resolvePaymentProcessor,
+  resolveAndInitiatePayment,
 } from './server-payments-utils.js';
 import { createLogger } from '../core/utils/logger.js';
 import { withTimeout } from '../core/utils/utils.js';
@@ -33,6 +30,17 @@ export function createExplicitGatingMiddleware(
 ): ServerMiddlewareFn {
   const { options, authorizationStore, sendResponse } = params;
   const logger = createLogger('server-explicit-gating');
+
+  // Warn on duplicate PMI processors — Map construction silently keeps only the last.
+  const seenProcessorPmis = new Set<string>();
+  for (const p of options.processors) {
+    if (seenProcessorPmis.has(p.pmi)) {
+      logger.warn('duplicate PMI processor registered, last one wins', {
+        pmi: p.pmi,
+      });
+    }
+    seenProcessorPmis.add(p.pmi);
+  }
 
   const processorsByPmi = new Map(
     options.processors.map((p) => [p.pmi, p] as const),
@@ -107,27 +115,22 @@ export function createExplicitGatingMiddleware(
 
     // 3. Resolve price and initiate new payment
     try {
-      const processor = resolvePaymentProcessor(
-        ctx.clientPmis,
+      const initResult = await resolveAndInitiatePayment({
+        message,
+        priced,
+        requestEventId,
+        clientPubkey: ctx.clientPubkey,
+        clientPmis: ctx.clientPmis,
+        options,
         processorsByPmi,
-        options.processors,
-      );
+      });
 
-      const quote = options.resolvePrice
-        ? await options.resolvePrice({
-            capability: priced,
-            request: message,
-            clientPubkey: ctx.clientPubkey,
-            requestEventId,
-          })
-        : { amount: priced.amount, description: priced.description };
-
-      if (isResolvePriceRejection(quote)) {
+      if (initResult.kind === 'rejected') {
         logger.info('payment rejected', {
           requestEventId,
-          pmi: processor.pmi,
+          pmi: initResult.pmi,
           amount: priced.amount,
-          reason: quote.message,
+          reason: initResult.message,
         });
 
         authorizationStore.clearPending(identity);
@@ -139,14 +142,14 @@ export function createExplicitGatingMiddleware(
           id: message.id,
           error: {
             code: -32000,
-            message: quote.message || 'Payment rejected by policy',
+            message: initResult.message || 'Payment rejected by policy',
           },
         };
         await sendResponse(ctx.clientPubkey, errorResponse, requestEventId);
         return;
       }
 
-      if (isResolvePriceWaiver(quote)) {
+      if (initResult.kind === 'waived') {
         logger.debug('payment waived, forwarding priced request', {
           requestEventId,
           method: message.method,
@@ -157,30 +160,21 @@ export function createExplicitGatingMiddleware(
         return;
       }
 
-      const resolvedQuote = quote;
-      const paymentRequired = await processor.createPaymentRequired({
-        amount: resolvedQuote.amount,
-        description: resolvedQuote.description,
-        requestEventId,
-        clientPubkey: ctx.clientPubkey,
-      });
+      const { paymentRequired, mergedMeta, processor, verifyTimeoutMs } = initResult;
 
-      const mergedMeta =
-        resolvedQuote.meta === undefined && paymentRequired._meta === undefined
-          ? undefined
-          : {
-              ...(paymentRequired._meta ?? {}),
-              ...(resolvedQuote.meta ?? {}),
-            };
+      // Use the strict verification timeout bound for polling
+      const pollingTimeoutMs = Math.min(verifyTimeoutMs, paymentTtlMs);
 
-      // Ensure pending TTL matches the payment request TTL
-      const verifyTimeoutMs = getVerificationTimeoutMs({
-        ttlSeconds: paymentRequired.ttl,
-      });
-      const effectiveTimeoutMs = Math.min(verifyTimeoutMs, paymentTtlMs);
+      // Note: use the original payment request's TTL as the limit for the grant, not the verify timeout.
+      // verifyTimeoutMs includes standard bounds, but for grants we want to honor the
+      // payment option's TTL explicitly if it is smaller, or the fallback paymentTtlMs.
+      const grantTtlMs =
+        paymentRequired.ttl !== undefined
+          ? paymentRequired.ttl * 1000
+          : paymentTtlMs;
 
       // Update pending with the precise TTL
-      authorizationStore.updatePendingTtl(identity, effectiveTimeoutMs);
+      authorizationStore.updatePendingTtl(identity, grantTtlMs);
 
       const errorResponse: JSONRPCErrorResponse = {
         jsonrpc: '2.0',
@@ -222,7 +216,7 @@ export function createExplicitGatingMiddleware(
           logger.debug('verifying explicit payment', {
             requestEventId,
             pmi: paymentRequired.pmi,
-            timeoutMs: effectiveTimeoutMs,
+            timeoutMs: pollingTimeoutMs,
           });
 
           await withTimeout(
@@ -232,7 +226,7 @@ export function createExplicitGatingMiddleware(
               clientPubkey: ctx.clientPubkey,
               abortSignal: controller.signal,
             }),
-            effectiveTimeoutMs,
+            pollingTimeoutMs,
             'verifyPayment timed out',
           );
 
@@ -242,7 +236,7 @@ export function createExplicitGatingMiddleware(
             amount: paymentRequired.amount,
           });
 
-          authorizationStore.grant(identity, effectiveTimeoutMs);
+          authorizationStore.grant(identity, grantTtlMs);
         } catch (err) {
           logger.info('explicit payment verification failed or timed out', {
             requestEventId,

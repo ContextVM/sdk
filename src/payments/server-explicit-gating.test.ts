@@ -90,6 +90,31 @@ describe('Explicit Gating Middleware', () => {
     expect(data.payment_options[0].pay_req).toBe('pay_req');
   });
 
+  test('forwards request directly if client is using legacy transparent mode', async () => {
+    const store = new AuthorizationStore();
+    const sentResponses: JSONRPCErrorResponse[] = [];
+
+    const mw = createExplicitGatingMiddleware({
+      options: {
+        processors: [processor],
+        pricedCapabilities: [...pricedCapabilities],
+      },
+      authorizationStore: store,
+      sendResponse: async (_pubkey, response) => {
+        sentResponses.push(response);
+      },
+    });
+
+    let forwarded = false;
+    const legacyCtx = { ...ctx, paymentInteraction: 'transparent' as const };
+    await mw(message, legacyCtx, async () => {
+      forwarded = true;
+    });
+
+    expect(forwarded).toBe(true);
+    expect(sentResponses.length).toBe(0);
+  });
+
   test('emits -32043 Payment Pending if already pending', async () => {
     const store = new AuthorizationStore();
     const sentResponses: JSONRPCErrorResponse[] = [];

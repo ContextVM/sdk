@@ -602,6 +602,49 @@ describe.serial('NostrServerTransport', () => {
     await server.close();
   }, 10000);
 
+  test('should return -32602 if client requests explicit_gating but server does not support it', async () => {
+    const serverPrivateKey = bytesToHex(generateSecretKey());
+    const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
+
+    const server = new McpServer({
+      name: 'Test Server',
+      version: '1.0.0',
+    });
+
+    const serverTransport = new NostrServerTransport({
+      signer: new PrivateKeySigner(serverPrivateKey),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
+    });
+    // Server does NOT configure explicit_gating
+    await server.connect(serverTransport);
+
+    const clientPrivateKey = bytesToHex(generateSecretKey());
+    const { client, clientNostrTransport } = createClientAndTransport(
+      clientPrivateKey,
+      'Test Client',
+      serverPublicKey,
+    );
+
+    // Client requests explicit gating
+    clientNostrTransport.setPaymentInteraction('explicit_gating');
+
+    // connect() sends `initialize` request, server should return -32602 error
+    let connectError: unknown;
+    try {
+      await client.connect(clientNostrTransport);
+    } catch (e: unknown) {
+      connectError = e;
+    }
+
+    expect(connectError).toBeDefined();
+    // MCP client wraps JSON-RPC errors. The underlying code should be -32602
+    expect((connectError as { code: number }).code).toBe(-32602);
+    expect((connectError as { message: string }).message).toContain('Unsupported payment_interaction mode');
+
+    await server.close();
+    await clientNostrTransport.close();
+  }, 10000);
+
   test('should allow call excluded capabilities for disallowed public keys', async () => {
     // Use a unique server key per test to avoid cross-pollution with concurrent files.
     const serverPrivateKey = bytesToHex(generateSecretKey());

@@ -5,6 +5,7 @@ import type {
   ResolvePriceWaiver,
   ResolvePriceResult,
   PaymentProcessor,
+  PaymentRequired,
 } from './types.js';
 
 export function getVerificationTimeoutMs(params: {
@@ -85,4 +86,96 @@ export function resolvePaymentProcessor(
   }
 
   return chosenProcessor;
+}
+
+export type InitiationResult =
+  | {
+      kind: 'rejected';
+      pmi: string;
+      amount: number;
+      message?: string;
+      quote: ResolvePriceRejection;
+    }
+  | { kind: 'waived' }
+  | {
+      kind: 'payment_required';
+      processor: PaymentProcessor;
+      paymentRequired: PaymentRequired;
+      mergedMeta: Record<string, unknown> | undefined;
+      verifyTimeoutMs: number;
+    };
+
+export async function resolveAndInitiatePayment(params: {
+  message: JSONRPCRequest;
+  priced: PricedCapability;
+  requestEventId: string;
+  clientPubkey: string;
+  clientPmis: readonly string[] | undefined;
+  options: {
+    processors: readonly PaymentProcessor[];
+    resolvePrice?: (params: {
+      capability: PricedCapability;
+      request: JSONRPCRequest;
+      clientPubkey: string;
+      requestEventId: string;
+    }) => Promise<ResolvePriceResult>;
+  };
+  processorsByPmi: Map<string, PaymentProcessor>;
+}): Promise<InitiationResult> {
+  const processor = resolvePaymentProcessor(
+    params.clientPmis,
+    params.processorsByPmi,
+    params.options.processors,
+  );
+
+  const quote = params.options.resolvePrice
+    ? await params.options.resolvePrice({
+        capability: params.priced,
+        request: params.message,
+        clientPubkey: params.clientPubkey,
+        requestEventId: params.requestEventId,
+      })
+    : { amount: params.priced.amount, description: params.priced.description };
+
+  if (isResolvePriceRejection(quote)) {
+    return {
+      kind: 'rejected',
+      pmi: processor.pmi,
+      amount: params.priced.amount,
+      message: quote.message,
+      quote,
+    };
+  }
+
+  if (isResolvePriceWaiver(quote)) {
+    return { kind: 'waived' };
+  }
+
+  const resolvedQuote = quote;
+  const paymentRequired = await processor.createPaymentRequired({
+    amount: resolvedQuote.amount,
+    description: resolvedQuote.description,
+    requestEventId: params.requestEventId,
+    clientPubkey: params.clientPubkey,
+  });
+
+  const mergedMeta =
+    resolvedQuote.meta === undefined && paymentRequired._meta === undefined
+      ? undefined
+      : {
+          ...(paymentRequired._meta ?? {}),
+          ...(resolvedQuote.meta ?? {}),
+        };
+
+  const verifyTimeoutMs = getVerificationTimeoutMs({
+    ttlSeconds: paymentRequired.ttl,
+  });
+
+  return {
+    kind: 'payment_required',
+    processor,
+    paymentRequired,
+    mergedMeta,
+    verifyTimeoutMs,
+  };
 }

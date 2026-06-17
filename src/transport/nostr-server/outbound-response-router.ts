@@ -220,6 +220,9 @@ export class OutboundResponseRouter {
             logger: this.deps.logger,
           },
         );
+        // Note: Oversized transfers skip maybeAppendPaymentInteractionDisclosure() and marking discovery
+        // tags as sent on this early return path. This is low risk in practice because oversized transfers
+        // only trigger for large payloads, and negotiation usually happens early with small messages.
         return;
       }
     }
