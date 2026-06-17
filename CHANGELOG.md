@@ -1,5 +1,15 @@
 # @contextvm/sdk
 
+## 0.12.3
+
+### Patch Changes
+
+- fix(transport): handle encryption size limits in chunk sizing and response routing
+
+  - Binary search for chunk size now catches encryption rejections (e.g., NIP-44 plaintext cap) and treats them as "too large" to converge safely.
+  - Outbound response router treats measurement failures as infinite size, forcing fragmentation for oversized encrypted payloads.
+  - Added e2e tests for oversized gift-wrap scenarios to verify robust handling.
+
 ## 0.12.2
 
 ### Patch Changes

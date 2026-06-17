@@ -406,14 +406,26 @@ export abstract class BaseNostrTransport {
 
     while (low <= high) {
       const mid = Math.floor((low + high) / 2);
-      const size = await this.measurePublishedMcpMessageSize(
-        buildChunkNotification(mid),
-        params.recipientPublicKey,
-        params.kind,
-        params.tags,
-        params.isEncrypted,
-        params.giftWrapKind,
-      );
+
+      // Encryption (e.g. NIP-44's 65 535-byte plaintext cap) can reject an
+      // oversized probe. Treat that as "too large" rather than aborting, so
+      // chunk sizing still converges under gift-wrap encryption. The backslash
+      // probe is the worst-case escaping expansion, so any real chunk at the
+      // resolved size is safe to publish.
+      let size: number;
+      try {
+        size = await this.measurePublishedMcpMessageSize(
+          buildChunkNotification(mid),
+          params.recipientPublicKey,
+          params.kind,
+          params.tags,
+          params.isEncrypted,
+          params.giftWrapKind,
+        );
+      } catch {
+        high = mid - 1;
+        continue;
+      }
 
       if (size <= params.maxPublishedEventBytes) {
         best = mid;

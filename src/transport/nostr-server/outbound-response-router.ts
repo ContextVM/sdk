@@ -170,14 +170,23 @@ export class OutboundResponseRouter {
         fallbackWrapKind: route.wrapKind,
       });
 
-      const publishedEventSize = await this.deps.measurePublishedMcpMessageSize(
-        responseToSend,
-        route.clientPubkey,
-        CTXVM_MESSAGES_KIND,
-        startFrameTags,
-        session.isEncrypted,
-        giftWrapKind,
-      );
+      // Measuring the full response can throw under gift-wrap encryption when
+      // the inner plaintext exceeds NIP-44's 65 535-byte cap. That is itself
+      // proof the response cannot be published as a single encrypted event, so
+      // treat the throw as "must fragment".
+      let publishedEventSize: number;
+      try {
+        publishedEventSize = await this.deps.measurePublishedMcpMessageSize(
+          responseToSend,
+          route.clientPubkey,
+          CTXVM_MESSAGES_KIND,
+          startFrameTags,
+          session.isEncrypted,
+          giftWrapKind,
+        );
+      } catch {
+        publishedEventSize = Number.POSITIVE_INFINITY;
+      }
 
       if (publishedEventSize > this.deps.oversizedConfig.threshold) {
         const chunkSizeBytes = await this.deps.resolveSafeOversizedChunkSize({
