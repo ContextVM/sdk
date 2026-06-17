@@ -1,5 +1,8 @@
 import { describe, expect, test } from 'bun:test';
-import type { JSONRPCMessage, JSONRPCResponse } from '@contextvm/mcp-sdk/types.js';
+import type {
+  JSONRPCMessage,
+  JSONRPCResponse,
+} from '@contextvm/mcp-sdk/types.js';
 import type { Logger } from '../../core/utils/logger.js';
 import type { CorrelationStore } from './correlation-store.js';
 import type { SessionStore } from './session-store.js';

@@ -3,7 +3,10 @@ import type { JSONRPCMessage } from '@contextvm/mcp-sdk/types.js';
 import type { Logger } from '../../core/utils/logger.js';
 import type { ClientCorrelationStore } from './correlation-store.js';
 import type { ClientCapabilityNegotiator } from '../capability-negotiator.js';
-import { ClientOutboundSender, type ClientOutboundSenderDeps } from './outbound-sender.js';
+import {
+  ClientOutboundSender,
+  type ClientOutboundSenderDeps,
+} from './outbound-sender.js';
 
 const testLogger: Logger = {
   debug: () => undefined,
@@ -36,9 +39,7 @@ function createHarness(options?: { oversizedEnabled?: boolean }): Harness {
   const sequence: string[] = [];
   const resolvedTokens: string[] = [];
   const registered: Array<{ eventId: string; token?: string }> = [];
-  let pendingPublish:
-    | ((eventId: string) => void)
-    | undefined;
+  let pendingPublish: ((eventId: string) => void) | undefined;
 
   const correlationStore = {
     registerRequest: (eventId: string, request: { progressToken?: string }) => {
@@ -103,9 +104,7 @@ const toolsCall = (progressToken?: string | number): JSONRPCMessage =>
     params: {
       name: 'ping',
       arguments: {},
-      ...(progressToken !== undefined
-        ? { _meta: { progressToken } }
-        : {}),
+      ...(progressToken !== undefined ? { _meta: { progressToken } } : {}),
     },
   }) as JSONRPCMessage;
 

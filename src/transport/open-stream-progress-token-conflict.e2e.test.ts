@@ -74,8 +74,9 @@ describe('open-stream progress-token conflict (issue)', () => {
         inputSchema: { topic: z.string() },
       },
       async ({ topic }, extra) => {
-        const stream = (extra?._meta as { stream?: OpenStreamWriter } | undefined)
-          ?.stream;
+        const stream = (
+          extra?._meta as { stream?: OpenStreamWriter } | undefined
+        )?.stream;
         if (!stream) {
           throw new Error('stream unavailable');
         }
