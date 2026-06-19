@@ -1,4 +1,4 @@
-import type { JSONRPCErrorResponse } from '@modelcontextprotocol/sdk/types.js';
+import type { JSONRPCErrorResponse } from '@contextvm/mcp-sdk/types.js';
 import type { ServerMiddlewareFn } from './types.js';
 import { isJsonRpcRequest } from './types.js';
 import type { ServerPaymentsOptions } from './server-payments.js';
