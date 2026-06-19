@@ -1,5 +1,28 @@
 # @contextvm/sdk
 
+## 0.12.4
+
+### Patch Changes
+
+- fix(transport): attach open-stream writer for oversized (CEP-22) requests
+
+  Move the `_meta.stream` attachment from `authorizeAndProcessEvent()` into
+  `handleIncomingRequest()`, the single funnel both inbound request paths flow
+  through. Oversized (CEP-22) reassembly re-injects the synthetic request via
+  `handleIncomingRequest` without passing back through
+  `authorizeAndProcessEvent`, so attaching the writer only at the creation site
+  guarantees every request path exposes `ctx.stream` to the tool. Previously,
+  a `callToolStream` whose published request exceeded the oversized threshold
+  silently lost its stream (tool saw `_meta.stream === undefined`); the response
+  was sent normally, but streaming was unavailable.
+
+  - `ServerOpenStreamFactory.createWriterIfEnabled` now returns the created
+    writer so the coordinator binds it without a redundant `getWriter` lookup.
+  - Add e2e regression test covering open-stream tool invoked through an
+    oversized request (fails on pre-fix code, passes with the fix).
+
+  Also bump `@contextvm/mcp-sdk` 1.29.1 -> 1.30.0
+
 ## 0.12.3
 
 ### Patch Changes
