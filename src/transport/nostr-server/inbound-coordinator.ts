@@ -201,17 +201,6 @@ export class ServerInboundCoordinator {
         if (this.deps.injectClientPubkey) {
           injectClientPubkey(inboundMessage, event.pubkey);
         }
-
-        const openStreamWriter = this.deps.openStreamFactory.getWriter(
-          event.id,
-        );
-        if (openStreamWriter) {
-          const params = inboundMessage.params ?? {};
-          inboundMessage.params = params;
-          const meta = params._meta ?? {};
-          params._meta = meta;
-          (meta as { stream?: OpenStreamWriter }).stream = openStreamWriter;
-        }
       } else if (isJSONRPCNotification(inboundMessage)) {
         this.handleIncomingNotification(event.pubkey, inboundMessage);
 
@@ -275,11 +264,25 @@ export class ServerInboundCoordinator {
       this.deps.shouldInjectRequestEventId ? event : undefined,
     );
 
-    this.deps.openStreamFactory.createWriterIfEnabled(
+    // Create the CEP-41 open-stream writer and bind it to the request's
+    // `_meta.stream` at the single creation site, keyed by the same `eventId`
+    // used for response correlation. Attaching here — rather than back in
+    // authorizeAndProcessEvent() — guarantees every inbound request path that
+    // flows through handleIncomingRequest exposes the stream to the tool,
+    // including oversized (CEP-22) reassembly, which re-enters here without
+    // passing back through authorizeAndProcessEvent().
+    const openStreamWriter = this.deps.openStreamFactory.createWriterIfEnabled(
       eventId,
       clientPubkey,
       progressToken ? String(progressToken) : undefined,
     );
+    if (openStreamWriter) {
+      const params = request.params ?? {};
+      request.params = params;
+      const meta = params._meta ?? {};
+      params._meta = meta;
+      (meta as { stream?: OpenStreamWriter }).stream = openStreamWriter;
+    }
   }
 
   /**

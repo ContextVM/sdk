@@ -102,7 +102,7 @@
     "typescript": "^5.9.3"
   },
   "dependencies": {
-    "@contextvm/mcp-sdk": "^1.29.1",
+    "@contextvm/mcp-sdk": "^1.30.0",
     "@noble/hashes": "^2.2.0",
     "applesauce-relay": "^5.2.0",
     "canonicalize": "^2.1.0",

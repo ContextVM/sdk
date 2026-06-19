@@ -190,14 +190,16 @@ export class ServerOpenStreamFactory {
 
   /**
    * Conditionally creates a new OpenStreamWriter if the client supports it.
+   * Returns the created writer (or `undefined` when creation was skipped) so
+   * callers can bind it to the request without a second map lookup.
    */
   public createWriterIfEnabled(
     eventId: string,
     clientPubkey: string,
     progressToken?: string,
-  ): void {
+  ): OpenStreamWriter | undefined {
     if (!this.deps.openStreamEnabled || !progressToken) {
-      return;
+      return undefined;
     }
 
     const writer = new OpenStreamWriter({
@@ -223,6 +225,7 @@ export class ServerOpenStreamFactory {
     });
 
     this.writers.set(eventId, writer);
+    return writer;
   }
 
   /**
