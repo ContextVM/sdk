@@ -18,12 +18,12 @@ const testLogger: Logger = {
 
 function createCapabilityNegotiator(): Pick<
   ClientCapabilityNegotiator,
-  'buildOutboundTags' | 'chooseOutboundGiftWrapKind' | 'markDiscoveryTagsSent'
+  'buildOutboundTags' | 'chooseOutboundGiftWrapKind' | 'markNegotiationTagsSent'
 > {
   return {
     buildOutboundTags: ({ baseTags }) => baseTags as string[][],
     chooseOutboundGiftWrapKind: () => 0,
-    markDiscoveryTagsSent: () => undefined,
+    markNegotiationTagsSent: () => undefined,
   };
 }
 

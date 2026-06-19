@@ -1,4 +1,4 @@
-import type { JSONRPCResponse, JSONRPCRequest } from '@contextvm/mcp-sdk/types.js';
+import type { JSONRPCResponse } from '@contextvm/mcp-sdk/types.js';
 import { LruCache } from '../../core/utils/lru-cache.js';
 
 /**
@@ -15,8 +15,6 @@ export interface PendingRequest {
   progressToken?: string;
   /** Minimal context about the original request (safe to store; no arguments). */
   originalRequestContext?: OriginalRequestContext;
-  /** The full raw original JSON-RPC request for explicit gating retries. */
-  rawRequest?: JSONRPCRequest;
 }
 
 /**
@@ -76,12 +74,6 @@ export class ClientCorrelationStore {
     return this.pendingRequests.get(eventId);
   }
 
-  /**
-   * Gets the raw original JSON-RPC request for explicit gating retries.
-   */
-  getRawRequest(eventId: string): JSONRPCRequest | undefined {
-    return this.pendingRequests.get(eventId)?.rawRequest;
-  }
 
   /**
    * Resolves a response by finding and removing the corresponding request.

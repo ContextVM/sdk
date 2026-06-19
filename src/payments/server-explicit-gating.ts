@@ -99,13 +99,15 @@ export function createExplicitGatingMiddleware(
             instructions:
               'A payment is already pending for this invocation. Wait and retry.',
             // Suggest a short polling interval (e.g. 2 seconds) rather than the full TTL
-            retry_after:
-              Math.min(
-                2,
+            retry_after: Math.min(
+              2,
+              Math.max(
+                1,
                 Math.ceil(
                   authorizationStore.getPendingRemainingMs(identity) / 1000,
                 ),
-              ) || 2,
+              ),
+            ),
           },
         },
       };

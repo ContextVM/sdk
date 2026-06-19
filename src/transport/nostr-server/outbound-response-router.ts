@@ -13,6 +13,7 @@ import {
 import { type Logger } from '../../core/utils/logger.js';
 import { type CorrelationStore } from './correlation-store.js';
 import { type ClientSession, type SessionStore } from './session-store.js';
+import { NOSTR_TAGS } from '../../core/constants.js';
 import { type AnnouncementManager } from './announcement-manager.js';
 
 import { CTXVM_MESSAGES_KIND } from '../../core/constants.js';
@@ -327,7 +328,7 @@ export class OutboundResponseRouter {
       !session.hasDisclosedPaymentInteraction &&
       session.effectivePaymentInteraction
     ) {
-      tags.push(['payment_interaction', session.effectivePaymentInteraction]);
+      tags.push([NOSTR_TAGS.PAYMENT_INTERACTION, session.effectivePaymentInteraction]);
       session.hasDisclosedPaymentInteraction = true;
     }
   }

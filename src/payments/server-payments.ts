@@ -1,4 +1,3 @@
-import { type JSONRPCRequest } from '@contextvm/mcp-sdk/types.js';
 import { isJsonRpcRequest } from './types.js';
 import type {
   CorrelatedNotificationSender,

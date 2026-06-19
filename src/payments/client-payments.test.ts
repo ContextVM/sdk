@@ -606,12 +606,7 @@ describe('withClientPayments()', () => {
       .correlationStore.registerRequest('req-event-id-3', {
         originalRequestId: 77,
         isInitialize: false,
-        rawRequest: {
-          jsonrpc: '2.0',
-          id: 77,
-          method: 'tools/call',
-          params: { name: 'test' },
-        },
+
         originalRequestContext: { method: 'tools/call' },
       });
 
@@ -674,12 +669,7 @@ describe('withClientPayments()', () => {
       .correlationStore.registerRequest('req-event-id-4', {
         originalRequestId: 88,
         isInitialize: false,
-        rawRequest: {
-          jsonrpc: '2.0',
-          id: 88,
-          method: 'tools/call',
-          params: { name: 'test' },
-        },
+
         originalRequestContext: { method: 'tools/call' },
       });
 
@@ -746,12 +736,7 @@ describe('withClientPayments()', () => {
       .correlationStore.registerRequest('req-event-id-5', {
         originalRequestId: 99,
         isInitialize: false,
-        rawRequest: {
-          jsonrpc: '2.0',
-          id: 99,
-          method: 'tools/call',
-          params: { name: 'test_pending' },
-        },
+
         originalRequestContext: { method: 'tools/call' },
       });
 

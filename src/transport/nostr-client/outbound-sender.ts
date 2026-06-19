@@ -1,7 +1,6 @@
 import {
   type JSONRPCMessage,
   isJSONRPCRequest,
-  type JSONRPCRequest,
 } from '@contextvm/mcp-sdk/types.js';
 import { CTXVM_MESSAGES_KIND, INITIALIZE_METHOD } from '../../core/index.js';
 import { type Logger } from '../../core/utils/logger.js';
@@ -115,9 +114,7 @@ export class ClientOutboundSender {
             String(progressToken),
             giftWrapKind,
           );
-          // Note: Oversized transfers skip markDiscoveryTagsSent() on this early return path.
-          // This is low risk in practice because oversized transfers only trigger for large payloads,
-          // and discovery negotiation usually happens early with small messages (like `initialize`).
+
           return 'oversized-transfer';
         }
       }
@@ -150,14 +147,14 @@ export class ClientOutboundSender {
           progressToken:
             progressToken !== undefined ? String(progressToken) : undefined,
           originalRequestContext,
-          rawRequest: isRequest ? (message as JSONRPCRequest) : undefined,
+
         });
       },
       giftWrapKind,
     );
 
     if (isRequest) {
-      this.deps.capabilityNegotiator.markDiscoveryTagsSent();
+      this.deps.capabilityNegotiator.markNegotiationTagsSent();
     }
 
     return eventId;
@@ -218,10 +215,10 @@ export class ClientOutboundSender {
         progressToken,
         originalRequestContext:
           this.deps.getOriginalRequestContext(originalMessage),
-        rawRequest: originalMessage as JSONRPCRequest,
+
       });
     }
 
-    this.deps.capabilityNegotiator.markDiscoveryTagsSent();
+    this.deps.capabilityNegotiator.markNegotiationTagsSent();
   }
 }

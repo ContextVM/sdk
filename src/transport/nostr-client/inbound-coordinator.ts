@@ -11,6 +11,7 @@ import {
 } from '@contextvm/mcp-sdk/types.js';
 import { type NostrEvent } from 'nostr-tools';
 import { type Logger } from '../../core/utils/logger.js';
+import { NOSTR_TAGS } from '../../core/constants.js';
 import { getNostrEventTag } from '../../core/utils/serializers.js';
 import {
   type ClientCapabilityNegotiator,
@@ -201,7 +202,7 @@ export class ClientInboundCoordinator {
     );
 
     const paymentInteractionTag = event.tags.find(
-      (tag) => tag[0] === 'payment_interaction' && typeof tag[1] === 'string',
+      (tag) => tag[0] === NOSTR_TAGS.PAYMENT_INTERACTION && typeof tag[1] === 'string',
     );
     if (paymentInteractionTag) {
       const mode = paymentInteractionTag[1];

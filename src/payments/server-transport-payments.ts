@@ -5,6 +5,7 @@ import { createPmiTagsFromProcessors } from './pmi-tags.js';
 import { createServerPaymentsMiddleware } from './server-payments.js';
 import { createExplicitGatingMiddleware } from './server-explicit-gating.js';
 import { AuthorizationStore } from './authorization-store.js';
+import { NOSTR_TAGS } from '../core/constants.js';
 
 /**
  * Attaches CEP-8 payments gating to a NostrServerTransport.
@@ -17,7 +18,7 @@ export function withServerPayments(
   const extraTags: string[][] = createPmiTagsFromProcessors(options.processors);
 
   if (options.paymentInteraction === 'explicit_gating') {
-    extraTags.push(['payment_interaction', 'explicit_gating']);
+    extraTags.push([NOSTR_TAGS.PAYMENT_INTERACTION, 'explicit_gating']);
   }
 
   transport.setAnnouncementExtraTags(extraTags);

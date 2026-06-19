@@ -268,8 +268,7 @@ export class ClientCapabilityNegotiator {
       this.paymentInteraction !== 'transparent' &&
       !this.hasSentPaymentInteraction
     ) {
-      tags.push(['payment_interaction', this.paymentInteraction]);
-      this.hasSentPaymentInteraction = true;
+      tags.push([NOSTR_TAGS.PAYMENT_INTERACTION, this.paymentInteraction]);
     }
     return tags;
   }
@@ -297,11 +296,14 @@ export class ClientCapabilityNegotiator {
   }
 
   /**
-   * Marks discovery tags as sent to prevent re-sending.
+   * Marks discovery and negotiation tags as sent to prevent re-sending.
    */
-  public markDiscoveryTagsSent(): void {
+  public markNegotiationTagsSent(): void {
     if (this.getPendingDiscoveryTags().length > 0) {
       this.hasSentDiscoveryTags = true;
+    }
+    if (this.paymentInteraction && this.paymentInteraction !== 'transparent') {
+      this.hasSentPaymentInteraction = true;
     }
   }
 

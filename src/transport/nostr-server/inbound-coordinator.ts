@@ -8,6 +8,7 @@ import {
 import { type NostrEvent } from 'nostr-tools';
 import { type Logger } from '../../core/utils/logger.js';
 import { type SessionStore, type ClientSession } from './session-store.js';
+import { NOSTR_TAGS } from '../../core/constants.js';
 import { type CorrelationStore } from './correlation-store.js';
 import { type AuthorizationPolicy } from './authorization-policy.js';
 import { type ServerOpenStreamFactory } from './open-stream-factory.js';
@@ -178,7 +179,7 @@ export class ServerInboundCoordinator {
         this.deps.supportedPaymentInteraction === 'explicit_gating';
 
       const paymentInteractionTag = event.tags.find(
-        (tag) => tag[0] === 'payment_interaction' && typeof tag[1] === 'string',
+        (tag) => tag[0] === NOSTR_TAGS.PAYMENT_INTERACTION && typeof tag[1] === 'string',
       );
 
       if (paymentInteractionTag && !session.requestedPaymentInteraction) {

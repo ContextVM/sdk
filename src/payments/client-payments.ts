@@ -73,6 +73,16 @@ export interface ClientPaymentsOptions {
   paymentInteraction?: PaymentInteractionMode;
 
   /**
+   * Maximum number of -32043 (Payment Pending) retries before giving up.
+   *
+   * With retry_after=2 and 1.5× exponential backoff capped at 10s, the default
+   * of 10 retries gives ~45s of cumulative wait — enough for typical verification
+   * flows. Increase for slow payment processors (e.g. on-chain confirmation).
+   * @default 10
+   */
+  maxPendingRetries?: number;
+
+  /**
    * Handler for explicit-gating -32042 errors.
    * Called when a priced invocation returns Payment Required.
    * The handler should pay one option and signal completion.
@@ -232,7 +242,7 @@ export function withClientPayments(
   const pendingTimers = new Set<ReturnType<typeof setTimeout>>();
   const retryCounts = new Map<string | number, number>();
   const rawRequestCache = new LruCache<JSONRPCRequest>(1000);
-  const MAX_RETRIES = 5;
+  const MAX_RETRIES = options.maxPendingRetries ?? 10;
 
   const stopAllSyntheticProgress = (): void => {
     syntheticProgress.clear();
@@ -293,32 +303,7 @@ export function withClientPayments(
       const errorMsg = message as JSONRPCErrorResponse;
       const data = errorMsg.error.data as PaymentRequiredErrorData;
 
-      
-      // If we got here, we either:
-      // 1. Paid successfully but we need to signal the caller to retry (if we don't retry ourselves)
-      // 2. Failed to pay (policy, unhandled, or error)
-      // In both cases, for now we will just emit the -32042 error to `onmessage` and let 
-      // the caller retry. To implement transparent retry at the transport level, we'd need
-      // to cache every outbound request, which is expensive.
-      onmessage?.(message);
-      return;
-    }
-
-    if (isExplicitPaymentPendingError(message)) {
-      const data = message.error.data as import('./types.js').PaymentPendingErrorData;
-      const retryAfterSeconds = data.retry_after;
-      
-      // Note: For explicit gating errors (JSON-RPC error responses), the transport's
-      // correlation store has already consumed the pending entry via resolveResponse().
-      // We rely on rawRequestCache for the retry rather than the correlation store.
-      
-      const requestId = message.id;
-      const rawRequest = requestId != null ? rawRequestCache.get(requestId) : undefined;
-      if (!rawRequest) {
-        logger.warn('missing raw original request, cannot retry explicit payment pending', { requestEventId });
-=======
       if (!options.onPaymentRequired) {
->>>>>>> e0d4c5b (Fix final review findings for CEP-8 explicit gating)
         onmessage?.(message);
         return;
       }
