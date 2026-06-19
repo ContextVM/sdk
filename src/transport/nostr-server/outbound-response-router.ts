@@ -13,10 +13,8 @@ import {
 import { type Logger } from '../../core/utils/logger.js';
 import { type CorrelationStore } from './correlation-store.js';
 import { type ClientSession, type SessionStore } from './session-store.js';
-import { NOSTR_TAGS } from '../../core/constants.js';
 import { type AnnouncementManager } from './announcement-manager.js';
-
-import { CTXVM_MESSAGES_KIND } from '../../core/constants.js';
+import { NOSTR_TAGS, CTXVM_MESSAGES_KIND } from '../../core/constants.js';
 import { sendOversizedServerResponse } from './oversized-server-handler.js';
 
 /**
