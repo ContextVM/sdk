@@ -2,7 +2,7 @@ import type { CanonicalInvocationIdentity } from './types.js';
 import { LruCache } from '../core/utils/lru-cache.js';
 import { createLogger } from '../core/utils/logger.js';
 
-export interface PaidAuthorization {
+interface PaidAuthorization {
   /** Composite key: `${clientPubkey}:${invocationHash}` */
   key: string;
   expiresAtMs: number;

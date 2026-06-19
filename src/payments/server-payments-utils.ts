@@ -8,7 +8,7 @@ import type {
   PaymentRequired,
 } from './types.js';
 
-export function getVerificationTimeoutMs(params: {
+function getVerificationTimeoutMs(params: {
   ttlSeconds: number | undefined;
 }): number {
   // CEP-8 TTL is in seconds. If TTL is absent, default is 5 minutes.
@@ -36,7 +36,7 @@ export function matchPricedCapability(
   });
 }
 
-export function getCapabilityNameForPricing(
+function getCapabilityNameForPricing(
   message: JSONRPCRequest,
 ): string | undefined {
   const params = message.params as Record<string, unknown> | undefined;
@@ -56,19 +56,19 @@ export function getCapabilityNameForPricing(
   }
 }
 
-export function isResolvePriceRejection(
+function isResolvePriceRejection(
   quote: ResolvePriceResult,
 ): quote is ResolvePriceRejection {
   return 'reject' in quote && quote.reject;
 }
 
-export function isResolvePriceWaiver(
+function isResolvePriceWaiver(
   quote: ResolvePriceResult,
 ): quote is ResolvePriceWaiver {
   return 'waive' in quote && quote.waive;
 }
 
-export function resolvePaymentProcessor(
+function resolvePaymentProcessor(
   clientPmis: readonly string[] | undefined,
   processorsByPmi: Map<string, PaymentProcessor>,
   processors: readonly PaymentProcessor[],
