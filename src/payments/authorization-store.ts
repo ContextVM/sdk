@@ -6,8 +6,6 @@ interface PaidAuthorization {
   /** Composite key: `${clientPubkey}:${invocationHash}` */
   key: string;
   expiresAtMs: number;
-  /** Number of remaining executions (usually 1). */
-  remaining: number;
 }
 
 /**
@@ -36,39 +34,25 @@ export class AuthorizationStore {
   }
 
   /**
-   * Records a paid authorization.
+   * Records a paid authorization. Each grant authorizes exactly one future
+   * execution (CEP-8: "each successful payment SHOULD authorize one future
+   * execution unless server policy explicitly grants a different number").
    */
-  public grant(
-    identity: CanonicalInvocationIdentity,
-    ttlMs: number,
-    count: number = 1,
-  ): void {
-    if (count <= 0) {
-      throw new RangeError('Authorization count must be greater than 0');
-    }
-
+  public grant(identity: CanonicalInvocationIdentity, ttlMs: number): void {
     const key = this.getKey(identity);
     const expiresAtMs = Date.now() + ttlMs;
 
-    this.authorizations.set(key, {
-      key,
-      expiresAtMs,
-      remaining: count,
-    });
+    this.authorizations.set(key, { key, expiresAtMs });
 
     // Once granted, it's no longer pending
     this.pending.delete(key);
 
-    this.logger.debug('authorization granted', {
-      key,
-      ttlMs,
-      count,
-    });
+    this.logger.debug('authorization granted', { key, ttlMs });
   }
 
   /**
-   * Atomically claims one execution authorization.
-   * Returns true if claimed, false if none available.
+   * Atomically claims the single execution authorization.
+   * Returns true if claimed, false if none available or expired.
    */
   public claim(identity: CanonicalInvocationIdentity): boolean {
     const key = this.getKey(identity);
@@ -83,23 +67,10 @@ export class AuthorizationStore {
       return false;
     }
 
-    if (auth.remaining > 0) {
-      auth.remaining -= 1;
-      if (auth.remaining === 0) {
-        this.authorizations.delete(key);
-      } else {
-        // Explicitly delete and set to guarantee LRU position is refreshed
-        this.authorizations.delete(key);
-        this.authorizations.set(key, auth);
-      }
-      this.logger.debug('authorization claimed', {
-        key,
-        remaining: auth.remaining,
-      });
-      return true;
-    }
-
-    return false;
+    // Single-use: consume the authorization atomically.
+    this.authorizations.delete(key);
+    this.logger.debug('authorization claimed', { key });
+    return true;
   }
 
   /**
@@ -132,23 +103,6 @@ export class AuthorizationStore {
 
     this.pending.set(key, now + ttlMs);
     this.logger.debug('authorization marked pending', { key, ttlMs });
-    return true;
-  }
-
-  /** Checks if a payment is pending (not yet authorized). */
-  public hasPending(identity: CanonicalInvocationIdentity): boolean {
-    const key = this.getKey(identity);
-    const expiry = this.pending.get(key);
-
-    if (expiry === undefined) {
-      return false;
-    }
-
-    if (Date.now() > expiry) {
-      this.pending.delete(key);
-      return false;
-    }
-
     return true;
   }
 

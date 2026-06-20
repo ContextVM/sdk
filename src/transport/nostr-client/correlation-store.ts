@@ -74,7 +74,6 @@ export class ClientCorrelationStore {
     return this.pendingRequests.get(eventId);
   }
 
-
   /**
    * Resolves a response by finding and removing the corresponding request.
    * Restores the original request ID in the response before resolving.

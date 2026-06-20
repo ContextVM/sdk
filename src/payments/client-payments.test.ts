@@ -344,6 +344,129 @@ describe('withClientPayments()', () => {
     });
   });
 
+  test('declines transparent payment_required when client requested explicit_gating but server did not accept it', async () => {
+    const transport = createMockNostrTransport();
+
+    const observed: JSONRPCMessage[] = [];
+    let handleCalls = 0;
+    const paid = withClientPayments(transport, {
+      handlers: [
+        {
+          pmi: 'fake',
+          async handle(): Promise<void> {
+            handleCalls += 1;
+          },
+        },
+      ],
+      paymentInteraction: 'explicit_gating',
+    });
+
+    paid.onmessage = (msg) => observed.push(msg);
+    await paid.start();
+
+    // Server never disclosed explicit_gating, so getEffectivePaymentInteraction() is undefined.
+    (
+      transport as unknown as {
+        correlationStore: {
+          registerRequest: (eventId: string, req: unknown) => void;
+        };
+      }
+    ).correlationStore.registerRequest('req-event-id', {
+      originalRequestId: 7,
+      isInitialize: false,
+      progressToken: undefined,
+      originalRequestContext: { method: 'tools/call', capability: 'tool:paid' },
+    });
+
+    (transport as unknown as TransportWithContext).onmessageWithContext?.(
+      {
+        jsonrpc: '2.0',
+        method: 'notifications/payment_required',
+        params: { amount: 1, pay_req: 'z', pmi: 'fake' },
+      } as JSONRPCMessage,
+      { eventId: 'evt', correlatedEventId: 'req-event-id' },
+    );
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    // CEP-8 effective-mode guard: handler MUST NOT be invoked.
+    expect(handleCalls).toBe(0);
+    const errResp = observed.find(
+      (
+        m,
+      ): m is {
+        jsonrpc: '2.0';
+        id: number;
+        error: { code: number; message: string; data?: unknown };
+      } => 'id' in m && m.id === 7 && 'error' in m,
+    );
+    expect(errResp?.error?.code).toBe(-32000);
+    expect(errResp?.error?.message).toBe(
+      'Payment declined: explicit_gating was not accepted by the server',
+    );
+    expect(errResp?.error?.data).toEqual({
+      pmi: 'fake',
+      amount: 1,
+      method: 'tools/call',
+      capability: 'tool:paid',
+    });
+  });
+
+  test('proceeds with transparent payment when server accepted explicit_gating for the session', async () => {
+    const transport = createMockNostrTransport();
+
+    let observed: PaymentHandlerRequest | undefined;
+    const paid = withClientPayments(transport, {
+      handlers: [
+        {
+          pmi: 'fake',
+          async handle(req): Promise<void> {
+            observed = req;
+          },
+        },
+      ],
+      paymentInteraction: 'explicit_gating',
+    });
+
+    await paid.start();
+
+    // Server disclosed explicit_gating as the effective mode for the session.
+    (
+      transport as unknown as {
+        metadataStore: {
+          setEffectivePaymentInteraction: (mode: string) => void;
+        };
+      }
+    ).metadataStore.setEffectivePaymentInteraction('explicit_gating');
+    (
+      transport as unknown as {
+        correlationStore: {
+          registerRequest: (eventId: string, req: unknown) => void;
+        };
+      }
+    ).correlationStore.registerRequest('req-event-id', {
+      originalRequestId: 8,
+      isInitialize: false,
+      progressToken: undefined,
+      originalRequestContext: undefined,
+    });
+
+    (transport as unknown as TransportWithContext).onmessageWithContext?.(
+      {
+        jsonrpc: '2.0',
+        method: 'notifications/payment_required',
+        params: { amount: 1, pay_req: 'w', pmi: 'fake' },
+      } as JSONRPCMessage,
+      { eventId: 'evt', correlatedEventId: 'req-event-id' },
+    );
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    // Guard does not fire: handler IS invoked.
+    expect(observed).toBeDefined();
+    expect(observed?.pmi).toBe('fake');
+  });
+
   test('drops uncorrelated payment_required notifications on Nostr transports', async () => {
     const transport = createMockNostrTransport();
 
@@ -792,6 +915,139 @@ describe('withClientPayments()', () => {
       method: 'tools/call',
       params: { name: 'test_pending' },
     });
+
+    await paid.close();
+  });
+
+  test('synthesizes -32042 with type payment_handler_error when onPaymentRequired rejects', async () => {
+    const transport = createMockNostrTransport();
+
+    transport
+      .getInternalStateForTesting()
+      .correlationStore.registerRequest('req-event-id-reject', {
+        originalRequestId: 55,
+        isInitialize: false,
+        originalRequestContext: { method: 'tools/call' },
+      });
+
+    const observed: JSONRPCMessage[] = [];
+    const paid = withClientPayments(transport, {
+      handlers: [{ pmi: 'fake', async handle(): Promise<void> {} }],
+      paymentInteraction: 'explicit_gating',
+      onPaymentRequired: async () => {
+        throw new Error('wallet offline');
+      },
+    });
+    paid.onmessage = (msg) => observed.push(msg);
+    await paid.start();
+
+    await paid.send({
+      jsonrpc: '2.0',
+      id: 55,
+      method: 'tools/call',
+      params: { name: 'test' },
+    });
+
+    (transport as unknown as TransportWithContext).onmessageWithContext?.(
+      {
+        jsonrpc: '2.0',
+        id: 55,
+        error: {
+          code: -32042,
+          message: 'Payment Required',
+          data: {
+            payment_options: [
+              { amount: 10, pmi: 'fake', pay_req: 'pr-reject' },
+            ],
+          },
+        },
+      },
+      { eventId: 'evt', correlatedEventId: 'req-event-id-reject' },
+    );
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(observed).toHaveLength(1);
+    const errResp = observed[0] as {
+      id?: unknown;
+      error?: {
+        code?: number;
+        data?: { reason?: string; type?: string };
+      };
+    };
+    expect(errResp.id).toBe(55);
+    expect(errResp.error?.code).toBe(-32042);
+    expect(errResp.error?.data?.reason).toBe('wallet offline');
+    expect(errResp.error?.data?.type).toBe('payment_handler_error');
+
+    await paid.close();
+  });
+
+  test('forwards -32043 to caller after maxPendingRetries is exceeded', async () => {
+    const transport = createMockNostrTransport();
+    transport.send = async (): Promise<void> => {
+      // no-op: retries do not produce a server response in this unit test
+    };
+
+    transport
+      .getInternalStateForTesting()
+      .correlationStore.registerRequest('req-event-id-exhaust', {
+        originalRequestId: 66,
+        isInitialize: false,
+        originalRequestContext: { method: 'tools/call' },
+      });
+
+    const observed: JSONRPCMessage[] = [];
+    const paid = withClientPayments(transport, {
+      handlers: [{ pmi: 'fake', async handle(): Promise<void> {} }],
+      paymentInteraction: 'explicit_gating',
+      maxPendingRetries: 2,
+    });
+    paid.onmessage = (msg) => observed.push(msg);
+    await paid.start();
+
+    await paid.send({
+      jsonrpc: '2.0',
+      id: 66,
+      method: 'tools/call',
+      params: { name: 'test' },
+    });
+
+    const deliverPending = (): void => {
+      (transport as unknown as TransportWithContext).onmessageWithContext?.(
+        {
+          jsonrpc: '2.0',
+          id: 66,
+          error: {
+            code: -32043,
+            message: 'Payment Pending',
+            data: { retry_after: 0.01 },
+          },
+        },
+        { eventId: 'evt', correlatedEventId: 'req-event-id-exhaust' },
+      );
+    };
+
+    // First two: intercepted and retried (not observed by caller).
+    deliverPending();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(observed).toHaveLength(0);
+
+    deliverPending();
+    await new Promise((r) => setTimeout(r, 25));
+    expect(observed).toHaveLength(0);
+
+    // Third: retry budget exhausted → -32043 reaches the caller.
+    deliverPending();
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(observed).toHaveLength(1);
+    const errResp = observed[0] as {
+      id?: unknown;
+      error?: { code?: number };
+    };
+    expect(errResp.id).toBe(66);
+    expect(errResp.error?.code).toBe(-32043);
 
     await paid.close();
   });

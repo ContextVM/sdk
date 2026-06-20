@@ -16,7 +16,7 @@ describe('ClientCapabilityNegotiator', () => {
         ...negotiationTags,
       ],
     });
-    
+
     negotiator.setPaymentInteraction('explicit_gating');
 
     // Simulate measurement call (tags discarded)
@@ -25,7 +25,9 @@ describe('ClientCapabilityNegotiator', () => {
       includeDiscovery: true,
     });
     expect(
-      measurementTags.some(t => t[0] === 'payment_interaction' && t[1] === 'explicit_gating')
+      measurementTags.some(
+        (t) => t[0] === 'payment_interaction' && t[1] === 'explicit_gating',
+      ),
     ).toBe(true);
 
     // Simulate real send (tags actually used)
@@ -34,7 +36,9 @@ describe('ClientCapabilityNegotiator', () => {
       includeDiscovery: true,
     });
     expect(
-      realTags.some(t => t[0] === 'payment_interaction' && t[1] === 'explicit_gating')
+      realTags.some(
+        (t) => t[0] === 'payment_interaction' && t[1] === 'explicit_gating',
+      ),
     ).toBe(true);
 
     // Mark as sent (post-send)
@@ -45,8 +49,6 @@ describe('ClientCapabilityNegotiator', () => {
       baseTags: [['p', 'server-pubkey']],
       includeDiscovery: true,
     });
-    expect(
-      afterTags.some(t => t[0] === 'payment_interaction')
-    ).toBe(false);
+    expect(afterTags.some((t) => t[0] === 'payment_interaction')).toBe(false);
   });
 });

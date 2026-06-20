@@ -326,7 +326,10 @@ export class OutboundResponseRouter {
       !session.hasDisclosedPaymentInteraction &&
       session.effectivePaymentInteraction
     ) {
-      tags.push([NOSTR_TAGS.PAYMENT_INTERACTION, session.effectivePaymentInteraction]);
+      tags.push([
+        NOSTR_TAGS.PAYMENT_INTERACTION,
+        session.effectivePaymentInteraction,
+      ]);
       session.hasDisclosedPaymentInteraction = true;
     }
   }

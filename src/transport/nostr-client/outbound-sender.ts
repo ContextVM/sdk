@@ -147,7 +147,6 @@ export class ClientOutboundSender {
           progressToken:
             progressToken !== undefined ? String(progressToken) : undefined,
           originalRequestContext,
-
         });
       },
       giftWrapKind,
@@ -215,7 +214,6 @@ export class ClientOutboundSender {
         progressToken,
         originalRequestContext:
           this.deps.getOriginalRequestContext(originalMessage),
-
       });
     }
 

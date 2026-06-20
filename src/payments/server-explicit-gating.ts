@@ -1,10 +1,11 @@
 import type { JSONRPCErrorResponse } from '@contextvm/mcp-sdk/types.js';
-import type { ServerMiddlewareFn } from './types.js';
+import type { ServerMiddlewareFn, PaymentProcessor } from './types.js';
 import { isJsonRpcRequest } from './types.js';
 import type { ServerPaymentsOptions } from './server-payments.js';
 import type { AuthorizationStore } from './authorization-store.js';
 import { computeCanonicalInvocationIdentity } from './canonical-identity.js';
 import {
+  buildProcessorsByPmi,
   matchPricedCapability,
   resolveAndInitiatePayment,
 } from './server-payments-utils.js';
@@ -23,6 +24,8 @@ export interface ExplicitGatingMiddlewareParams {
     response: JSONRPCErrorResponse,
     requestEventId: string,
   ) => Promise<void>;
+  /** Pre-built PMI → processor map. Built locally when omitted (standalone use). */
+  processorsByPmi?: Map<string, PaymentProcessor>;
 }
 
 export function createExplicitGatingMiddleware(
@@ -30,21 +33,8 @@ export function createExplicitGatingMiddleware(
 ): ServerMiddlewareFn {
   const { options, authorizationStore, sendResponse } = params;
   const logger = createLogger('server-explicit-gating');
-
-  // Warn on duplicate PMI processors — Map construction silently keeps only the last.
-  const seenProcessorPmis = new Set<string>();
-  for (const p of options.processors) {
-    if (seenProcessorPmis.has(p.pmi)) {
-      logger.warn('duplicate PMI processor registered, last one wins', {
-        pmi: p.pmi,
-      });
-    }
-    seenProcessorPmis.add(p.pmi);
-  }
-
-  const processorsByPmi = new Map(
-    options.processors.map((p) => [p.pmi, p] as const),
-  );
+  const processorsByPmi =
+    params.processorsByPmi ?? buildProcessorsByPmi(options.processors, logger);
 
   return async (message, ctx, forward) => {
     // Only gate requests.
@@ -97,7 +87,7 @@ export function createExplicitGatingMiddleware(
           message: 'Payment Pending',
           data: {
             instructions:
-              'A payment is already pending for this invocation. Wait and retry.',
+              'A payment is already pending for this invocation. Retry the same request later with exactly the same method and params.',
             // Suggest a short polling interval (e.g. 2 seconds) rather than the full TTL
             retry_after: Math.min(
               2,
@@ -162,7 +152,8 @@ export function createExplicitGatingMiddleware(
         return;
       }
 
-      const { paymentRequired, mergedMeta, processor, verifyTimeoutMs } = initResult;
+      const { paymentRequired, mergedMeta, processor, verifyTimeoutMs } =
+        initResult;
 
       // Use the strict verification timeout bound for polling
       const pollingTimeoutMs = Math.min(verifyTimeoutMs, paymentTtlMs);
@@ -186,7 +177,7 @@ export function createExplicitGatingMiddleware(
           message: 'Payment Required',
           data: {
             instructions:
-              'Payment is required to process this request. Please pay one of the following options and retry the request.',
+              'Payment is required to process this request. Pay one of the offered options, then retry the same request with exactly the same method and params.',
             payment_options: [
               {
                 amount: paymentRequired.amount,

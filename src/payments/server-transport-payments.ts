@@ -5,6 +5,8 @@ import { createPmiTagsFromProcessors } from './pmi-tags.js';
 import { createServerPaymentsMiddleware } from './server-payments.js';
 import { createExplicitGatingMiddleware } from './server-explicit-gating.js';
 import { AuthorizationStore } from './authorization-store.js';
+import { buildProcessorsByPmi } from './server-payments-utils.js';
+import { createLogger } from '../core/utils/logger.js';
 import { NOSTR_TAGS } from '../core/constants.js';
 
 /**
@@ -14,6 +16,12 @@ export function withServerPayments(
   transport: NostrServerTransport,
   options: ServerPaymentsOptions,
 ): NostrServerTransport {
+  // Build the PMI → processor map once and share it across both middlewares.
+  const processorsByPmi = buildProcessorsByPmi(
+    options.processors,
+    createLogger('server-payments'),
+  );
+
   // CEP-8 discovery tags: advertise supported PMIs + reference pricing on announcement/list events.
   const extraTags: string[][] = createPmiTagsFromProcessors(options.processors);
 
@@ -30,7 +38,11 @@ export function withServerPayments(
   transport.setSupportedPaymentInteraction(options.paymentInteraction);
 
   transport.addInboundMiddleware(
-    createServerPaymentsMiddleware({ sender: transport, options }),
+    createServerPaymentsMiddleware({
+      sender: transport,
+      options,
+      processorsByPmi,
+    }),
   );
 
   if (options.paymentInteraction === 'explicit_gating') {
@@ -46,6 +58,7 @@ export function withServerPayments(
             requestEventId,
           );
         },
+        processorsByPmi,
       }),
     );
   }

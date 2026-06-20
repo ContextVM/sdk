@@ -202,7 +202,8 @@ export class ClientInboundCoordinator {
     );
 
     const paymentInteractionTag = event.tags.find(
-      (tag) => tag[0] === NOSTR_TAGS.PAYMENT_INTERACTION && typeof tag[1] === 'string',
+      (tag) =>
+        tag[0] === NOSTR_TAGS.PAYMENT_INTERACTION && typeof tag[1] === 'string',
     );
     if (paymentInteractionTag) {
       const mode = paymentInteractionTag[1];

@@ -179,7 +179,9 @@ export class ServerInboundCoordinator {
         this.deps.supportedPaymentInteraction === 'explicit_gating';
 
       const paymentInteractionTag = event.tags.find(
-        (tag) => tag[0] === NOSTR_TAGS.PAYMENT_INTERACTION && typeof tag[1] === 'string',
+        (tag) =>
+          tag[0] === NOSTR_TAGS.PAYMENT_INTERACTION &&
+          typeof tag[1] === 'string',
       );
 
       if (paymentInteractionTag && !session.requestedPaymentInteraction) {
@@ -198,6 +200,11 @@ export class ServerInboundCoordinator {
                   code: UNSUPPORTED_PAYMENT_INTERACTION_ERROR_CODE,
                   message:
                     'Unsupported payment_interaction mode: explicit_gating',
+                  // CEP-8 effective-mode disclosure: requested + supported modes.
+                  data: {
+                    requested: mode,
+                    supported: ['transparent'],
+                  },
                 },
               };
               const tags = this.deps.createResponseTags(event.pubkey, event.id);

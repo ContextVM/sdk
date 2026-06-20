@@ -1,4 +1,5 @@
 import type { JSONRPCRequest } from '@contextvm/mcp-sdk/types.js';
+import { type Logger } from '../core/utils/logger.js';
 import type {
   PricedCapability,
   ResolvePriceRejection,
@@ -7,6 +8,23 @@ import type {
   PaymentProcessor,
   PaymentRequired,
 } from './types.js';
+
+/** Builds the PMI → processor map, warning once on duplicate PMIs. */
+export function buildProcessorsByPmi(
+  processors: readonly PaymentProcessor[],
+  logger: Logger,
+): Map<string, PaymentProcessor> {
+  const seenProcessorPmis = new Set<string>();
+  for (const p of processors) {
+    if (seenProcessorPmis.has(p.pmi)) {
+      logger.warn('duplicate PMI processor registered, last one wins', {
+        pmi: p.pmi,
+      });
+    }
+    seenProcessorPmis.add(p.pmi);
+  }
+  return new Map(processors.map((p) => [p.pmi, p] as const));
+}
 
 function getVerificationTimeoutMs(params: {
   ttlSeconds: number | undefined;

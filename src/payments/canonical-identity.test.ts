@@ -92,7 +92,9 @@ describe('Canonical Invocation Identity', () => {
         "Failed to canonicalize invocation payload for method 'tools/call'. Ensure params contain only JSON-serializable values (no circular references, functions, symbols, or BigInt).",
       );
       expect(() =>
-        computeCanonicalInvocationHash('tools/call', { big: BigInt('9007199254740991') }),
+        computeCanonicalInvocationHash('tools/call', {
+          big: BigInt('9007199254740991'),
+        }),
       ).toThrow(
         "Failed to canonicalize invocation payload for method 'tools/call'. Ensure params contain only JSON-serializable values (no circular references, functions, symbols, or BigInt).",
       );

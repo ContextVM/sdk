@@ -20,6 +20,7 @@ import {
   PAYMENT_REQUIRED_METHOD,
 } from './constants.js';
 import {
+  buildProcessorsByPmi,
   matchPricedCapability,
   resolveAndInitiatePayment,
 } from './server-payments-utils.js';
@@ -120,23 +121,13 @@ function createPaymentRejectedNotification(params: {
 export function createServerPaymentsMiddleware(params: {
   sender: CorrelatedNotificationSender;
   options: ServerPaymentsOptions;
+  /** Pre-built PMI → processor map. Built locally when omitted (standalone use). */
+  processorsByPmi?: Map<string, PaymentProcessor>;
 }): ServerMiddlewareFn {
   const { sender, options } = params;
   const logger = createLogger('server-payments');
-  const processorsByPmi = new Map(
-    options.processors.map((p) => [p.pmi, p] as const),
-  );
-
-  // Warn on duplicate PMI processors — Map construction silently keeps only the last.
-  const seenProcessorPmis = new Set<string>();
-  for (const p of options.processors) {
-    if (seenProcessorPmis.has(p.pmi)) {
-      logger.warn('duplicate PMI processor registered, last one wins', {
-        pmi: p.pmi,
-      });
-    }
-    seenProcessorPmis.add(p.pmi);
-  }
+  const processorsByPmi =
+    params.processorsByPmi ?? buildProcessorsByPmi(options.processors, logger);
 
   const paymentTtlMs = options.paymentTtlMs ?? DEFAULT_PAYMENT_TTL_MS;
   const pending = new LruCache<PendingPaymentState>(
@@ -233,7 +224,8 @@ export function createServerPaymentsMiddleware(params: {
         return;
       }
 
-      const { paymentRequired, mergedMeta, processor, verifyTimeoutMs } = initResult;
+      const { paymentRequired, mergedMeta, processor, verifyTimeoutMs } =
+        initResult;
 
       const requiredNotification = createPaymentRequiredNotification({
         amount: paymentRequired.amount,
@@ -260,48 +252,48 @@ export function createServerPaymentsMiddleware(params: {
       // Use the strict verification timeout bound for polling
       const pollingTimeoutMs = Math.min(verifyTimeoutMs, paymentTtlMs);
 
-        logger.debug('verifying payment', {
+      logger.debug('verifying payment', {
+        requestEventId,
+        pmi: paymentRequired.pmi,
+        timeoutMs: pollingTimeoutMs,
+      });
+
+      const controller = new AbortController();
+      const verified = await withTimeout(
+        processor.verifyPayment({
+          pay_req: paymentRequired.pay_req,
           requestEventId,
-          pmi: paymentRequired.pmi,
-          timeoutMs: pollingTimeoutMs,
-        });
+          clientPubkey: ctx.clientPubkey,
+          abortSignal: controller.signal,
+        }),
+        pollingTimeoutMs,
+        'verifyPayment timed out',
+      ).finally(() => controller.abort());
 
-        const controller = new AbortController();
-        const verified = await withTimeout(
-          processor.verifyPayment({
-            pay_req: paymentRequired.pay_req,
-            requestEventId,
-            clientPubkey: ctx.clientPubkey,
-            abortSignal: controller.signal,
-          }),
-          pollingTimeoutMs,
-          'verifyPayment timed out',
-        ).finally(() => controller.abort());
+      logger.info('payment accepted', {
+        requestEventId,
+        pmi: paymentRequired.pmi,
+        amount: paymentRequired.amount,
+      });
 
-        logger.info('payment accepted', {
-          requestEventId,
-          pmi: paymentRequired.pmi,
-          amount: paymentRequired.amount,
-        });
+      const acceptedNotification = createPaymentAcceptedNotification({
+        amount: paymentRequired.amount,
+        pmi: paymentRequired.pmi,
+        _meta: verified._meta,
+      });
 
-        const acceptedNotification = createPaymentAcceptedNotification({
-          amount: paymentRequired.amount,
-          pmi: paymentRequired.pmi,
-          _meta: verified._meta,
-        });
+      await sender.sendNotification(
+        ctx.clientPubkey,
+        acceptedNotification,
+        requestEventId,
+      );
 
-        await sender.sendNotification(
-          ctx.clientPubkey,
-          acceptedNotification,
-          requestEventId,
-        );
+      logger.debug('forwarding priced request after payment', {
+        requestEventId,
+        method: message.method,
+      });
 
-        logger.debug('forwarding priced request after payment', {
-          requestEventId,
-          method: message.method,
-        });
-
-        await forward(message);
+      await forward(message);
     })();
 
     const state: PendingPaymentState = {

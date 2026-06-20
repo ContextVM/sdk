@@ -637,9 +637,17 @@ describe.serial('NostrServerTransport', () => {
     }
 
     expect(connectError).toBeDefined();
-    // MCP client wraps JSON-RPC errors. The underlying code should be -32602
+    // MCP client wraps JSON-RPC errors into McpError, preserving code/message/data.
+    // The underlying code should be -32602
     expect((connectError as { code: number }).code).toBe(-32602);
-    expect((connectError as { message: string }).message).toContain('Unsupported payment_interaction mode');
+    expect((connectError as { message: string }).message).toContain(
+      'Unsupported payment_interaction mode',
+    );
+    // CEP-8: the -32602 MUST disclose the requested mode and the modes the server supports.
+    expect((connectError as { data: unknown }).data).toEqual({
+      requested: 'explicit_gating',
+      supported: ['transparent'],
+    });
 
     await server.close();
     await clientNostrTransport.close();

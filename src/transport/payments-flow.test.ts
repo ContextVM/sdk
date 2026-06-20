@@ -28,6 +28,7 @@ import {
   FakePaymentHandler,
   FakePaymentProcessor,
   createServerPaymentsMiddleware,
+  rejectPrice,
   withClientPayments,
   withServerPayments,
 } from '../payments/index.js';
@@ -1100,6 +1101,606 @@ describe.serial('payments fake flow (transport-level)', () => {
     expect(toolCallCount).toBe(1);
     expect(createSpy).toHaveBeenCalled();
     expect(verifySpy).toHaveBeenCalled();
+
+    await client.close();
+    await mcpServer.close();
+  }, 20000);
+
+  // CEP-8 MUST: server indicates the effective mode on its first direct response.
+  test('explicit gating: server discloses payment_interaction=explicit_gating on first direct response', async () => {
+    const serverSK = generateSecretKey();
+    const serverPublicKey = getPublicKey(serverSK);
+    const serverPrivateKey = bytesToHex(serverSK);
+
+    const mcpServer = new McpServer({
+      name: 'disclosure-server',
+      version: '1.0.0',
+    });
+    mcpServer.registerTool(
+      'add',
+      {
+        title: 'Addition Tool',
+        description: 'Add two numbers',
+        inputSchema: { a: z.number(), b: z.number() },
+      },
+      async ({ a, b }: { a: number; b: number }) => {
+        return { content: [{ type: 'text', text: String(a + b) }] };
+      },
+    );
+
+    const processor = new FakePaymentProcessor();
+    const serverTransport = withServerPayments(
+      new NostrServerTransport({
+        signer: new PrivateKeySigner(serverPrivateKey),
+        relayHandler: new ApplesauceRelayPool([relayUrl]),
+        encryptionMode: EncryptionMode.DISABLED,
+      }),
+      {
+        processors: [processor],
+        pricedCapabilities: [
+          {
+            method: 'tools/call',
+            name: 'add',
+            amount: 1,
+            currencyUnit: 'test',
+          },
+        ],
+        paymentInteraction: 'explicit_gating',
+      },
+    );
+    await mcpServer.connect(serverTransport);
+
+    // Capture the server's first published CTXVM event carrying a payment_interaction tag.
+    const capturePromise = captureNextCtxvmEvent({
+      relayUrl,
+      authors: [serverPublicKey],
+      where: (event) =>
+        event.tags.some(
+          (t) => t[0] === 'payment_interaction' && typeof t[1] === 'string',
+        ),
+      timeoutMs: 5000,
+    });
+
+    const clientSK = generateSecretKey();
+    const clientPrivateKey = bytesToHex(clientSK);
+    const clientTransport = new NostrClientTransport({
+      signer: new PrivateKeySigner(clientPrivateKey),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      serverPubkey: serverPublicKey,
+      encryptionMode: EncryptionMode.DISABLED,
+    });
+    const paidClientTransport = withClientPayments(clientTransport, {
+      handlers: [],
+      paymentInteraction: 'explicit_gating',
+      onPaymentRequired: async () => ({ paid: true }),
+    });
+
+    const client = new Client({
+      name: 'disclosure-client',
+      version: '1.0.0',
+    });
+    await client.connect(paidClientTransport); // triggers initialize → first response
+
+    const event = await capturePromise;
+    const piTag = event.tags.find((t) => t[0] === 'payment_interaction') as
+      | readonly string[]
+      | undefined;
+    expect(piTag?.[1]).toBe('explicit_gating');
+
+    await client.close();
+    await mcpServer.close();
+  }, 20000);
+
+  // Locks the pending race: pay → slow verify → -32043 → backoff → grant → success.
+  test('explicit gating: -32043 pending race resolves after verify completes', async () => {
+    const serverSK = generateSecretKey();
+    const serverPublicKey = getPublicKey(serverSK);
+    const serverPrivateKey = bytesToHex(serverSK);
+
+    const mcpServer = new McpServer({
+      name: 'pending-race-server',
+      version: '1.0.0',
+    });
+    let toolCallCount = 0;
+    mcpServer.registerTool(
+      'add',
+      {
+        title: 'Addition Tool',
+        description: 'Add two numbers',
+        inputSchema: { a: z.number(), b: z.number() },
+      },
+      async ({ a, b }: { a: number; b: number }) => {
+        toolCallCount++;
+        return { content: [{ type: 'text', text: String(a + b) }] };
+      },
+    );
+
+    // verifyDelayMs >> relay round-trip, so the client's first retry arrives
+    // while verification is still pending (→ -32043). Default grant TTL (5 min)
+    // keeps retry_after at 2 s; verification completes well before the backoff.
+    const processor = new FakePaymentProcessor({ verifyDelayMs: 500 });
+    const createSpy = spyOn(processor, 'createPaymentRequired');
+    const verifySpy = spyOn(processor, 'verifyPayment');
+
+    const serverTransport = withServerPayments(
+      new NostrServerTransport({
+        signer: new PrivateKeySigner(serverPrivateKey),
+        relayHandler: new ApplesauceRelayPool([relayUrl]),
+        encryptionMode: EncryptionMode.DISABLED,
+      }),
+      {
+        processors: [processor],
+        pricedCapabilities: [
+          {
+            method: 'tools/call',
+            name: 'add',
+            amount: 1,
+            currencyUnit: 'test',
+          },
+        ],
+        paymentInteraction: 'explicit_gating',
+      },
+    );
+    await mcpServer.connect(serverTransport);
+
+    const clientSK = generateSecretKey();
+    const clientPrivateKey = bytesToHex(clientSK);
+    const clientTransport = new NostrClientTransport({
+      signer: new PrivateKeySigner(clientPrivateKey),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      serverPubkey: serverPublicKey,
+      encryptionMode: EncryptionMode.DISABLED,
+    });
+    const paidClientTransport = withClientPayments(clientTransport, {
+      handlers: [],
+      paymentInteraction: 'explicit_gating',
+      onPaymentRequired: async () => ({ paid: true }),
+    });
+
+    const client = new Client({
+      name: 'pending-race-client',
+      version: '1.0.0',
+    });
+    await client.connect(paidClientTransport);
+
+    const result = await client.callTool({
+      name: 'add',
+      arguments: { a: 5, b: 7 },
+    });
+
+    const typedResult = result as {
+      content: Array<{ type: string; text?: string }>;
+    };
+    expect(typedResult.content[0]).toMatchObject({ type: 'text', text: '12' });
+
+    // Despite the request being sent multiple times (initial + retry-after-pay +
+    // retry-after-32043), exactly one payment was created and one verification ran.
+    // This is the core anti-double-charge invariant of the explicit-gating flow.
+    expect(toolCallCount).toBe(1);
+    expect(createSpy.mock.calls.length).toBe(1);
+    expect(verifySpy.mock.calls.length).toBe(1);
+
+    await client.close();
+    await mcpServer.close();
+  }, 25000);
+
+  // User declines to pay: the wrapper synthesizes -32042 with the given reason
+  // and does not retry. Locks the { paid: false } contract end-to-end.
+  test('explicit gating: user-declined payment surfaces -32042 and does not retry', async () => {
+    const serverSK = generateSecretKey();
+    const serverPrivateKey = bytesToHex(serverSK);
+    const serverPublicKey = getPublicKey(serverSK);
+
+    const mcpServer = new McpServer({
+      name: 'decline-server',
+      version: '1.0.0',
+    });
+    let toolCallCount = 0;
+    mcpServer.registerTool(
+      'add',
+      {
+        title: 'Addition Tool',
+        description: 'Add two numbers',
+        inputSchema: { a: z.number(), b: z.number() },
+      },
+      async ({ a, b }: { a: number; b: number }) => {
+        toolCallCount++;
+        return { content: [{ type: 'text', text: String(a + b) }] };
+      },
+    );
+
+    const processor = new FakePaymentProcessor();
+    const serverTransport = withServerPayments(
+      new NostrServerTransport({
+        signer: new PrivateKeySigner(serverPrivateKey),
+        relayHandler: new ApplesauceRelayPool([relayUrl]),
+        encryptionMode: EncryptionMode.DISABLED,
+      }),
+      {
+        processors: [processor],
+        pricedCapabilities: [
+          {
+            method: 'tools/call',
+            name: 'add',
+            amount: 1,
+            currencyUnit: 'test',
+          },
+        ],
+        paymentInteraction: 'explicit_gating',
+      },
+    );
+    await mcpServer.connect(serverTransport);
+
+    const clientSK = generateSecretKey();
+    const clientPrivateKey = bytesToHex(clientSK);
+    const clientTransport = new NostrClientTransport({
+      signer: new PrivateKeySigner(clientPrivateKey),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      serverPubkey: serverPublicKey,
+      encryptionMode: EncryptionMode.DISABLED,
+    });
+    const paidClientTransport = withClientPayments(clientTransport, {
+      handlers: [],
+      paymentInteraction: 'explicit_gating',
+      onPaymentRequired: async () => ({
+        paid: false,
+        reason: 'user_cancelled',
+      }),
+    });
+
+    const client = new Client({ name: 'decline-client', version: '1.0.0' });
+    await client.connect(paidClientTransport);
+
+    await expect(
+      client.callTool({ name: 'add', arguments: { a: 1, b: 2 } }),
+    ).rejects.toMatchObject({
+      code: -32042,
+      data: { reason: 'user_cancelled' },
+    });
+
+    expect(toolCallCount).toBe(0);
+
+    await client.close();
+    await mcpServer.close();
+  }, 20000);
+
+  // onPaymentRequired rejects: the wrapper synthesizes -32042 with
+  // data.type = 'payment_handler_error' and surfaces it to the caller.
+  test('explicit gating: onPaymentRequired throwing surfaces -32042 with type payment_handler_error', async () => {
+    const serverSK = generateSecretKey();
+    const serverPrivateKey = bytesToHex(serverSK);
+    const serverPublicKey = getPublicKey(serverSK);
+
+    const mcpServer = new McpServer({
+      name: 'handler-error-server',
+      version: '1.0.0',
+    });
+    let toolCallCount = 0;
+    mcpServer.registerTool(
+      'add',
+      {
+        title: 'Addition Tool',
+        description: 'Add two numbers',
+        inputSchema: { a: z.number(), b: z.number() },
+      },
+      async ({ a, b }: { a: number; b: number }) => {
+        toolCallCount++;
+        return { content: [{ type: 'text', text: String(a + b) }] };
+      },
+    );
+
+    const processor = new FakePaymentProcessor();
+    const serverTransport = withServerPayments(
+      new NostrServerTransport({
+        signer: new PrivateKeySigner(serverPrivateKey),
+        relayHandler: new ApplesauceRelayPool([relayUrl]),
+        encryptionMode: EncryptionMode.DISABLED,
+      }),
+      {
+        processors: [processor],
+        pricedCapabilities: [
+          {
+            method: 'tools/call',
+            name: 'add',
+            amount: 1,
+            currencyUnit: 'test',
+          },
+        ],
+        paymentInteraction: 'explicit_gating',
+      },
+    );
+    await mcpServer.connect(serverTransport);
+
+    const clientSK = generateSecretKey();
+    const clientPrivateKey = bytesToHex(clientSK);
+    const clientTransport = new NostrClientTransport({
+      signer: new PrivateKeySigner(clientPrivateKey),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      serverPubkey: serverPublicKey,
+      encryptionMode: EncryptionMode.DISABLED,
+    });
+    const paidClientTransport = withClientPayments(clientTransport, {
+      handlers: [],
+      paymentInteraction: 'explicit_gating',
+      onPaymentRequired: async () => {
+        throw new Error('wallet offline');
+      },
+    });
+
+    const client = new Client({
+      name: 'handler-error-client',
+      version: '1.0.0',
+    });
+    await client.connect(paidClientTransport);
+
+    await expect(
+      client.callTool({ name: 'add', arguments: { a: 1, b: 2 } }),
+    ).rejects.toMatchObject({
+      code: -32042,
+      data: { reason: 'wallet offline', type: 'payment_handler_error' },
+    });
+
+    expect(toolCallCount).toBe(0);
+
+    await client.close();
+    await mcpServer.close();
+  }, 20000);
+
+  // Verify-failure window: when verification fails after the client paid, the
+  // server clears pending state and the next retry yields a FRESH invoice
+  // (distinct pay_req). The client pays twice; the tool runs exactly once.
+  // Locks wire-level correlation across the verify-failure branch (the double-
+  // charge window documented on onPaymentRequired).
+  test('explicit gating: verifyPayment failure yields a fresh invoice on retry', async () => {
+    const serverSK = generateSecretKey();
+    const serverPrivateKey = bytesToHex(serverSK);
+    const serverPublicKey = getPublicKey(serverSK);
+
+    const mcpServer = new McpServer({
+      name: 'fresh-invoice-server',
+      version: '1.0.0',
+    });
+    let toolCallCount = 0;
+    mcpServer.registerTool(
+      'add',
+      {
+        title: 'Addition Tool',
+        description: 'Add two numbers',
+        inputSchema: { a: z.number(), b: z.number() },
+      },
+      async ({ a, b }: { a: number; b: number }) => {
+        toolCallCount++;
+        return { content: [{ type: 'text', text: String(a + b) }] };
+      },
+    );
+
+    const issuedPayReqs: string[] = [];
+    let verifyCount = 0;
+    const processor: PaymentProcessor = {
+      pmi: 'fake',
+      async createPaymentRequired(params) {
+        const pay_req = `pr-${issuedPayReqs.length + 1}`;
+        issuedPayReqs.push(pay_req);
+        return {
+          amount: params.amount,
+          pay_req,
+          description: params.description,
+          pmi: 'fake',
+          ttl: 300,
+        };
+      },
+      async verifyPayment() {
+        verifyCount += 1;
+        if (verifyCount === 1) {
+          throw new Error('settlement failed');
+        }
+        return { _meta: { settled: true } };
+      },
+    };
+
+    const serverTransport = withServerPayments(
+      new NostrServerTransport({
+        signer: new PrivateKeySigner(serverPrivateKey),
+        relayHandler: new ApplesauceRelayPool([relayUrl]),
+        encryptionMode: EncryptionMode.DISABLED,
+      }),
+      {
+        processors: [processor],
+        pricedCapabilities: [
+          {
+            method: 'tools/call',
+            name: 'add',
+            amount: 1,
+            currencyUnit: 'test',
+          },
+        ],
+        paymentInteraction: 'explicit_gating',
+      },
+    );
+    await mcpServer.connect(serverTransport);
+
+    const clientSK = generateSecretKey();
+    const clientPrivateKey = bytesToHex(clientSK);
+    const clientTransport = new NostrClientTransport({
+      signer: new PrivateKeySigner(clientPrivateKey),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      serverPubkey: serverPublicKey,
+      encryptionMode: EncryptionMode.DISABLED,
+    });
+    // Client pays unconditionally, so both invoices get paid.
+    const paidClientTransport = withClientPayments(clientTransport, {
+      handlers: [],
+      paymentInteraction: 'explicit_gating',
+      onPaymentRequired: async () => ({ paid: true }),
+    });
+
+    const client = new Client({
+      name: 'fresh-invoice-client',
+      version: '1.0.0',
+    });
+    await client.connect(paidClientTransport);
+
+    const result = await client.callTool({
+      name: 'add',
+      arguments: { a: 5, b: 7 },
+    });
+    const typedResult = result as {
+      content: Array<{ type: string; text?: string }>;
+    };
+    expect(typedResult.content[0]).toMatchObject({ type: 'text', text: '12' });
+
+    // Two distinct invoices issued; verify ran twice; the tool ran exactly once.
+    expect(issuedPayReqs).toHaveLength(2);
+    expect(issuedPayReqs[0]).not.toBe(issuedPayReqs[1]);
+    expect(verifyCount).toBe(2);
+    expect(toolCallCount).toBe(1);
+
+    await client.close();
+    await mcpServer.close();
+  }, 25000);
+
+  // CEP-8 negotiation: a client requesting explicit_gating against a transparent-
+  // only server receives -32602 with the requested + supported modes. Locks the
+  // effective-mode-disclosure MUST at the integration level.
+  test('explicit gating: transparent-only server rejects initialize with -32602', async () => {
+    const serverSK = generateSecretKey();
+    const serverPrivateKey = bytesToHex(serverSK);
+    const serverPublicKey = getPublicKey(serverSK);
+
+    const mcpServer = new McpServer({
+      name: 'transparent-only-server',
+      version: '1.0.0',
+    });
+    mcpServer.registerTool(
+      'add',
+      {
+        title: 'Addition Tool',
+        description: 'Add two numbers',
+        inputSchema: { a: z.number(), b: z.number() },
+      },
+      async ({ a, b }: { a: number; b: number }) => {
+        return { content: [{ type: 'text', text: String(a + b) }] };
+      },
+    );
+
+    // No paymentInteraction option → transparent-only server.
+    const processor = new FakePaymentProcessor();
+    const serverTransport = withServerPayments(
+      new NostrServerTransport({
+        signer: new PrivateKeySigner(serverPrivateKey),
+        relayHandler: new ApplesauceRelayPool([relayUrl]),
+        encryptionMode: EncryptionMode.DISABLED,
+      }),
+      {
+        processors: [processor],
+        pricedCapabilities: [
+          {
+            method: 'tools/call',
+            name: 'add',
+            amount: 1,
+            currencyUnit: 'test',
+          },
+        ],
+      },
+    );
+    await mcpServer.connect(serverTransport);
+
+    const clientSK = generateSecretKey();
+    const clientPrivateKey = bytesToHex(clientSK);
+    const clientTransport = new NostrClientTransport({
+      signer: new PrivateKeySigner(clientPrivateKey),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      serverPubkey: serverPublicKey,
+      encryptionMode: EncryptionMode.DISABLED,
+    });
+    const paidClientTransport = withClientPayments(clientTransport, {
+      handlers: [],
+      paymentInteraction: 'explicit_gating',
+      onPaymentRequired: async () => ({ paid: true }),
+    });
+
+    const client = new Client({ name: 'negotiation-client', version: '1.0.0' });
+
+    await expect(client.connect(paidClientTransport)).rejects.toMatchObject({
+      code: -32602,
+      data: { requested: 'explicit_gating', supported: ['transparent'] },
+    });
+
+    await mcpServer.close();
+  }, 20000);
+
+  // resolvePrice rejection: server emits payment_rejected instead of requesting
+  // payment; the client synthesizes -32000 so the caller rejects immediately
+  // instead of timing out. Locks the full transparent rejection path end-to-end.
+  test('transparent: resolvePrice rejection surfaces -32000 to the caller', async () => {
+    const serverSK = generateSecretKey();
+    const serverPrivateKey = bytesToHex(serverSK);
+    const serverPublicKey = getPublicKey(serverSK);
+
+    const mcpServer = new McpServer({
+      name: 'reject-server',
+      version: '1.0.0',
+    });
+    let toolCallCount = 0;
+    mcpServer.registerTool(
+      'add',
+      {
+        title: 'Addition Tool',
+        description: 'Add two numbers',
+        inputSchema: { a: z.number(), b: z.number() },
+      },
+      async ({ a, b }: { a: number; b: number }) => {
+        toolCallCount++;
+        return { content: [{ type: 'text', text: String(a + b) }] };
+      },
+    );
+
+    const processor = new FakePaymentProcessor();
+    const serverTransport = withServerPayments(
+      new NostrServerTransport({
+        signer: new PrivateKeySigner(serverPrivateKey),
+        relayHandler: new ApplesauceRelayPool([relayUrl]),
+        encryptionMode: EncryptionMode.DISABLED,
+      }),
+      {
+        processors: [processor],
+        pricedCapabilities: [
+          {
+            method: 'tools/call',
+            name: 'add',
+            amount: 1,
+            currencyUnit: 'test',
+          },
+        ],
+        resolvePrice: async () => rejectPrice('Free quota exhausted'),
+      },
+    );
+    await mcpServer.connect(serverTransport);
+
+    const clientSK = generateSecretKey();
+    const clientPrivateKey = bytesToHex(clientSK);
+    const clientTransport = new NostrClientTransport({
+      signer: new PrivateKeySigner(clientPrivateKey),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      serverPubkey: serverPublicKey,
+      encryptionMode: EncryptionMode.DISABLED,
+    });
+    const paidClientTransport = withClientPayments(clientTransport, {
+      handlers: [new FakePaymentHandler({ pmi: 'fake', delayMs: 1 })],
+    });
+
+    const client = new Client({ name: 'reject-client', version: '1.0.0' });
+    await client.connect(paidClientTransport);
+
+    await expect(
+      client.callTool({ name: 'add', arguments: { a: 1, b: 2 } }),
+    ).rejects.toMatchObject({ code: -32000 });
+    // McpError wraps the message as 'MCP error -32000: <original>'
+    await expect(
+      client.callTool({ name: 'add', arguments: { a: 3, b: 4 } }),
+    ).rejects.toThrow('Free quota exhausted');
+
+    expect(toolCallCount).toBe(0);
 
     await client.close();
     await mcpServer.close();
