@@ -131,8 +131,7 @@ export class ClientEventPipeline {
           decryptError instanceof Error
             ? decryptError.message
             : String(decryptError),
-        stack:
-          decryptError instanceof Error ? decryptError.stack : undefined,
+        stack: decryptError instanceof Error ? decryptError.stack : undefined,
         eventId: event.id,
         pubkey: event.pubkey,
       });
