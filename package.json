@@ -104,7 +104,7 @@
   "dependencies": {
     "@contextvm/mcp-sdk": "^1.30.0",
     "@noble/hashes": "^2.2.0",
-    "applesauce-relay": "^5.2.0",
+    "applesauce-relay": "^6.0.3",
     "canonicalize": "^2.1.0",
     "nostr-tools": "~2.18.2",
     "pino": "^10.3.1",

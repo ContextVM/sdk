@@ -720,22 +720,27 @@ describe('ApplesauceRelayPool Integration', () => {
         relayGroup: RelayGroup;
       };
       testPool.createSubscription = function (filters, onEvent, onEose) {
-        const subscription = testPool.relayGroup.subscription(filters, {
-          reconnect: false, // Disable applesauce recovery
-          resubscribe: false, // Disable applesauce recovery
-        });
+        // Mirror production shape: subscribe to the raw req() message stream so
+        // the test override exercises the same dispatch path as the pool. No
+        // dedup (see production createSubscription for rationale).
+        const sub = testPool.relayGroup
+          .req(filters, {
+            reconnect: false, // Disable applesauce recovery
+            resubscribe: false, // Disable applesauce recovery
+          })
+          .subscribe({
+            next: (message) => {
+              if (message.type === 'EOSE') {
+                onEose?.();
+                return;
+              }
 
-        const sub = subscription.subscribe({
-          next: (response) => {
-            if (response === 'EOSE') {
-              onEose?.();
-              return;
-            }
-
-            onEvent(response);
-          },
-          error: () => {},
-        });
+              if (message.type === 'EVENT') {
+                onEvent(message.event);
+              }
+            },
+            error: () => {},
+          });
 
         return () => sub.unsubscribe();
       };
@@ -969,7 +974,6 @@ describe('ApplesauceRelayPool configuration', () => {
   test('passes supported relayOptions through to underlying Relay instances', () => {
     const pool = new ApplesauceRelayPool(['ws://localhost:1234'], {
       relayOptions: {
-        eoseTimeout: 1_234,
         eventTimeout: 2_345,
         publishTimeout: 3_456,
       },
@@ -981,7 +985,8 @@ describe('ApplesauceRelayPool configuration', () => {
       }
     ).relays[0];
 
-    expect(relay.eoseTimeout).toBe(1_234);
+    // eoseTimeout was removed in applesauce-relay 6.0.3; eventTimeout and
+    // publishTimeout still round-trip cleanly through RelayOptions.
     expect(relay.eventTimeout).toBe(2_345);
     expect(relay.publishTimeout).toBe(3_456);
 
