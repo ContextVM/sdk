@@ -207,6 +207,68 @@ describe('gift-wrap pre-decrypt deduplication', () => {
     expect(received).toHaveLength(1);
   });
 
+  test('client: processes a decrypted inner event only once even if delivered in multiple gift-wrap envelopes', async () => {
+    decryptCallCount = 0;
+
+    // Use a real server keypair so the inner event pubkey matches serverPubkey.
+    const serverSk = generateSecretKey();
+    const serverPubkey = getPublicKey(serverSk);
+    const clientPriv = '1'.repeat(64);
+
+    const transport = new NostrClientTransport({
+      signer: new PrivateKeySigner(clientPriv),
+      relayHandler: makeNoopRelayHandler(),
+      serverPubkey,
+      encryptionMode: EncryptionMode.REQUIRED,
+    });
+
+    // Sign the inner event with the server's key so pubkey matches.
+    const innerEvent = createValidInnerEvent(serverPubkey, serverSk);
+    installDeterministicDecrypt(
+      transport as unknown as {
+        signer: {
+          nip44: {
+            encrypt: (plaintext: string, pubkey: string) => Promise<string>;
+            decrypt: (ciphertext: string, pubkey: string) => Promise<string>;
+          };
+        };
+      },
+      innerEvent,
+    );
+
+    const received: unknown[] = [];
+    transport.onmessage = (msg) => received.push(msg);
+
+    // Two distinct gift-wrap envelopes (different outer ids) that decrypt to
+    // the same inner event.
+    const gw1: NostrEvent = {
+      id: 'gw1',
+      kind: GIFT_WRAP_KIND,
+      pubkey: 'a'.repeat(64),
+      created_at: 1,
+      tags: [['p', serverPubkey]],
+      content: 'ciphertext-1',
+      sig: '0'.repeat(128),
+    };
+    const gw2: NostrEvent = {
+      id: 'gw2',
+      kind: GIFT_WRAP_KIND,
+      pubkey: 'b'.repeat(64),
+      created_at: 1,
+      tags: [['p', serverPubkey]],
+      content: 'ciphertext-2',
+      sig: '0'.repeat(128),
+    };
+
+    await transport['processIncomingEvent'](gw1);
+    await transport['processIncomingEvent'](gw2);
+
+    // Both envelopes decrypt (distinct outer ids pass envelope dedup), but the
+    // inner event is deduplicated by its id and dispatched only once.
+    expect(decryptCallCount).toBe(2);
+    expect(received).toHaveLength(1);
+  });
+
   test('server: decrypts only once for duplicate gift-wrap deliveries', async () => {
     decryptCallCount = 0;
 

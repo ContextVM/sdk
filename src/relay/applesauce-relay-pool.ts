@@ -466,29 +466,41 @@ export class ApplesauceRelayPool implements RelayHandler {
   ): () => void {
     logger.debug('Creating subscription', { filters });
 
-    const subscription = this.relayGroup.subscription(filters, {
-      reconnect: Infinity,
-      resubscribe: Infinity,
-    });
-
-    const sub = subscription.subscribe({
-      next: (response) => {
-        if (response === 'EOSE') {
-          onEose?.();
-        } else {
-          onEvent(response);
-        }
-      },
-      complete: () => {
-        logger.debug('Subscription complete');
-      },
-      error: (error) => {
-        logger.error('Subscription error', {
-          error,
-          relayUrls: this.relayUrls,
-        });
-      },
-    });
+    // NOTE: applesauce-relay 6.0.3 changed `RelayGroup.subscription()` to emit
+    // only deduplicated NostrEvents and no longer surfaces EOSE markers.
+    //
+    // We deliberately subscribe to the raw `RelayGroup.req()` message stream
+    // and forward EVERY event without deduplication. Dedup is intentionally NOT
+    // performed at the relay layer:
+    //   - The transport layer already deduplicates gift-wrap envelopes and
+    //     decrypted inner events via its own `seenEventIds` cache, with
+    //     protocol-aware semantics.
+    //   - The explicit-gating payment flow republishes the SAME request event
+    //     id after payment and relies on the server re-observing it. Relay-
+    //     layer dedup by event id (whether applesauce 6.0.3's `distinct()` or a
+    //     local `Set`) silently swallows that retry and deadlocks the flow.
+    const sub = this.relayGroup
+      .req(filters, { reconnect: Infinity, resubscribe: Infinity })
+      .subscribe({
+        next: (message) => {
+          if (message.type === 'EOSE') {
+            onEose?.();
+          } else if (message.type === 'EVENT') {
+            onEvent(message.event);
+          }
+          // OPEN / CLOSED / ERROR are intentionally ignored; the old
+          // `subscription()` filtered them out as well.
+        },
+        complete: () => {
+          logger.debug('Subscription complete');
+        },
+        error: (error) => {
+          logger.error('Subscription error', {
+            error,
+            relayUrls: this.relayUrls,
+          });
+        },
+      });
 
     return () => sub.unsubscribe();
   }
