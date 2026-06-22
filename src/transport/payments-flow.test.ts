@@ -89,6 +89,20 @@ async function captureNextCtxvmEvent(params: {
   });
 }
 
+/**
+ * Nostr event ids are derived from (content, author, created_at, tags) at
+ * second granularity. An explicit-gating retry republishes the same JSON-RPC
+ * request; if it lands in the same second as the original, the identical event
+ * id is deduplicated by relay subscriptions and the server never sees the
+ * retry. Sleep past the current second boundary so the retry's event id
+ * differs. Real-world payment flows naturally take >1s (wallet interaction,
+ * settlement); this only affects instant-pay tests.
+ */
+async function sleepPastSecondBoundary(): Promise<void> {
+  const waitMs = 1000 - (Date.now() % 1000) + 10;
+  await new Promise((resolve) => setTimeout(resolve, waitMs));
+}
+
 describe.serial('payments fake flow (transport-level)', () => {
   let stopRelay: (() => void) | undefined;
 
@@ -1079,6 +1093,7 @@ describe.serial('payments fake flow (transport-level)', () => {
       handlers: [],
       paymentInteraction: 'explicit_gating',
       onPaymentRequired: async () => {
+        await sleepPastSecondBoundary();
         explicitPaymentHandled = true;
         return { paid: true };
       },
@@ -1254,7 +1269,10 @@ describe.serial('payments fake flow (transport-level)', () => {
     const paidClientTransport = withClientPayments(clientTransport, {
       handlers: [],
       paymentInteraction: 'explicit_gating',
-      onPaymentRequired: async () => ({ paid: true }),
+      onPaymentRequired: async () => {
+        await sleepPastSecondBoundary();
+        return { paid: true };
+      },
     });
 
     const client = new Client({
@@ -1531,7 +1549,10 @@ describe.serial('payments fake flow (transport-level)', () => {
     const paidClientTransport = withClientPayments(clientTransport, {
       handlers: [],
       paymentInteraction: 'explicit_gating',
-      onPaymentRequired: async () => ({ paid: true }),
+      onPaymentRequired: async () => {
+        await sleepPastSecondBoundary();
+        return { paid: true };
+      },
     });
 
     const client = new Client({
@@ -1558,6 +1579,105 @@ describe.serial('payments fake flow (transport-level)', () => {
     await client.close();
     await mcpServer.close();
   }, 25000);
+
+  // resolvePrice + explicit_gating integration: a dynamic quote flows through
+  // the explicit-gating path end-to-end. The quoted amount (not the static
+  // pricedCapabilities amount) reaches createPaymentRequired, payment succeeds,
+  // and the tool runs exactly once.
+  test('explicit gating: resolvePrice quotes a dynamic amount that reaches createPaymentRequired', async () => {
+    const serverSK = generateSecretKey();
+    const serverPublicKey = getPublicKey(serverSK);
+    const serverPrivateKey = bytesToHex(serverSK);
+
+    const mcpServer = new McpServer({
+      name: 'dynamic-price-server',
+      version: '1.0.0',
+    });
+    let toolCallCount = 0;
+    mcpServer.registerTool(
+      'add',
+      {
+        title: 'Addition Tool',
+        description: 'Add two numbers',
+        inputSchema: { a: z.number(), b: z.number() },
+      },
+      async ({ a, b }: { a: number; b: number }) => {
+        toolCallCount++;
+        return { content: [{ type: 'text', text: String(a + b) }] };
+      },
+    );
+
+    const processor = new FakePaymentProcessor();
+    const createSpy = spyOn(processor, 'createPaymentRequired');
+
+    const serverTransport = withServerPayments(
+      new NostrServerTransport({
+        signer: new PrivateKeySigner(serverPrivateKey),
+        relayHandler: new ApplesauceRelayPool([relayUrl]),
+        encryptionMode: EncryptionMode.DISABLED,
+      }),
+      {
+        processors: [processor],
+        pricedCapabilities: [
+          {
+            method: 'tools/call',
+            name: 'add',
+            amount: 1, // static fallback; resolvePrice overrides this
+            currencyUnit: 'test',
+          },
+        ],
+        paymentInteraction: 'explicit_gating',
+        resolvePrice: async () => ({
+          amount: 42,
+          description: 'dynamic quote',
+          meta: { quoted: true },
+        }),
+      },
+    );
+    await mcpServer.connect(serverTransport);
+
+    const clientSK = generateSecretKey();
+    const clientPrivateKey = bytesToHex(clientSK);
+    const clientTransport = new NostrClientTransport({
+      signer: new PrivateKeySigner(clientPrivateKey),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      serverPubkey: serverPublicKey,
+      encryptionMode: EncryptionMode.DISABLED,
+    });
+    const paidClientTransport = withClientPayments(clientTransport, {
+      handlers: [],
+      paymentInteraction: 'explicit_gating',
+      onPaymentRequired: async () => {
+        await sleepPastSecondBoundary();
+        return { paid: true };
+      },
+    });
+
+    const client = new Client({
+      name: 'dynamic-price-client',
+      version: '1.0.0',
+    });
+    await client.connect(paidClientTransport);
+
+    const result = await client.callTool({
+      name: 'add',
+      arguments: { a: 5, b: 7 },
+    });
+    const typedResult = result as {
+      content: Array<{ type: string; text?: string }>;
+    };
+    expect(typedResult.content[0]).toMatchObject({ type: 'text', text: '12' });
+
+    // resolvePrice was consulted: createPaymentRequired received the quoted
+    // amount (42), not the static pricedCapabilities amount (1).
+    expect(createSpy.mock.calls.length).toBe(1);
+    expect(createSpy.mock.calls[0][0].amount).toBe(42);
+
+    expect(toolCallCount).toBe(1);
+
+    await client.close();
+    await mcpServer.close();
+  }, 20000);
 
   // CEP-8 negotiation: a client requesting explicit_gating against a transparent-
   // only server receives -32602 with the requested + supported modes. Locks the
@@ -1701,6 +1821,91 @@ describe.serial('payments fake flow (transport-level)', () => {
     ).rejects.toThrow('Free quota exhausted');
 
     expect(toolCallCount).toBe(0);
+
+    await client.close();
+    await mcpServer.close();
+  }, 20000);
+
+  // CEP-8 coexistence: a server that offers explicit_gating is opt-in. When the
+  // client omits the payment_interaction tag (default transparent), the session
+  // falls back to transparent mode and the request flows through the transparent
+  // payment_required path. The reverse direction (client requests, server
+  // doesn't support) is covered by the -32602 negotiation test above.
+  test('explicit-capable server falls back to transparent for a transparent client', async () => {
+    const serverSK = generateSecretKey();
+    const serverPrivateKey = bytesToHex(serverSK);
+    const serverPublicKey = getPublicKey(serverSK);
+
+    const mcpServer = new McpServer({
+      name: 'explicit-capable-server',
+      version: '1.0.0',
+    });
+    let toolCallCount = 0;
+    mcpServer.registerTool(
+      'add',
+      {
+        title: 'Addition Tool',
+        description: 'Add two numbers',
+        inputSchema: { a: z.number(), b: z.number() },
+      },
+      async ({ a, b }: { a: number; b: number }) => {
+        toolCallCount++;
+        return { content: [{ type: 'text', text: String(a + b) }] };
+      },
+    );
+
+    const processor = new FakePaymentProcessor({ verifyDelayMs: 50 });
+    const serverTransport = withServerPayments(
+      new NostrServerTransport({
+        signer: new PrivateKeySigner(serverPrivateKey),
+        relayHandler: new ApplesauceRelayPool([relayUrl]),
+        encryptionMode: EncryptionMode.DISABLED,
+      }),
+      {
+        processors: [processor],
+        pricedCapabilities: [
+          {
+            method: 'tools/call',
+            name: 'add',
+            amount: 1,
+            currencyUnit: 'test',
+          },
+        ],
+        // Server advertises explicit_gating, but it is opt-in per session.
+        paymentInteraction: 'explicit_gating',
+      },
+    );
+    await mcpServer.connect(serverTransport);
+
+    const clientSK = generateSecretKey();
+    const clientPrivateKey = bytesToHex(clientSK);
+    const clientTransport = new NostrClientTransport({
+      signer: new PrivateKeySigner(clientPrivateKey),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      serverPubkey: serverPublicKey,
+      encryptionMode: EncryptionMode.DISABLED,
+    });
+    // No paymentInteraction option → transparent client with an auto-satisfying
+    // handler. The server must NOT gate this session with -32042.
+    const paidClientTransport = withClientPayments(clientTransport, {
+      handlers: [new FakePaymentHandler({ pmi: 'fake', delayMs: 50 })],
+    });
+
+    const client = new Client({
+      name: 'transparent-client',
+      version: '1.0.0',
+    });
+    await client.connect(paidClientTransport);
+
+    const result = await client.callTool({
+      name: 'add',
+      arguments: { a: 2, b: 3 },
+    });
+    const typedResult = result as {
+      content: Array<{ type: string; text?: string }>;
+    };
+    expect(typedResult.content[0]).toMatchObject({ type: 'text', text: '5' });
+    expect(toolCallCount).toBe(1);
 
     await client.close();
     await mcpServer.close();

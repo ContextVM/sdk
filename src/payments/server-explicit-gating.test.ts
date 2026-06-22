@@ -6,6 +6,7 @@ import type {
 import { createExplicitGatingMiddleware } from './server-explicit-gating.js';
 import type { ServerPaymentsContext } from './types.js';
 import { AuthorizationStore } from './authorization-store.js';
+import { computeCanonicalInvocationIdentity } from './canonical-identity.js';
 import {
   PAYMENT_PENDING_ERROR_CODE,
   PAYMENT_REQUIRED_ERROR_CODE,
@@ -421,5 +422,268 @@ describe('Explicit Gating Middleware', () => {
     expect(sentResponses).toHaveLength(2);
     expect(sentResponses[1].error.code).toBe(PAYMENT_REQUIRED_ERROR_CODE);
     expect(createCount).toBe(2);
+  });
+
+  // --- CEP-8 explicit-gating security invariants ---
+  // A paid grant authorizes exactly one execution of one specific invocation
+  // by one specific client. The canonical identity is SHA-256(JCS({method,
+  // params})) scoped to the client pubkey; the JSON-RPC id MUST NOT affect it.
+  // These tests lock each isolation axis at the middleware level.
+
+  test('grant for one param set does not authorize a different param set', async () => {
+    const store = new AuthorizationStore();
+    const sentResponses: JSONRPCErrorResponse[] = [];
+
+    const mw = createExplicitGatingMiddleware({
+      options: {
+        processors: [processor],
+        pricedCapabilities: [...pricedCapabilities],
+      },
+      authorizationStore: store,
+      sendResponse: async (_pubkey, response) => {
+        sentResponses.push(response);
+      },
+    });
+
+    // Grant authorization for add({ a: 1, b: 2 }).
+    store.grant(
+      computeCanonicalInvocationIdentity(
+        ctx.clientPubkey,
+        message.method,
+        message.params,
+      ),
+      10000,
+    );
+
+    // Different params: add({ a: 9, b: 9 }).
+    const otherMessage: JSONRPCRequest = {
+      jsonrpc: '2.0',
+      id: 'event-id',
+      method: 'tools/call',
+      params: { name: 'add', arguments: { a: 9, b: 9 } },
+    };
+
+    let forwarded = false;
+    await mw(otherMessage, ctx, async () => {
+      forwarded = true;
+    });
+
+    // The grant for {a:1,b:2} must NOT authorize {a:9,b:9}.
+    expect(forwarded).toBe(false);
+    expect(sentResponses).toHaveLength(1);
+    expect(sentResponses[0].error.code).toBe(PAYMENT_REQUIRED_ERROR_CODE);
+
+    // The original grant is still consumable by its own params.
+    let forwardedOriginal = false;
+    await mw(message, ctx, async () => {
+      forwardedOriginal = true;
+    });
+    expect(forwardedOriginal).toBe(true);
+    expect(sentResponses).toHaveLength(1);
+  });
+
+  test('grant for one client does not authorize a different client', async () => {
+    const store = new AuthorizationStore();
+    const sentResponses: JSONRPCErrorResponse[] = [];
+
+    const mw = createExplicitGatingMiddleware({
+      options: {
+        processors: [processor],
+        pricedCapabilities: [...pricedCapabilities],
+      },
+      authorizationStore: store,
+      sendResponse: async (_pubkey, response) => {
+        sentResponses.push(response);
+      },
+    });
+
+    // Grant authorization scoped to 'test-client'.
+    store.grant(
+      computeCanonicalInvocationIdentity(
+        ctx.clientPubkey,
+        message.method,
+        message.params,
+      ),
+      10000,
+    );
+
+    // Same method + params, but a different client pubkey.
+    const otherCtx: ServerPaymentsContext = {
+      ...ctx,
+      clientPubkey: 'other-client',
+    };
+
+    let forwarded = false;
+    await mw(message, otherCtx, async () => {
+      forwarded = true;
+    });
+
+    // The grant for 'test-client' must NOT authorize 'other-client'.
+    expect(forwarded).toBe(false);
+    expect(sentResponses).toHaveLength(1);
+    expect(sentResponses[0].error.code).toBe(PAYMENT_REQUIRED_ERROR_CODE);
+
+    // The original client can still consume its grant.
+    let forwardedOriginal = false;
+    await mw(message, ctx, async () => {
+      forwardedOriginal = true;
+    });
+    expect(forwardedOriginal).toBe(true);
+    expect(sentResponses).toHaveLength(1);
+  });
+
+  test('grant matches across different JSON-RPC ids (id is not part of identity)', async () => {
+    const store = new AuthorizationStore();
+    const sentResponses: JSONRPCErrorResponse[] = [];
+
+    const mw = createExplicitGatingMiddleware({
+      options: {
+        processors: [processor],
+        pricedCapabilities: [...pricedCapabilities],
+      },
+      authorizationStore: store,
+      sendResponse: async (_pubkey, response) => {
+        sentResponses.push(response);
+      },
+    });
+
+    // Identity is computed from method + params only; the original request's
+    // id ('event-id') is intentionally excluded from the canonical form.
+    store.grant(
+      computeCanonicalInvocationIdentity(
+        ctx.clientPubkey,
+        message.method,
+        message.params,
+      ),
+      10000,
+    );
+
+    // Retry with a DIFFERENT JSON-RPC id but identical method + params.
+    const retryWithDifferentId: JSONRPCRequest = {
+      ...message,
+      id: 'a-completely-different-event-id',
+    };
+
+    let forwarded = false;
+    await mw(retryWithDifferentId, ctx, async () => {
+      forwarded = true;
+    });
+
+    // The grant must still match despite the different id.
+    expect(forwarded).toBe(true);
+    expect(sentResponses).toHaveLength(0);
+  });
+
+  test('concurrent requests after a grant: exactly one consumes it, the other is gated', async () => {
+    const store = new AuthorizationStore();
+    const sentResponses: JSONRPCErrorResponse[] = [];
+
+    const mw = createExplicitGatingMiddleware({
+      options: {
+        processors: [processor],
+        pricedCapabilities: [...pricedCapabilities],
+      },
+      authorizationStore: store,
+      sendResponse: async (_pubkey, response) => {
+        sentResponses.push(response);
+      },
+    });
+
+    // A single grant is available for this invocation.
+    store.grant(
+      computeCanonicalInvocationIdentity(
+        ctx.clientPubkey,
+        message.method,
+        message.params,
+      ),
+      10000,
+    );
+
+    let forwards = 0;
+    const forward = async () => {
+      forwards += 1;
+    };
+
+    // Fire two concurrent middleware calls for the same invocation.
+    await Promise.all([mw(message, ctx, forward), mw(message, ctx, forward)]);
+
+    // Exactly one consumes the single-use grant and forwards; the other is
+    // gated with a fresh -32042. claim() is synchronous, so the first call
+    // to reach it always wins deterministically.
+    expect(forwards).toBe(1);
+    expect(sentResponses).toHaveLength(1);
+    expect(sentResponses[0].error.code).toBe(PAYMENT_REQUIRED_ERROR_CODE);
+  });
+
+  test('expired grant yields a fresh -32042 instead of forwarding', async () => {
+    const store = new AuthorizationStore();
+    const sentResponses: JSONRPCErrorResponse[] = [];
+
+    const mw = createExplicitGatingMiddleware({
+      options: {
+        processors: [processor],
+        pricedCapabilities: [...pricedCapabilities],
+      },
+      authorizationStore: store,
+      sendResponse: async (_pubkey, response) => {
+        sentResponses.push(response);
+      },
+    });
+
+    // Grant authorization with a very short TTL.
+    store.grant(
+      computeCanonicalInvocationIdentity(
+        ctx.clientPubkey,
+        message.method,
+        message.params,
+      ),
+      50,
+    );
+
+    // Wait past the grant TTL so it expires before the retry arrives.
+    await new Promise((r) => setTimeout(r, 75));
+
+    // The stale grant must NOT authorize the request: the middleware should
+    // treat it as unpaid and emit a fresh -32042 rather than forwarding.
+    let forwarded = false;
+    await mw(message, ctx, async () => {
+      forwarded = true;
+    });
+
+    expect(forwarded).toBe(false);
+    expect(sentResponses).toHaveLength(1);
+    expect(sentResponses[0].error.code).toBe(PAYMENT_REQUIRED_ERROR_CODE);
+  });
+
+  test('non-priced capability passes through ungated in explicit gating mode', async () => {
+    const store = new AuthorizationStore();
+    const sentResponses: JSONRPCErrorResponse[] = [];
+
+    const mw = createExplicitGatingMiddleware({
+      options: {
+        processors: [processor],
+        pricedCapabilities: [...pricedCapabilities],
+      },
+      authorizationStore: store,
+      sendResponse: async (_pubkey, response) => {
+        sentResponses.push(response);
+      },
+    });
+
+    // A tool NOT listed in pricedCapabilities (only 'add' is priced).
+    const unpricedMessage: JSONRPCRequest = {
+      jsonrpc: '2.0',
+      id: 'event-id',
+      method: 'tools/call',
+      params: { name: 'free', arguments: {} },
+    };
+
+    let forwarded = false;
+    await mw(unpricedMessage, ctx, async () => {
+      forwarded = true;
+    });
+
+    expect(forwarded).toBe(true);
+    expect(sentResponses).toHaveLength(0);
   });
 });
