@@ -7,6 +7,7 @@ import { EncryptionMode, GiftWrapMode } from '../core/interfaces.js';
 import { type NostrEvent } from 'nostr-tools';
 import { type ClientSession } from './nostr-server/session-store.js';
 import { queryTags } from '../core/utils/utils.js';
+import type { PaymentInteractionMode } from '../payments/types.js';
 
 const NON_DISCOVERY_TAG_NAMES = new Set<string>(['e', 'p']);
 
@@ -180,8 +181,10 @@ export class ServerCapabilityNegotiator {
 export class ClientCapabilityNegotiator {
   private hasSentDiscoveryTags = false;
   private clientPmis?: readonly string[];
+  private paymentInteraction?: PaymentInteractionMode;
   private serverSupportsEphemeralGiftWraps = false;
   private _serverInitializeEvent?: NostrEvent;
+  private hasSentPaymentInteraction = false;
 
   constructor(
     private deps: {
@@ -202,6 +205,24 @@ export class ClientCapabilityNegotiator {
    */
   public setClientPmis(pmis: readonly string[]): void {
     this.clientPmis = pmis;
+  }
+
+  /**
+   * Sets the requested payment interaction mode for negotiation.
+   */
+  public setPaymentInteraction(mode: PaymentInteractionMode): void {
+    this.paymentInteraction = mode;
+  }
+
+  /**
+   * Returns the payment interaction mode this client requested, if any.
+   *
+   * Used to distinguish an inbound `payment_interaction` tag observed as the
+   * session's effective mode (authoritative only when the client requested a
+   * non-default mode) from a server availability advertisement.
+   */
+  public getRequestedPaymentInteraction(): PaymentInteractionMode | undefined {
+    return this.paymentInteraction;
   }
 
   /**
@@ -253,6 +274,13 @@ export class ClientCapabilityNegotiator {
     if (this.clientPmis) {
       tags.push(...this.clientPmis.map((pmi) => ['pmi', pmi]));
     }
+    if (
+      this.paymentInteraction &&
+      this.paymentInteraction !== 'transparent' &&
+      !this.hasSentPaymentInteraction
+    ) {
+      tags.push([NOSTR_TAGS.PAYMENT_INTERACTION, this.paymentInteraction]);
+    }
     return tags;
   }
 
@@ -279,11 +307,14 @@ export class ClientCapabilityNegotiator {
   }
 
   /**
-   * Marks discovery tags as sent to prevent re-sending.
+   * Marks discovery and negotiation tags as sent to prevent re-sending.
    */
-  public markDiscoveryTagsSent(): void {
+  public markNegotiationTagsSent(): void {
     if (this.getPendingDiscoveryTags().length > 0) {
       this.hasSentDiscoveryTags = true;
+    }
+    if (this.paymentInteraction && this.paymentInteraction !== 'transparent') {
+      this.hasSentPaymentInteraction = true;
     }
   }
 

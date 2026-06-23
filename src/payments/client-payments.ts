@@ -3,8 +3,10 @@ import {
   isJSONRPCNotification,
   isJSONRPCResultResponse,
   isJSONRPCErrorResponse,
-  JSONRPCNotification,
+  type JSONRPCNotification,
   type JSONRPCMessage,
+  type JSONRPCRequest,
+  type JSONRPCErrorResponse,
 } from '@contextvm/mcp-sdk/types.js';
 import { NostrClientTransport } from '../transport/nostr-client-transport.js';
 import {
@@ -13,14 +15,24 @@ import {
   PaymentRequiredNotification,
   PaymentHandlerRequest,
 } from './types.js';
+import { LruCache } from '../core/utils/lru-cache.js';
 import { createLogger } from '../core/utils/logger.js';
 import type { OriginalRequestContext } from '../transport/nostr-client/correlation-store.js';
+import type {
+  PaymentInteractionMode,
+  PaymentOption,
+  PaymentRequiredErrorData,
+  PaymentPendingErrorData,
+} from './types.js';
+
 import {
   DEFAULT_SYNTHETIC_PROGRESS_INTERVAL_MS,
   DEFAULT_PAYMENT_TTL_MS,
   PAYMENT_ACCEPTED_METHOD,
   PAYMENT_REJECTED_METHOD,
   PAYMENT_REQUIRED_METHOD,
+  PAYMENT_REQUIRED_ERROR_CODE,
+  PAYMENT_PENDING_ERROR_CODE,
 } from './constants.js';
 
 export interface ClientPaymentsOptions {
@@ -56,6 +68,47 @@ export interface ClientPaymentsOptions {
     req: PaymentHandlerRequest,
     originalRequestContext?: OriginalRequestContext,
   ) => boolean | Promise<boolean>;
+
+  /** Requested payment interaction mode. @default 'transparent' */
+  paymentInteraction?: PaymentInteractionMode;
+
+  /**
+   * Maximum number of -32043 (Payment Pending) retries before giving up.
+   *
+   * With retry_after=2 and 1.5× exponential backoff capped at 10s, the default
+   * of 10 retries gives ~45s of cumulative wait — enough for typical verification
+   * flows. Increase for slow payment processors (e.g. on-chain confirmation).
+   * @default 10
+   */
+  maxPendingRetries?: number;
+
+  /**
+   * Handler for explicit-gating -32042 errors.
+   * Called when a priced invocation returns Payment Required.
+   * The handler should pay one option and signal completion.
+   *
+   * **Error handling contract**:
+   * - If the promise resolves with `{ paid: true }`, the wrapper auto-retries the
+   *   original request with the same `method` and `params`.
+   * - If the promise resolves with `{ paid: false, reason }`, the wrapper synthesizes
+   *   a JSON-RPC error to the caller with code `-32042` and `data: { reason }`.
+   *   Use `reason: 'user_cancelled'` for user-initiated cancellations.
+   * - If the promise **rejects**, the wrapper MUST NOT silently fall back.
+   *   It synthesizes a JSON-RPC error with code `-32042` and
+   *   `data: { reason: error.message, type: 'payment_handler_error' }`.
+   * - Transient payment-provider failures should reject with an Error whose
+   *   `message` contains the provider error details.
+   *
+   * **Verify-timeout window**: if the server's verification times out or fails
+   * after the client paid, its pending state is cleared and the client's retry
+   * receives a fresh `-32042` with a new invoice (CEP-8-compliant). The wrapper
+   * does not dedup across distinct `pay_req` values.
+   */
+  onPaymentRequired?: (params: {
+    options: PaymentOption[];
+    instructions?: string;
+    originalRequest: JSONRPCRequest;
+  }) => Promise<{ paid: boolean; reason?: string }>;
 }
 
 type ProgressToken = string;
@@ -79,6 +132,35 @@ function supportsOnmessageWithContext(
   return Object.prototype.hasOwnProperty.call(
     transport,
     'onmessageWithContext',
+  );
+}
+
+function isExplicitPaymentRequiredError(
+  msg: JSONRPCMessage,
+): msg is JSONRPCErrorResponse {
+  return (
+    isJSONRPCErrorResponse(msg) &&
+    msg.error.code === PAYMENT_REQUIRED_ERROR_CODE &&
+    typeof msg.error.data === 'object' &&
+    msg.error.data !== null &&
+    Array.isArray(
+      (msg.error.data as { payment_options?: unknown }).payment_options,
+    ) &&
+    (msg.error.data as { payment_options: unknown[] }).payment_options.length >
+      0
+  );
+}
+
+function isExplicitPaymentPendingError(
+  msg: JSONRPCMessage,
+): msg is JSONRPCErrorResponse {
+  return (
+    isJSONRPCErrorResponse(msg) &&
+    msg.error.code === PAYMENT_PENDING_ERROR_CODE &&
+    typeof msg.error.data === 'object' &&
+    msg.error.data !== null &&
+    typeof (msg.error.data as { retry_after?: unknown }).retry_after ===
+      'number'
   );
 }
 
@@ -162,12 +244,27 @@ export function withClientPayments(
     maybeStopScheduler();
   };
 
-  const stopAllSyntheticProgress = (): void => {
+  const pendingTimers = new Set<ReturnType<typeof setTimeout>>();
+  const retryCounts = new Map<string | number, number>();
+  const rawRequestCache = new LruCache<JSONRPCRequest>(1000);
+  const MAX_RETRIES = options.maxPendingRetries ?? 10;
+
+  /**
+   * Disposes all client-side payment state: synthetic progress, pending retry
+   * timers, retry counters, and the raw-request cache. Called on transport close.
+   */
+  const disposeClientState = (): void => {
     syntheticProgress.clear();
     if (syntheticProgressScheduler) {
       clearInterval(syntheticProgressScheduler);
       syntheticProgressScheduler = undefined;
     }
+    for (const timer of pendingTimers) {
+      clearTimeout(timer);
+    }
+    pendingTimers.clear();
+    retryCounts.clear();
+    rawRequestCache.clear();
   };
 
   // Ensure CEP-8 discovery/negotiation: when using Nostr transports, always advertise
@@ -177,6 +274,12 @@ export function withClientPayments(
     logger.debug('advertised client PMIs', {
       pmis: options.handlers.map((h) => h.pmi),
     });
+    if (options.paymentInteraction === 'explicit_gating') {
+      transport.setPaymentInteraction('explicit_gating');
+      logger.debug('advertised requested payment interaction mode', {
+        mode: 'explicit_gating',
+      });
+    }
   }
 
   const handlersByPmi = new Map(
@@ -201,14 +304,174 @@ export function withClientPayments(
   let onerror: ((error: Error) => void) | undefined;
   let onclose: (() => void) | undefined;
 
-  async function maybeHandlePaymentRequired(
+  /** Emits a synthesized JSON-RPC error to the upstream consumer via `onmessage`. */
+  const synthesizePaymentError = (params: {
+    id: string | number | undefined;
+    code: number;
+    message: string;
+    data: Record<string, unknown>;
+  }): void => {
+    onmessage?.({
+      jsonrpc: '2.0',
+      id: params.id,
+      error: {
+        code: params.code,
+        message: params.message,
+        data: params.data,
+      },
+    } as JSONRPCMessage);
+  };
+
+  /**
+   * Handles explicit-gating -32042 (invoke `onPaymentRequired`, then retry) and
+   * -32043 (backoff, then retry). Both are intercepted here, never forwarded.
+   */
+  async function handleExplicitPaymentError(
     message: JSONRPCMessage,
     requestEventId: string,
   ): Promise<void> {
-    if (!isPaymentRequiredNotification(message)) {
+    if (isExplicitPaymentRequiredError(message)) {
+      const errorMsg = message;
+      const data = errorMsg.error.data as PaymentRequiredErrorData;
+
+      if (!options.onPaymentRequired) {
+        onmessage?.(message);
+        return;
+      }
+
+      const requestId = errorMsg.id;
+      const rawRequest =
+        requestId != null ? rawRequestCache.get(String(requestId)) : undefined;
+      if (!rawRequest) {
+        logger.warn(
+          'missing raw original request, cannot retry explicit payment',
+          { requestEventId },
+        );
+        onmessage?.(message);
+        return;
+      }
+
+      logger.info('invoking onPaymentRequired for explicit gating', {
+        requestEventId,
+        optionsCount: data.payment_options.length,
+      });
+
+      try {
+        const result = await options.onPaymentRequired({
+          options: data.payment_options,
+          instructions: data.instructions,
+          originalRequest: rawRequest,
+        });
+
+        if (result.paid) {
+          logger.info('explicit payment satisfied, retrying original request', {
+            requestEventId,
+            method: rawRequest.method,
+          });
+          await transport.send(rawRequest);
+          return;
+        }
+
+        logger.debug('onPaymentRequired returned paid=false', {
+          requestEventId,
+          reason: result.reason,
+        });
+        synthesizePaymentError({
+          id: errorMsg.id,
+          code: PAYMENT_REQUIRED_ERROR_CODE,
+          message: 'Payment Required',
+          data: { reason: result.reason || 'user_cancelled' },
+        });
+      } catch (err) {
+        logger.error('onPaymentRequired callback failed', {
+          requestEventId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        synthesizePaymentError({
+          id: errorMsg.id,
+          code: PAYMENT_REQUIRED_ERROR_CODE,
+          message: 'Payment Required',
+          data: {
+            reason: err instanceof Error ? err.message : String(err),
+            type: 'payment_handler_error',
+          },
+        });
+      }
       return;
     }
 
+    // -32043 Payment Pending
+    if (isExplicitPaymentPendingError(message)) {
+      const errorMsg = message;
+      const data = errorMsg.error.data as PaymentPendingErrorData;
+      const retryAfterSeconds = data.retry_after;
+
+      const requestId = errorMsg.id;
+      const rawRequest =
+        requestId != null ? rawRequestCache.get(String(requestId)) : undefined;
+      if (!rawRequest) {
+        logger.warn(
+          'missing raw original request, cannot retry explicit payment pending',
+          { requestEventId },
+        );
+        onmessage?.(message);
+        return;
+      }
+
+      const requestIdKey = errorMsg.id as string | number;
+      const retries = retryCounts.get(requestIdKey) ?? 0;
+      if (retries >= MAX_RETRIES) {
+        logger.error('max explicit payment retries exceeded', {
+          requestEventId,
+          id: requestIdKey,
+          maxRetries: MAX_RETRIES,
+        });
+        onmessage?.(message);
+        return;
+      }
+
+      retryCounts.set(requestIdKey, retries + 1);
+
+      logger.info('payment pending, retrying after backoff', {
+        requestEventId,
+        retryAfterSeconds,
+        retryCount: retries + 1,
+      });
+
+      const baseDelayMs = (retryAfterSeconds ?? 1) * 1000;
+      const exponentialMultiplier = Math.pow(1.5, retries);
+      const delayMs = Math.min(baseDelayMs * exponentialMultiplier, 10000);
+
+      const timer = setTimeout(() => {
+        pendingTimers.delete(timer);
+        transport.send(rawRequest).catch((err) => {
+          logger.error('failed to retry pending request', {
+            requestEventId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+          synthesizePaymentError({
+            id: rawRequest.id,
+            code: PAYMENT_PENDING_ERROR_CODE,
+            message: 'Failed to retry pending request',
+            data: {
+              reason: err instanceof Error ? err.message : String(err),
+            },
+          });
+        });
+      }, delayMs);
+      pendingTimers.add(timer);
+    }
+  }
+
+  /**
+   * Handles transparent `notifications/payment_required`: satisfies the request
+   * in-band via configured handlers, gated by `paymentPolicy`, `canHandle`, and
+   * the effective-mode guard.
+   */
+  async function handleTransparentPaymentRequired(
+    message: PaymentRequiredNotification,
+    requestEventId: string,
+  ): Promise<void> {
     const handler = handlersByPmi.get(message.params.pmi);
     if (!handler) {
       logger.debug('no handler for PMI, ignoring payment_required', {
@@ -230,6 +493,34 @@ export function withClientPayments(
         pmi: message.params.pmi,
         amount: message.params.amount,
       });
+      return;
+    }
+
+    // CEP-8: a client that required explicit_gating SHOULD NOT auto-satisfy a
+    // transparent payment_required when the server did not accept it.
+    if (
+      isNostrTransport &&
+      options.paymentInteraction === 'explicit_gating' &&
+      transport.getEffectivePaymentInteraction() !== 'explicit_gating'
+    ) {
+      logger.warn(
+        'declining transparent payment_required: explicit_gating was not accepted by the server',
+        { requestEventId, pmi: message.params.pmi },
+      );
+      if (pending?.originalRequestId != null) {
+        synthesizePaymentError({
+          id: pending.originalRequestId,
+          code: -32000,
+          message:
+            'Payment declined: explicit_gating was not accepted by the server',
+          data: {
+            pmi: message.params.pmi,
+            amount: message.params.amount,
+            method: pending.originalRequestContext?.method,
+            capability: pending.originalRequestContext?.capability,
+          },
+        });
+      }
       return;
     }
 
@@ -312,20 +603,17 @@ export function withClientPayments(
           stopSyntheticProgress(pending.progressToken);
         }
 
-        onmessage?.({
-          jsonrpc: '2.0',
+        synthesizePaymentError({
           id: pending.originalRequestId,
-          error: {
-            code: -32000,
-            message: params.message,
-            data: {
-              pmi: req.pmi,
-              amount: req.amount,
-              method: pending.originalRequestContext?.method,
-              capability: pending.originalRequestContext?.capability,
-            },
+          code: -32000,
+          message: params.message,
+          data: {
+            pmi: req.pmi,
+            amount: req.amount,
+            method: pending.originalRequestContext?.method,
+            capability: pending.originalRequestContext?.capability,
           },
-        } as JSONRPCMessage);
+        });
       };
 
       logger.info('processing payment_required', {
@@ -388,6 +676,47 @@ export function withClientPayments(
     }
   }
 
+  /** Classifies an inbound payment message and delegates to the relevant handler. */
+  async function maybeHandlePaymentRequired(
+    message: JSONRPCMessage,
+    requestEventId: string,
+  ): Promise<void> {
+    if (
+      isExplicitPaymentRequiredError(message) ||
+      isExplicitPaymentPendingError(message)
+    ) {
+      await handleExplicitPaymentError(message, requestEventId);
+      return;
+    }
+    if (isPaymentRequiredNotification(message)) {
+      await handleTransparentPaymentRequired(message, requestEventId);
+      return;
+    }
+  }
+
+  /**
+   * Runs the payment handler, then forwards to the upstream consumer unless the
+   * message is an explicit-gating error (those are re-emitted/retried internally).
+   */
+  const dispatchAndForward = (
+    message: JSONRPCMessage,
+    requestEventId: string,
+  ): void => {
+    void maybeHandlePaymentRequired(message, requestEventId).catch(
+      (err: unknown) => {
+        const error = err instanceof Error ? err : new Error(String(err));
+        onerror?.(error);
+      },
+    );
+    if (
+      isExplicitPaymentRequiredError(message) ||
+      isExplicitPaymentPendingError(message)
+    ) {
+      return;
+    }
+    onmessage?.(message);
+  };
+
   const wrapped = {
     get onmessage() {
       return onmessage;
@@ -430,17 +759,22 @@ export function withClientPayments(
           isJSONRPCErrorResponse(message)
         ) {
           stopSyntheticProgress(String(message.id));
+          if (
+            !isExplicitPaymentRequiredError(message) &&
+            !isExplicitPaymentPendingError(message)
+          ) {
+            const reqId = message.id as string | number;
+            rawRequestCache.delete(String(reqId));
+            retryCounts.delete(reqId);
+          }
+        }
+
+        if (hasContextPath) {
+          return;
         }
 
         // Best-effort: execute handler asynchronously, but never block delivery.
-        void maybeHandlePaymentRequired(message, 'unknown').catch(
-          (err: unknown) => {
-            const error = err instanceof Error ? err : new Error(String(err));
-            onerror?.(error);
-          },
-        );
-
-        onmessage?.(message);
+        dispatchAndForward(message, 'unknown');
       };
 
       if (hasContextPath) {
@@ -484,32 +818,28 @@ export function withClientPayments(
             }
           }
 
-          void maybeHandlePaymentRequired(message, requestEventId).catch(
-            (err: unknown) => {
-              const error = err instanceof Error ? err : new Error(String(err));
-              onerror?.(error);
-            },
-          );
-
           // Forward exactly once (see duplicate-delivery guard in `transport.onmessage`).
-          onmessage?.(message);
+          dispatchAndForward(message, requestEventId);
         };
       }
 
       transport.onerror = (err: Error) => onerror?.(err);
       transport.onclose = () => {
-        stopAllSyntheticProgress();
+        disposeClientState();
         onclose?.();
       };
       await transport.start();
     },
 
     async send(message: JSONRPCMessage): Promise<void> {
+      if ('method' in message && 'id' in message && message.id != null) {
+        rawRequestCache.set(String(message.id), message as JSONRPCRequest);
+      }
       await transport.send(message);
     },
 
     async close(): Promise<void> {
-      // stopAllSyntheticProgress is called via transport.onclose, no need to call it here
+      // disposeClientState is called via transport.onclose, no need to call it here
       await transport.close();
     },
   };

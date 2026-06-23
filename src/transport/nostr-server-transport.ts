@@ -52,6 +52,7 @@ import { ServerOpenStreamFactory } from './nostr-server/open-stream-factory.js';
 import { ServerEventPipeline } from './nostr-server/event-pipeline.js';
 import { ServerInboundCoordinator } from './nostr-server/inbound-coordinator.js';
 import type { InboundMiddlewareFn } from './middleware.js';
+import type { PaymentInteractionPolicy } from '../payments/types.js';
 
 export type { InboundMiddlewareFn } from './middleware.js';
 /**
@@ -488,6 +489,15 @@ export class NostrServerTransport
   }
 
   /**
+   * Sets the supported payment interaction policy for this server.
+   */
+  public setSupportedPaymentInteraction(
+    mode: PaymentInteractionPolicy | undefined,
+  ): void {
+    this.inboundCoordinator.setSupportedPaymentInteraction(mode);
+  }
+
+  /**
    * Adds a provider for extra tags on public tools/list announcement events.
    */
   public addListToolsAnnouncementTagsProducer(
@@ -684,6 +694,27 @@ export class NostrServerTransport
     response: JSONRPCResponse | JSONRPCErrorResponse,
   ): Promise<void> {
     await this.outboundResponseRouter.route(response);
+  }
+
+  /**
+   * Sends a targeted response explicitly bypassing the correlation store lookup.
+   * Useful for middleware that needs to proactively reject requests without
+   * letting them reach the MCP application.
+   *
+   * @param clientPubkey The target client's public key.
+   * @param response The JSON-RPC response or error to send.
+   * @param requestEventId The original Nostr event ID of the request being responded to.
+   */
+  public async sendTargetedResponse(
+    clientPubkey: string,
+    response: JSONRPCResponse | JSONRPCErrorResponse,
+    requestEventId: string,
+  ): Promise<void> {
+    await this.outboundResponseRouter.routeTargeted(
+      clientPubkey,
+      response,
+      requestEventId,
+    );
   }
 
   /**

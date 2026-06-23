@@ -114,6 +114,7 @@ export class ClientOutboundSender {
             String(progressToken),
             giftWrapKind,
           );
+
           return 'oversized-transfer';
         }
       }
@@ -152,7 +153,7 @@ export class ClientOutboundSender {
     );
 
     if (isRequest) {
-      this.deps.capabilityNegotiator.markDiscoveryTagsSent();
+      this.deps.capabilityNegotiator.markNegotiationTagsSent();
     }
 
     return eventId;
@@ -216,6 +217,6 @@ export class ClientOutboundSender {
       });
     }
 
-    this.deps.capabilityNegotiator.markDiscoveryTagsSent();
+    this.deps.capabilityNegotiator.markNegotiationTagsSent();
   }
 }

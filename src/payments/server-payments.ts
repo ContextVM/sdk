@@ -1,17 +1,14 @@
-import { type JSONRPCRequest } from '@contextvm/mcp-sdk/types.js';
-import {
+import { isJsonRpcRequest } from './types.js';
+import type {
   CorrelatedNotificationSender,
   PaymentAcceptedNotification,
+  PaymentInteractionPolicy,
   PaymentProcessor,
   PaymentRejectedNotification,
   PaymentRequiredNotification,
   PricedCapability,
-  ResolvePriceRejection,
-  ResolvePriceWaiver,
-  ResolvePriceResult,
   ResolvePriceFn,
   ServerMiddlewareFn,
-  isJsonRpcRequest,
 } from './types.js';
 import { LruCache } from '../core/utils/lru-cache.js';
 import { withTimeout } from '../core/utils/utils.js';
@@ -22,6 +19,11 @@ import {
   PAYMENT_REJECTED_METHOD,
   PAYMENT_REQUIRED_METHOD,
 } from './constants.js';
+import {
+  buildProcessorsByPmi,
+  matchPricedCapability,
+  resolveAndInitiatePayment,
+} from './server-payments-utils.js';
 
 export interface ServerPaymentsOptions {
   processors: readonly PaymentProcessor[];
@@ -47,6 +49,14 @@ export interface ServerPaymentsOptions {
    * @default 1000
    */
   maxPendingPayments?: number;
+
+  /**
+   * Server-side policy for which payment interaction lifecycles this server
+   * accepts. `optional` mirrors the client's requested mode (the default);
+   * `transparent` makes the server transparent-only.
+   * @default 'optional'
+   */
+  paymentInteraction?: PaymentInteractionPolicy;
 }
 
 function purgeExpiredPending<T extends { expiresAtMs: number }>(params: {
@@ -70,56 +80,6 @@ type PendingPaymentState = {
   expiresAtMs: number;
   inFlight: Promise<void>;
 };
-
-function getVerificationTimeoutMs(params: {
-  ttlSeconds: number | undefined;
-}): number {
-  // CEP-8 TTL is in seconds. If TTL is absent, default is 5 minutes.
-  const ttlSeconds = params.ttlSeconds;
-  if (ttlSeconds === undefined) {
-    return 5 * 60 * 1000;
-  }
-  if (!Number.isFinite(ttlSeconds) || ttlSeconds <= 0) {
-    return 5 * 60 * 1000;
-  }
-  return Math.floor(ttlSeconds * 1000);
-}
-
-function matchPricedCapability(
-  message: JSONRPCRequest,
-  priced: readonly PricedCapability[],
-): PricedCapability | undefined {
-  const capabilityName = getCapabilityNameForPricing(message);
-
-  return priced.find((p) => {
-    if (p.method !== message.method) return false;
-    if (p.name === undefined) return true;
-    return p.name === capabilityName;
-  });
-}
-
-function getCapabilityNameForPricing(
-  message: JSONRPCRequest,
-): string | undefined {
-  const params = message.params as Record<string, unknown> | undefined;
-
-  switch (message.method) {
-    case 'tools/call': {
-      const name = params?.name;
-      return typeof name === 'string' ? name : undefined;
-    }
-    case 'prompts/get': {
-      const name = params?.name;
-      return typeof name === 'string' ? name : undefined;
-    }
-    case 'resources/read': {
-      const uri = params?.uri;
-      return typeof uri === 'string' ? uri : undefined;
-    }
-    default:
-      return undefined;
-  }
-}
 
 function createPaymentRequiredNotification(params: {
   amount: number;
@@ -160,41 +120,19 @@ function createPaymentRejectedNotification(params: {
   };
 }
 
-function isResolvePriceRejection(
-  quote: ResolvePriceResult,
-): quote is ResolvePriceRejection {
-  return 'reject' in quote && quote.reject;
-}
-
-function isResolvePriceWaiver(
-  quote: ResolvePriceResult,
-): quote is ResolvePriceWaiver {
-  return 'waive' in quote && quote.waive;
-}
-
 /**
  * Creates a server-side middleware that gates priced requests until payment is verified.
  */
 export function createServerPaymentsMiddleware(params: {
   sender: CorrelatedNotificationSender;
   options: ServerPaymentsOptions;
+  /** Pre-built PMI → processor map. Built locally when omitted (standalone use). */
+  processorsByPmi?: Map<string, PaymentProcessor>;
 }): ServerMiddlewareFn {
   const { sender, options } = params;
   const logger = createLogger('server-payments');
-  const processorsByPmi = new Map(
-    options.processors.map((p) => [p.pmi, p] as const),
-  );
-
-  // Warn on duplicate PMI processors — Map construction silently keeps only the last.
-  const seenProcessorPmis = new Set<string>();
-  for (const p of options.processors) {
-    if (seenProcessorPmis.has(p.pmi)) {
-      logger.warn('duplicate PMI processor registered, last one wins', {
-        pmi: p.pmi,
-      });
-    }
-    seenProcessorPmis.add(p.pmi);
-  }
+  const processorsByPmi =
+    params.processorsByPmi ?? buildProcessorsByPmi(options.processors, logger);
 
   const paymentTtlMs = options.paymentTtlMs ?? DEFAULT_PAYMENT_TTL_MS;
   const pending = new LruCache<PendingPaymentState>(
@@ -204,6 +142,14 @@ export function createServerPaymentsMiddleware(params: {
   return async (message, ctx, forward) => {
     // Only gate requests. Never interfere with notifications.
     if (!isJsonRpcRequest(message)) {
+      await forward(message);
+      return;
+    }
+
+    if (
+      ctx.paymentInteraction !== undefined &&
+      ctx.paymentInteraction !== 'transparent'
+    ) {
       await forward(message);
       return;
     }
@@ -240,44 +186,29 @@ export function createServerPaymentsMiddleware(params: {
 
     // IMPORTANT: set pending state synchronously before any await to make idempotency atomic.
     const inFlight = (async (): Promise<void> => {
-      const clientPmis = ctx.clientPmis;
-
-      const chosenPmi = clientPmis
-        ? clientPmis.find((pmi) => processorsByPmi.has(pmi))
-        : undefined;
-
-      const chosenProcessor = chosenPmi
-        ? processorsByPmi.get(chosenPmi)
-        : options.processors[0];
-
-      if (!chosenProcessor) {
-        throw new Error('No payment processors configured');
-      }
-
-      const processor = chosenProcessor;
-
-      const quote = options.resolvePrice
-        ? await options.resolvePrice({
-            capability: priced,
-            request: message,
-            clientPubkey: ctx.clientPubkey,
-            requestEventId,
-          })
-        : { amount: priced.amount, description: priced.description };
+      const initResult = await resolveAndInitiatePayment({
+        message,
+        priced,
+        requestEventId,
+        clientPubkey: ctx.clientPubkey,
+        clientPmis: ctx.clientPmis,
+        options,
+        processorsByPmi,
+      });
 
       // Handle rejection: emit payment_rejected and do not forward.
-      if (isResolvePriceRejection(quote)) {
+      if (initResult.kind === 'rejected') {
         logger.info('payment rejected', {
           requestEventId,
-          pmi: processor.pmi,
+          pmi: initResult.pmi,
           amount: priced.amount,
-          reason: quote.message,
+          reason: initResult.message,
         });
 
         const rejectedNotification = createPaymentRejectedNotification({
-          pmi: processor.pmi,
+          pmi: initResult.pmi,
           amount: priced.amount,
-          message: quote.message,
+          message: initResult.message,
         });
 
         await sender.sendNotification(
@@ -285,101 +216,89 @@ export function createServerPaymentsMiddleware(params: {
           rejectedNotification,
           requestEventId,
         );
-      } else if (isResolvePriceWaiver(quote)) {
+        return;
+      }
+
+      if (initResult.kind === 'waived') {
         logger.debug('payment waived, forwarding priced request', {
           requestEventId,
           method: message.method,
         });
 
         await forward(message);
-      } else {
-        const resolvedQuote = quote;
-        const paymentRequired = await processor.createPaymentRequired({
-          amount: resolvedQuote.amount,
-          description: resolvedQuote.description,
+        return;
+      }
+
+      const { paymentRequired, mergedMeta, processor, verifyTimeoutMs } =
+        initResult;
+
+      const requiredNotification = createPaymentRequiredNotification({
+        amount: paymentRequired.amount,
+        pay_req: paymentRequired.pay_req,
+        pmi: paymentRequired.pmi,
+        description: paymentRequired.description,
+        ttl: paymentRequired.ttl,
+        _meta: mergedMeta,
+      });
+
+      logger.info('payment required notification sent', {
+        requestEventId,
+        pmi: paymentRequired.pmi,
+        amount: paymentRequired.amount,
+        ttl: paymentRequired.ttl,
+      });
+
+      await sender.sendNotification(
+        ctx.clientPubkey,
+        requiredNotification,
+        requestEventId,
+      );
+
+      // Use the strict verification timeout bound for polling
+      const pollingTimeoutMs = Math.min(verifyTimeoutMs, paymentTtlMs);
+
+      logger.debug('verifying payment', {
+        requestEventId,
+        pmi: paymentRequired.pmi,
+        timeoutMs: pollingTimeoutMs,
+      });
+
+      const controller = new AbortController();
+      const verified = await withTimeout(
+        processor.verifyPayment({
+          pay_req: paymentRequired.pay_req,
           requestEventId,
           clientPubkey: ctx.clientPubkey,
-        });
+          abortSignal: controller.signal,
+        }),
+        pollingTimeoutMs,
+        'verifyPayment timed out',
+      ).finally(() => controller.abort());
 
-        const mergedMeta =
-          resolvedQuote.meta === undefined &&
-          paymentRequired._meta === undefined
-            ? undefined
-            : {
-                ...(paymentRequired._meta ?? {}),
-                ...(resolvedQuote.meta ?? {}),
-              };
+      logger.info('payment accepted', {
+        requestEventId,
+        pmi: paymentRequired.pmi,
+        amount: paymentRequired.amount,
+      });
 
-        const requiredNotification = createPaymentRequiredNotification({
-          amount: paymentRequired.amount,
-          pay_req: paymentRequired.pay_req,
-          pmi: paymentRequired.pmi,
-          description: paymentRequired.description,
-          ttl: paymentRequired.ttl,
-          _meta: mergedMeta,
-        });
+      const acceptedNotification = createPaymentAcceptedNotification({
+        amount: paymentRequired.amount,
+        pmi: paymentRequired.pmi,
+        _meta: verified._meta,
+      });
 
-        logger.info('payment required notification sent', {
-          requestEventId,
-          pmi: paymentRequired.pmi,
-          amount: paymentRequired.amount,
-          ttl: paymentRequired.ttl,
-        });
+      await sender.sendNotification(
+        ctx.clientPubkey,
+        acceptedNotification,
+        requestEventId,
+      );
 
-        await sender.sendNotification(
-          ctx.clientPubkey,
-          requiredNotification,
-          requestEventId,
-        );
+      logger.debug('forwarding priced request after payment', {
+        requestEventId,
+        method: message.method,
+      });
 
-        const verifyTimeoutMs = getVerificationTimeoutMs({
-          ttlSeconds: paymentRequired.ttl,
-        });
-        const effectiveTimeoutMs = Math.min(verifyTimeoutMs, paymentTtlMs);
-
-        logger.debug('verifying payment', {
-          requestEventId,
-          pmi: paymentRequired.pmi,
-          timeoutMs: effectiveTimeoutMs,
-        });
-
-        const controller = new AbortController();
-        const verified = await withTimeout(
-          processor.verifyPayment({
-            pay_req: paymentRequired.pay_req,
-            requestEventId,
-            clientPubkey: ctx.clientPubkey,
-            abortSignal: controller.signal,
-          }),
-          effectiveTimeoutMs,
-          'verifyPayment timed out',
-        ).finally(() => controller.abort());
-
-        logger.info('payment accepted', {
-          requestEventId,
-          pmi: paymentRequired.pmi,
-          amount: paymentRequired.amount,
-        });
-
-        const acceptedNotification = createPaymentAcceptedNotification({
-          amount: paymentRequired.amount,
-          pmi: paymentRequired.pmi,
-          _meta: verified._meta,
-        });
-
-        await sender.sendNotification(
-          ctx.clientPubkey,
-          acceptedNotification,
-          requestEventId,
-        );
-
-        logger.debug('forwarding priced request after payment', {
-          requestEventId,
-          method: message.method,
-        });
-
-        await forward(message);
-      }
+      await forward(message);
     })();
 
     const state: PendingPaymentState = {

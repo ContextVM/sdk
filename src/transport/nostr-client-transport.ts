@@ -48,6 +48,7 @@ import {
   DEFAULT_OVERSIZED_THRESHOLD,
 } from './oversized-transfer/constants.js';
 import type { OpenStreamTransportPolicy } from './open-stream-policy.js';
+import type { PaymentInteractionMode } from '../payments/types.js';
 
 /**
  * Options for configuring the NostrClientTransport.
@@ -584,6 +585,20 @@ export class NostrClientTransport
     return this.metadataStore.getServerInitializePicture();
   }
 
+  /**
+   * Sets the requested payment interaction mode for negotiation.
+   */
+  public setPaymentInteraction(mode: PaymentInteractionMode): void {
+    this.capabilityNegotiator.setPaymentInteraction(mode);
+  }
+
+  /**
+   * Gets the effective payment interaction mode disclosed by the server.
+   */
+  public getEffectivePaymentInteraction(): PaymentInteractionMode | undefined {
+    return this.metadataStore.getEffectivePaymentInteraction();
+  }
+
   /** Gets the server's most recently observed tools/list event envelope, if any. */
   public getServerToolsListEvent(): NostrEvent | undefined {
     return this.metadataStore.getServerToolsListEvent();
@@ -628,6 +643,7 @@ export class NostrClientTransport
   private handleResponse(
     correlatedEventId: string,
     mcpMessage: JSONRPCMessage,
+    eventId?: string,
   ): void {
     try {
       const resolved = this.correlationStore.resolveResponse(
@@ -637,6 +653,10 @@ export class NostrClientTransport
 
       if (resolved) {
         this.onmessage?.(mcpMessage);
+        this.onmessageWithContext?.(mcpMessage, {
+          eventId: eventId ?? correlatedEventId,
+          correlatedEventId,
+        });
       } else {
         this.logger.warn('Response for unknown request', {
           eventId: correlatedEventId,

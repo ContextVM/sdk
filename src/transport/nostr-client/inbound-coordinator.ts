@@ -11,6 +11,7 @@ import {
 } from '@contextvm/mcp-sdk/types.js';
 import { type NostrEvent } from 'nostr-tools';
 import { type Logger } from '../../core/utils/logger.js';
+import { NOSTR_TAGS } from '../../core/constants.js';
 import { getNostrEventTag } from '../../core/utils/serializers.js';
 import {
   type ClientCapabilityNegotiator,
@@ -20,6 +21,7 @@ import { type ClientCorrelationStore } from './correlation-store.js';
 import { type UnwrappedClientEvent } from './event-pipeline.js';
 import { type ClientInboundNotificationDispatcher } from './inbound-notification-dispatcher.js';
 import { type ServerMetadataStore } from './server-metadata-store.js';
+import type { PaymentInteractionMode } from '../../payments/types.js';
 
 export interface ClientInboundCoordinatorDeps {
   capabilityNegotiator: ClientCapabilityNegotiator;
@@ -28,7 +30,11 @@ export interface ClientInboundCoordinatorDeps {
   metadataStore: ServerMetadataStore;
   unwrapEvent: (event: NostrEvent) => Promise<UnwrappedClientEvent | null>;
   convertNostrEventToMcpMessage: (event: NostrEvent) => JSONRPCMessage | null;
-  handleResponse: (correlatedEventId: string, msg: JSONRPCMessage) => void;
+  handleResponse: (
+    correlatedEventId: string,
+    msg: JSONRPCMessage,
+    eventId?: string,
+  ) => void;
   handleNotification: (
     eventId: string,
     correlatedEventId: string | undefined,
@@ -144,7 +150,7 @@ export class ClientInboundCoordinator {
           }
         }
 
-        this.deps.handleResponse(eTag, mcpMessage);
+        this.deps.handleResponse(eTag, mcpMessage, nostrEvent.id);
         return;
       }
 
@@ -194,6 +200,28 @@ export class ClientInboundCoordinator {
     this.deps.metadataStore.setSupportsOpenStream(
       discovered.supportsOpenStream,
     );
+
+    const paymentInteractionTag = event.tags.find(
+      (tag) =>
+        tag[0] === NOSTR_TAGS.PAYMENT_INTERACTION && typeof tag[1] === 'string',
+    );
+    if (
+      paymentInteractionTag &&
+      // CEP-8: the effective mode observed on a response is authoritative only
+      // when the client requested a non-default mode. Otherwise the tag is a
+      // server availability advertisement and MUST NOT be recorded as this
+      // session's effective mode (which would leave a transparent client
+      // incorrectly believing it is on the explicit-gating lifecycle).
+      this.deps.capabilityNegotiator.getRequestedPaymentInteraction() ===
+        'explicit_gating'
+    ) {
+      const mode = paymentInteractionTag[1];
+      if (mode === 'transparent' || mode === 'explicit_gating') {
+        this.deps.metadataStore.setEffectivePaymentInteraction(
+          mode as PaymentInteractionMode,
+        );
+      }
+    }
 
     if (!this.deps.metadataStore.getServerInitializeEvent()) {
       this.setInitializeEvent(event);

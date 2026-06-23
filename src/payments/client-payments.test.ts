@@ -344,6 +344,129 @@ describe('withClientPayments()', () => {
     });
   });
 
+  test('declines transparent payment_required when client requested explicit_gating but server did not accept it', async () => {
+    const transport = createMockNostrTransport();
+
+    const observed: JSONRPCMessage[] = [];
+    let handleCalls = 0;
+    const paid = withClientPayments(transport, {
+      handlers: [
+        {
+          pmi: 'fake',
+          async handle(): Promise<void> {
+            handleCalls += 1;
+          },
+        },
+      ],
+      paymentInteraction: 'explicit_gating',
+    });
+
+    paid.onmessage = (msg) => observed.push(msg);
+    await paid.start();
+
+    // Server never disclosed explicit_gating, so getEffectivePaymentInteraction() is undefined.
+    (
+      transport as unknown as {
+        correlationStore: {
+          registerRequest: (eventId: string, req: unknown) => void;
+        };
+      }
+    ).correlationStore.registerRequest('req-event-id', {
+      originalRequestId: 7,
+      isInitialize: false,
+      progressToken: undefined,
+      originalRequestContext: { method: 'tools/call', capability: 'tool:paid' },
+    });
+
+    (transport as unknown as TransportWithContext).onmessageWithContext?.(
+      {
+        jsonrpc: '2.0',
+        method: 'notifications/payment_required',
+        params: { amount: 1, pay_req: 'z', pmi: 'fake' },
+      } as JSONRPCMessage,
+      { eventId: 'evt', correlatedEventId: 'req-event-id' },
+    );
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    // CEP-8 effective-mode guard: handler MUST NOT be invoked.
+    expect(handleCalls).toBe(0);
+    const errResp = observed.find(
+      (
+        m,
+      ): m is {
+        jsonrpc: '2.0';
+        id: number;
+        error: { code: number; message: string; data?: unknown };
+      } => 'id' in m && m.id === 7 && 'error' in m,
+    );
+    expect(errResp?.error?.code).toBe(-32000);
+    expect(errResp?.error?.message).toBe(
+      'Payment declined: explicit_gating was not accepted by the server',
+    );
+    expect(errResp?.error?.data).toEqual({
+      pmi: 'fake',
+      amount: 1,
+      method: 'tools/call',
+      capability: 'tool:paid',
+    });
+  });
+
+  test('proceeds with transparent payment when server accepted explicit_gating for the session', async () => {
+    const transport = createMockNostrTransport();
+
+    let observed: PaymentHandlerRequest | undefined;
+    const paid = withClientPayments(transport, {
+      handlers: [
+        {
+          pmi: 'fake',
+          async handle(req): Promise<void> {
+            observed = req;
+          },
+        },
+      ],
+      paymentInteraction: 'explicit_gating',
+    });
+
+    await paid.start();
+
+    // Server disclosed explicit_gating as the effective mode for the session.
+    (
+      transport as unknown as {
+        metadataStore: {
+          setEffectivePaymentInteraction: (mode: string) => void;
+        };
+      }
+    ).metadataStore.setEffectivePaymentInteraction('explicit_gating');
+    (
+      transport as unknown as {
+        correlationStore: {
+          registerRequest: (eventId: string, req: unknown) => void;
+        };
+      }
+    ).correlationStore.registerRequest('req-event-id', {
+      originalRequestId: 8,
+      isInitialize: false,
+      progressToken: undefined,
+      originalRequestContext: undefined,
+    });
+
+    (transport as unknown as TransportWithContext).onmessageWithContext?.(
+      {
+        jsonrpc: '2.0',
+        method: 'notifications/payment_required',
+        params: { amount: 1, pay_req: 'w', pmi: 'fake' },
+      } as JSONRPCMessage,
+      { eventId: 'evt', correlatedEventId: 'req-event-id' },
+    );
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    // Guard does not fire: handler IS invoked.
+    expect(observed).toBeDefined();
+    expect(observed?.pmi).toBe('fake');
+  });
+
   test('drops uncorrelated payment_required notifications on Nostr transports', async () => {
     const transport = createMockNostrTransport();
 
@@ -590,6 +713,341 @@ describe('withClientPayments()', () => {
     };
     expect(errResp.id).toBe(99);
     expect(errResp.error?.message).toBe('Payment rejected');
+
+    await paid.close();
+  });
+
+  test('handles explicit gating -32042 error and retries request', async () => {
+    const transport = createMockNostrTransport();
+    let sentMessage: JSONRPCMessage | undefined;
+    transport.send = async (msg) => {
+      sentMessage = msg;
+    };
+
+    transport
+      .getInternalStateForTesting()
+      .correlationStore.registerRequest('req-event-id-3', {
+        originalRequestId: 77,
+        isInitialize: false,
+
+        originalRequestContext: { method: 'tools/call' },
+      });
+
+    const observed: JSONRPCMessage[] = [];
+    const paid = withClientPayments(transport, {
+      handlers: [{ pmi: 'fake', async handle(): Promise<void> {} }],
+      paymentInteraction: 'explicit_gating',
+      onPaymentRequired: async () => ({ paid: true }),
+    });
+    paid.onmessage = (msg) => observed.push(msg);
+    await paid.start();
+
+    // Populate the wrapper's cache with the original request
+    await paid.send({
+      jsonrpc: '2.0',
+      id: 77,
+      method: 'tools/call',
+      params: { name: 'test' },
+    });
+    sentMessage = undefined; // Reset mock state so we can observe the retry
+
+    // Deliver -32042 Payment Required error
+    transport.onmessageWithContext!(
+      {
+        jsonrpc: '2.0',
+        id: 77,
+        error: {
+          code: -32042,
+          message: 'Payment Required',
+          data: {
+            payment_options: [{ amount: 10, pmi: 'fake', pay_req: 'pr1' }],
+          },
+        },
+      },
+      { eventId: 'evt4', correlatedEventId: 'req-event-id-3' },
+    );
+
+    // Wait for async processing
+    await new Promise((r) => setTimeout(r, 0));
+
+    // Error should not be delivered to caller
+    expect(observed).toHaveLength(0);
+
+    // Original request should be retried
+    expect(sentMessage as unknown).toEqual({
+      jsonrpc: '2.0',
+      id: 77,
+      method: 'tools/call',
+      params: { name: 'test' },
+    });
+
+    await paid.close();
+  });
+
+  test('propagates -32042 error if onPaymentRequired returns paid: false', async () => {
+    const transport = createMockNostrTransport();
+
+    transport
+      .getInternalStateForTesting()
+      .correlationStore.registerRequest('req-event-id-4', {
+        originalRequestId: 88,
+        isInitialize: false,
+
+        originalRequestContext: { method: 'tools/call' },
+      });
+
+    const observed: JSONRPCMessage[] = [];
+    const paid = withClientPayments(transport, {
+      handlers: [{ pmi: 'fake', async handle(): Promise<void> {} }],
+      paymentInteraction: 'explicit_gating',
+      onPaymentRequired: async () => ({
+        paid: false,
+        reason: 'user_cancelled',
+      }),
+    });
+    paid.onmessage = (msg) => observed.push(msg);
+    await paid.start();
+
+    // Populate the wrapper's cache with the original request
+    await paid.send({
+      jsonrpc: '2.0',
+      id: 88,
+      method: 'tools/call',
+      params: { name: 'test' },
+    });
+
+    // Deliver -32042 Payment Required error
+    transport.onmessageWithContext!(
+      {
+        jsonrpc: '2.0',
+        id: 88,
+        error: {
+          code: -32042,
+          message: 'Payment Required',
+          data: {
+            payment_options: [{ amount: 10, pmi: 'fake', pay_req: 'pr2' }],
+          },
+        },
+      },
+      { eventId: 'evt5', correlatedEventId: 'req-event-id-4' },
+    );
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    // Error should be delivered to caller with reason
+    expect(observed).toHaveLength(1);
+    const errResp = observed[0] as {
+      id?: unknown;
+      error?: { code?: number; data?: { reason?: string } };
+    };
+    expect(errResp.id).toBe(88);
+    expect(errResp.error?.code).toBe(-32042);
+    expect(errResp.error?.data?.reason).toBe('user_cancelled');
+
+    await paid.close();
+  });
+
+  test('handles explicit gating -32043 Payment Pending error and retries after backoff', async () => {
+    const transport = createMockNostrTransport();
+    let sentMessage: JSONRPCMessage | undefined;
+    transport.send = async (msg) => {
+      sentMessage = msg;
+    };
+
+    transport
+      .getInternalStateForTesting()
+      .correlationStore.registerRequest('req-event-id-5', {
+        originalRequestId: 99,
+        isInitialize: false,
+
+        originalRequestContext: { method: 'tools/call' },
+      });
+
+    const observed: JSONRPCMessage[] = [];
+    const paid = withClientPayments(transport, {
+      handlers: [{ pmi: 'fake', async handle(): Promise<void> {} }],
+      paymentInteraction: 'explicit_gating',
+    });
+    paid.onmessage = (msg) => observed.push(msg);
+    await paid.start();
+
+    // Populate the wrapper's cache with the original request
+    await paid.send({
+      jsonrpc: '2.0',
+      id: 99,
+      method: 'tools/call',
+      params: { name: 'test_pending' },
+    });
+    sentMessage = undefined; // Reset mock state so we can observe the retry
+
+    // Deliver -32043 Payment Pending error
+    transport.onmessageWithContext!(
+      {
+        jsonrpc: '2.0',
+        id: 99,
+        error: {
+          code: -32043,
+          message: 'Payment Pending',
+          data: {
+            instructions: 'Wait and retry.',
+            retry_after: 0.05, // 50ms for test
+          },
+        },
+      },
+      { eventId: 'evt6', correlatedEventId: 'req-event-id-5' },
+    );
+
+    // Initial check: Should intercept error and wait
+    await new Promise((r) => setTimeout(r, 10));
+    expect(observed).toHaveLength(0);
+    expect(sentMessage).toBeUndefined();
+
+    // Wait for retry_after timer to fire
+    await new Promise((r) => setTimeout(r, 60));
+
+    // Error should not be delivered to caller
+    expect(observed).toHaveLength(0);
+
+    // Original request should be retried
+    expect(sentMessage as unknown).toEqual({
+      jsonrpc: '2.0',
+      id: 99,
+      method: 'tools/call',
+      params: { name: 'test_pending' },
+    });
+
+    await paid.close();
+  });
+
+  test('synthesizes -32042 with type payment_handler_error when onPaymentRequired rejects', async () => {
+    const transport = createMockNostrTransport();
+
+    transport
+      .getInternalStateForTesting()
+      .correlationStore.registerRequest('req-event-id-reject', {
+        originalRequestId: 55,
+        isInitialize: false,
+        originalRequestContext: { method: 'tools/call' },
+      });
+
+    const observed: JSONRPCMessage[] = [];
+    const paid = withClientPayments(transport, {
+      handlers: [{ pmi: 'fake', async handle(): Promise<void> {} }],
+      paymentInteraction: 'explicit_gating',
+      onPaymentRequired: async () => {
+        throw new Error('wallet offline');
+      },
+    });
+    paid.onmessage = (msg) => observed.push(msg);
+    await paid.start();
+
+    await paid.send({
+      jsonrpc: '2.0',
+      id: 55,
+      method: 'tools/call',
+      params: { name: 'test' },
+    });
+
+    (transport as unknown as TransportWithContext).onmessageWithContext?.(
+      {
+        jsonrpc: '2.0',
+        id: 55,
+        error: {
+          code: -32042,
+          message: 'Payment Required',
+          data: {
+            payment_options: [
+              { amount: 10, pmi: 'fake', pay_req: 'pr-reject' },
+            ],
+          },
+        },
+      },
+      { eventId: 'evt', correlatedEventId: 'req-event-id-reject' },
+    );
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(observed).toHaveLength(1);
+    const errResp = observed[0] as {
+      id?: unknown;
+      error?: {
+        code?: number;
+        data?: { reason?: string; type?: string };
+      };
+    };
+    expect(errResp.id).toBe(55);
+    expect(errResp.error?.code).toBe(-32042);
+    expect(errResp.error?.data?.reason).toBe('wallet offline');
+    expect(errResp.error?.data?.type).toBe('payment_handler_error');
+
+    await paid.close();
+  });
+
+  test('forwards -32043 to caller after maxPendingRetries is exceeded', async () => {
+    const transport = createMockNostrTransport();
+    transport.send = async (): Promise<void> => {
+      // no-op: retries do not produce a server response in this unit test
+    };
+
+    transport
+      .getInternalStateForTesting()
+      .correlationStore.registerRequest('req-event-id-exhaust', {
+        originalRequestId: 66,
+        isInitialize: false,
+        originalRequestContext: { method: 'tools/call' },
+      });
+
+    const observed: JSONRPCMessage[] = [];
+    const paid = withClientPayments(transport, {
+      handlers: [{ pmi: 'fake', async handle(): Promise<void> {} }],
+      paymentInteraction: 'explicit_gating',
+      maxPendingRetries: 2,
+    });
+    paid.onmessage = (msg) => observed.push(msg);
+    await paid.start();
+
+    await paid.send({
+      jsonrpc: '2.0',
+      id: 66,
+      method: 'tools/call',
+      params: { name: 'test' },
+    });
+
+    const deliverPending = (): void => {
+      (transport as unknown as TransportWithContext).onmessageWithContext?.(
+        {
+          jsonrpc: '2.0',
+          id: 66,
+          error: {
+            code: -32043,
+            message: 'Payment Pending',
+            data: { retry_after: 0.01 },
+          },
+        },
+        { eventId: 'evt', correlatedEventId: 'req-event-id-exhaust' },
+      );
+    };
+
+    // First two: intercepted and retried (not observed by caller).
+    deliverPending();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(observed).toHaveLength(0);
+
+    deliverPending();
+    await new Promise((r) => setTimeout(r, 25));
+    expect(observed).toHaveLength(0);
+
+    // Third: retry budget exhausted → -32043 reaches the caller.
+    deliverPending();
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(observed).toHaveLength(1);
+    const errResp = observed[0] as {
+      id?: unknown;
+      error?: { code?: number };
+    };
+    expect(errResp.id).toBe(66);
+    expect(errResp.error?.code).toBe(-32043);
 
     await paid.close();
   });

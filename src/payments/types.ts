@@ -62,6 +62,73 @@ export type PaymentRequiredNotification = JSONRPCNotification & {
   };
 };
 
+/**
+ * CEP-8 payment interaction modes.
+ *
+ * These are the wire/session-level modes negotiated via the `payment_interaction`
+ * tag: `transparent` (default) and `explicit_gating` (opt-in).
+ */
+export type PaymentInteractionMode = 'transparent' | 'explicit_gating';
+
+/**
+ * Server-side policy for which payment interaction lifecycles it accepts.
+ *
+ * This is a server configuration concern, distinct from the wire-level
+ * {@link PaymentInteractionMode}. It mirrors the OPTIONAL policy used for
+ * encryption and gift wrapping, where the peer's chosen mode is mirrored rather
+ * than forced.
+ *
+ * - `optional`: Accept both lifecycles and mirror the client's requested mode
+ *   for the session (the default). A client that requests `explicit_gating`
+ *   gets it; a client that omits the tag or requests `transparent` stays on the
+ *   transparent lifecycle.
+ * - `transparent`: Transparent-only. Reject `explicit_gating` requests with a
+ *   `-32602` negotiation error per CEP-8 effective-mode disclosure.
+ */
+export type PaymentInteractionPolicy = 'optional' | 'transparent';
+
+/** A single payment option inside a -32042 error.data.payment_options entry. */
+export interface PaymentOption {
+  amount: number;
+  pmi: string;
+  pay_req: string;
+  description?: string;
+  ttl?: number;
+  _meta?: Record<string, unknown>;
+}
+
+/** Shape of error.data for -32042 Payment Required. */
+export interface PaymentRequiredErrorData {
+  instructions?: string;
+  payment_options: PaymentOption[];
+}
+
+/** Shape of error.data for -32043 Payment Pending. */
+export interface PaymentPendingErrorData {
+  instructions?: string;
+  retry_after?: number;
+}
+
+/** Nostr `payment_interaction` tag as defined by CEP-8. */
+export type PaymentInteractionTag = [
+  'payment_interaction',
+  PaymentInteractionMode,
+];
+
+/**
+ * Canonical invocation identity for explicit-gating authorization matching.
+ *
+ * `invocationHash` is SHA-256 over JCS({method, params}). This means `params` MUST be
+ * deterministic — no timestamps, UUIDs, or ephemeral IDs that change across retries.
+ * Clients MUST preserve the exact original `params` object when retrying after payment
+ * so the retry computes the same `invocationHash` and matches the paid authorization.
+ */
+export interface CanonicalInvocationIdentity {
+  clientPubkey: string;
+  /** Hex-encoded SHA-256 of JCS({method, params}). */
+  invocationHash: string;
+}
+
 /** A CEP-8 payment-accepted notification (JSON-RPC notification). */
 export type PaymentAcceptedNotification = JSONRPCNotification & {
   method: 'notifications/payment_accepted';
@@ -213,6 +280,19 @@ export type ResolvePriceFn = (params: {
 }) => Promise<ResolvePriceResult>;
 
 /**
+ * The structure returned by a PaymentProcessor when a new payment is issued.
+ */
+export interface PaymentRequired {
+  amount: number;
+  pay_req: string;
+  description?: string;
+  pmi: string;
+  /** Time-to-live in seconds (CEP-8). */
+  ttl?: number;
+  _meta?: Record<string, unknown>;
+}
+
+/**
  * Server-side module that can issue and verify payments for a single PMI.
  */
 export interface PaymentProcessor {
@@ -220,15 +300,9 @@ export interface PaymentProcessor {
   readonly pmi: string;
 
   /** Create a payment request for a specific capability invocation */
-  createPaymentRequired(params: PaymentProcessorCreateParams): Promise<{
-    amount: number;
-    pay_req: string;
-    description?: string;
-    pmi: string;
-    /** Time-to-live in seconds (CEP-8). */
-    ttl?: number;
-    _meta?: Record<string, unknown>;
-  }>;
+  createPaymentRequired(
+    params: PaymentProcessorCreateParams,
+  ): Promise<PaymentRequired>;
 
   /** Wait for and/or verify settlement for a previously issued pay_req */
   verifyPayment(
@@ -246,6 +320,11 @@ export interface ServerPaymentsContext {
    * Source: Nostr event tags (e.g. multiple `['pmi', '<pmi>']`).
    */
   clientPmis?: readonly string[];
+
+  /**
+   * The negotiated payment interaction mode for the session.
+   */
+  paymentInteraction?: PaymentInteractionMode;
 }
 
 /**

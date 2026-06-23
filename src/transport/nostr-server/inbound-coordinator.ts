@@ -8,6 +8,7 @@ import {
 import { type NostrEvent } from 'nostr-tools';
 import { type Logger } from '../../core/utils/logger.js';
 import { type SessionStore, type ClientSession } from './session-store.js';
+import { NOSTR_TAGS } from '../../core/constants.js';
 import { type CorrelationStore } from './correlation-store.js';
 import { type AuthorizationPolicy } from './authorization-policy.js';
 import { type ServerOpenStreamFactory } from './open-stream-factory.js';
@@ -26,6 +27,11 @@ import {
 } from '../../core/index.js';
 import { GiftWrapMode } from '../../core/interfaces.js';
 import { type OpenStreamWriter } from '../open-stream/index.js';
+import { UNSUPPORTED_PAYMENT_INTERACTION_ERROR_CODE } from '../../payments/constants.js';
+import type {
+  PaymentInteractionMode,
+  PaymentInteractionPolicy,
+} from '../../payments/types.js';
 
 export interface ServerInboundCoordinatorDeps {
   sessionStore: SessionStore;
@@ -38,6 +44,7 @@ export interface ServerInboundCoordinatorDeps {
   oversizedEnabled: boolean;
   openStreamEnabled: boolean;
   giftWrapMode: GiftWrapMode;
+  supportedPaymentInteraction?: PaymentInteractionPolicy;
   sendMcpMessage: (
     msg: JSONRPCMessage,
     pubkey: string,
@@ -73,6 +80,12 @@ export class ServerInboundCoordinator {
     dispatcher: InboundNotificationDispatcher,
   ): void {
     this.inboundNotificationDispatcher = dispatcher;
+  }
+
+  public setSupportedPaymentInteraction(
+    mode: PaymentInteractionPolicy | undefined,
+  ): void {
+    this.deps.supportedPaymentInteraction = mode;
   }
 
   /**
@@ -164,9 +177,82 @@ export class ServerInboundCoordinator {
       const clientPmis = event.tags
         .filter((tag) => tag[0] === 'pmi' && typeof tag[1] === 'string')
         .map((tag) => tag[1] as string);
+
+      const serverSupportsExplicitGating =
+        this.deps.supportedPaymentInteraction === 'optional';
+
+      const paymentInteractionTag = event.tags.find(
+        (tag) =>
+          tag[0] === NOSTR_TAGS.PAYMENT_INTERACTION &&
+          typeof tag[1] === 'string',
+      );
+
+      if (paymentInteractionTag && !session.requestedPaymentInteraction) {
+        const mode = paymentInteractionTag[1];
+        if (mode === 'transparent' || mode === 'explicit_gating') {
+          session.requestedPaymentInteraction = mode as PaymentInteractionMode;
+
+          if (mode === 'explicit_gating' && !serverSupportsExplicitGating) {
+            session.effectivePaymentInteraction = 'transparent';
+
+            if (isJSONRPCRequest(inboundMessage)) {
+              const errorResponse: JSONRPCErrorResponse = {
+                jsonrpc: '2.0',
+                id: inboundMessage.id,
+                error: {
+                  code: UNSUPPORTED_PAYMENT_INTERACTION_ERROR_CODE,
+                  message:
+                    'Unsupported payment_interaction mode: explicit_gating',
+                  // CEP-8 effective-mode disclosure: requested + supported modes.
+                  data: {
+                    requested: mode,
+                    supported: ['transparent'],
+                  },
+                },
+              };
+              const tags = this.deps.createResponseTags(event.pubkey, event.id);
+              this.deps
+                .sendMcpMessage(
+                  errorResponse,
+                  event.pubkey,
+                  CTXVM_MESSAGES_KIND,
+                  tags,
+                  isEncrypted,
+                  undefined,
+                  isEncrypted
+                    ? this.deps.giftWrapMode === GiftWrapMode.EPHEMERAL
+                      ? EPHEMERAL_GIFT_WRAP_KIND
+                      : this.deps.giftWrapMode === GiftWrapMode.PERSISTENT
+                        ? GIFT_WRAP_KIND
+                        : wrapKind
+                    : undefined,
+                )
+                .catch((err) => {
+                  this.deps.logger.error(
+                    'Failed to send negotiation error response',
+                    {
+                      error: err instanceof Error ? err.message : String(err),
+                    },
+                  );
+                });
+              return;
+            }
+          }
+
+          session.effectivePaymentInteraction = serverSupportsExplicitGating
+            ? session.requestedPaymentInteraction
+            : 'transparent';
+        } else {
+          session.requestedPaymentInteraction = 'transparent';
+          session.effectivePaymentInteraction = 'transparent';
+        }
+      }
+
       const ctx = {
         clientPubkey: event.pubkey,
         clientPmis: clientPmis.length > 0 ? clientPmis : undefined,
+        paymentInteraction:
+          session.effectivePaymentInteraction ?? 'transparent',
       };
       const middlewares = this.deps.inboundMiddlewares;
 

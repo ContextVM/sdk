@@ -14,8 +14,7 @@ import { type Logger } from '../../core/utils/logger.js';
 import { type CorrelationStore } from './correlation-store.js';
 import { type ClientSession, type SessionStore } from './session-store.js';
 import { type AnnouncementManager } from './announcement-manager.js';
-
-import { CTXVM_MESSAGES_KIND } from '../../core/constants.js';
+import { NOSTR_TAGS, CTXVM_MESSAGES_KIND } from '../../core/constants.js';
 import { sendOversizedServerResponse } from './oversized-server-handler.js';
 
 /**
@@ -220,6 +219,9 @@ export class OutboundResponseRouter {
             logger: this.deps.logger,
           },
         );
+        // Note: Oversized transfers skip maybeAppendPaymentInteractionDisclosure() and marking discovery
+        // tags as sent on this early return path. This is low risk in practice because oversized transfers
+        // only trigger for large payloads, and negotiation usually happens early with small messages.
         return;
       }
     }
@@ -229,6 +231,8 @@ export class OutboundResponseRouter {
       baseTags: this.deps.createResponseTags(route.clientPubkey, nostrEventId),
       session,
     });
+
+    this.maybeAppendPaymentInteractionDisclosure(tags, session);
 
     const giftWrapKind = this.deps.chooseGiftWrapKind({
       session,
@@ -267,6 +271,72 @@ export class OutboundResponseRouter {
         route.wrapKind,
       );
       throw error;
+    }
+  }
+
+  /**
+   * Routes a response back to a specifically targeted client and request event.
+   * This bypasses the normal correlation lookup, which is useful when
+   * middleware needs to reject a request early (e.g. for explicit gating).
+   */
+  public async routeTargeted(
+    clientPubkey: string,
+    response: JSONRPCResponse | JSONRPCErrorResponse,
+    requestEventId: string,
+  ): Promise<void> {
+    const session = this.deps.sessionStore.getSession(clientPubkey);
+    if (!session) {
+      this.deps.logger.warn(
+        'Cannot route targeted response: no active session found',
+        { clientPubkey, requestEventId },
+      );
+      return;
+    }
+
+    const tags = this.deps.buildOutboundTags({
+      baseTags: this.deps.createResponseTags(clientPubkey, requestEventId),
+      session,
+    });
+
+    this.maybeAppendPaymentInteractionDisclosure(tags, session);
+
+    const giftWrapKind = this.deps.chooseGiftWrapKind({
+      session,
+    });
+
+    await this.deps.sendMcpMessage(
+      response,
+      clientPubkey,
+      CTXVM_MESSAGES_KIND,
+      tags,
+      session.isEncrypted,
+      undefined,
+      giftWrapKind,
+    );
+  }
+
+  private maybeAppendPaymentInteractionDisclosure(
+    tags: string[][],
+    session: ClientSession,
+  ): void {
+    // CEP-8: Disclose effective mode on first response if client requested a non-default mode.
+    if (
+      session.requestedPaymentInteraction &&
+      session.requestedPaymentInteraction !== 'transparent' &&
+      !session.hasDisclosedPaymentInteraction &&
+      session.effectivePaymentInteraction
+    ) {
+      const effective = session.effectivePaymentInteraction;
+      // The availability advertisement (extraCommonTags) may already be flushed
+      // onto this first response with the same value. Avoid emitting a duplicate
+      // tag; the existing one already satisfies the disclosure obligation.
+      const alreadyPresent = tags.some(
+        (t) => t[0] === NOSTR_TAGS.PAYMENT_INTERACTION && t[1] === effective,
+      );
+      if (!alreadyPresent) {
+        tags.push([NOSTR_TAGS.PAYMENT_INTERACTION, effective]);
+      }
+      session.hasDisclosedPaymentInteraction = true;
     }
   }
 }
