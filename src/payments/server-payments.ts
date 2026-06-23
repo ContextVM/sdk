@@ -2,13 +2,13 @@ import { isJsonRpcRequest } from './types.js';
 import type {
   CorrelatedNotificationSender,
   PaymentAcceptedNotification,
+  PaymentInteractionPolicy,
   PaymentProcessor,
   PaymentRejectedNotification,
   PaymentRequiredNotification,
   PricedCapability,
   ResolvePriceFn,
   ServerMiddlewareFn,
-  PaymentInteractionMode,
 } from './types.js';
 import { LruCache } from '../core/utils/lru-cache.js';
 import { withTimeout } from '../core/utils/utils.js';
@@ -50,8 +50,13 @@ export interface ServerPaymentsOptions {
    */
   maxPendingPayments?: number;
 
-  /** Effective payment interaction mode for this server instance. @default 'transparent' */
-  paymentInteraction?: PaymentInteractionMode;
+  /**
+   * Server-side policy for which payment interaction lifecycles this server
+   * accepts. `optional` mirrors the client's requested mode (the default);
+   * `transparent` makes the server transparent-only.
+   * @default 'optional'
+   */
+  paymentInteraction?: PaymentInteractionPolicy;
 }
 
 function purgeExpiredPending<T extends { expiresAtMs: number }>(params: {

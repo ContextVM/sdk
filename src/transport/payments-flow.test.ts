@@ -1071,7 +1071,7 @@ describe.serial('payments fake flow (transport-level)', () => {
       {
         processors: [processor],
         pricedCapabilities: [...pricedCapabilities],
-        paymentInteraction: 'explicit_gating',
+        paymentInteraction: 'optional',
       },
     );
 
@@ -1160,7 +1160,7 @@ describe.serial('payments fake flow (transport-level)', () => {
             currencyUnit: 'test',
           },
         ],
-        paymentInteraction: 'explicit_gating',
+        paymentInteraction: 'optional',
       },
     );
     await mcpServer.connect(serverTransport);
@@ -1253,7 +1253,7 @@ describe.serial('payments fake flow (transport-level)', () => {
             currencyUnit: 'test',
           },
         ],
-        paymentInteraction: 'explicit_gating',
+        paymentInteraction: 'optional',
       },
     );
     await mcpServer.connect(serverTransport);
@@ -1344,7 +1344,7 @@ describe.serial('payments fake flow (transport-level)', () => {
             currencyUnit: 'test',
           },
         ],
-        paymentInteraction: 'explicit_gating',
+        paymentInteraction: 'optional',
       },
     );
     await mcpServer.connect(serverTransport);
@@ -1424,7 +1424,7 @@ describe.serial('payments fake flow (transport-level)', () => {
             currencyUnit: 'test',
           },
         ],
-        paymentInteraction: 'explicit_gating',
+        paymentInteraction: 'optional',
       },
     );
     await mcpServer.connect(serverTransport);
@@ -1532,7 +1532,7 @@ describe.serial('payments fake flow (transport-level)', () => {
             currencyUnit: 'test',
           },
         ],
-        paymentInteraction: 'explicit_gating',
+        paymentInteraction: 'optional',
       },
     );
     await mcpServer.connect(serverTransport);
@@ -1626,7 +1626,7 @@ describe.serial('payments fake flow (transport-level)', () => {
             currencyUnit: 'test',
           },
         ],
-        paymentInteraction: 'explicit_gating',
+        paymentInteraction: 'optional',
         resolvePrice: async () => ({
           amount: 42,
           description: 'dynamic quote',
@@ -1703,7 +1703,7 @@ describe.serial('payments fake flow (transport-level)', () => {
       },
     );
 
-    // No paymentInteraction option → transparent-only server.
+    // Explicitly transparent-only: rejects explicit_gating negotiation.
     const processor = new FakePaymentProcessor();
     const serverTransport = withServerPayments(
       new NostrServerTransport({
@@ -1721,6 +1721,7 @@ describe.serial('payments fake flow (transport-level)', () => {
             currencyUnit: 'test',
           },
         ],
+        paymentInteraction: 'transparent',
       },
     );
     await mcpServer.connect(serverTransport);
@@ -1872,7 +1873,7 @@ describe.serial('payments fake flow (transport-level)', () => {
           },
         ],
         // Server advertises explicit_gating, but it is opt-in per session.
-        paymentInteraction: 'explicit_gating',
+        paymentInteraction: 'optional',
       },
     );
     await mcpServer.connect(serverTransport);
@@ -1908,6 +1909,132 @@ describe.serial('payments fake flow (transport-level)', () => {
     expect(toolCallCount).toBe(1);
 
     await client.close();
+    await mcpServer.close();
+  }, 20000);
+
+  // CEP-8 optional default: when `paymentInteraction` is omitted the server
+  // defaults to the optional policy and mirrors each client's requested
+  // lifecycle. A transparent client (no tag) gets the notification flow, while
+  // an explicit-gating client is gated. Locks the new default + mirror behavior.
+  test('optional default (omitted paymentInteraction): server mirrors the lifecycle each client requests', async () => {
+    const serverSK = generateSecretKey();
+    const serverPublicKey = getPublicKey(serverSK);
+    const serverPrivateKey = bytesToHex(serverSK);
+
+    const mcpServer = new McpServer({
+      name: 'optional-default-server',
+      version: '1.0.0',
+    });
+    let toolCallCount = 0;
+    mcpServer.registerTool(
+      'add',
+      {
+        title: 'Addition Tool',
+        description: 'Add two numbers',
+        inputSchema: { a: z.number(), b: z.number() },
+      },
+      async ({ a, b }: { a: number; b: number }) => {
+        toolCallCount++;
+        return { content: [{ type: 'text', text: String(a + b) }] };
+      },
+    );
+
+    const processor = new FakePaymentProcessor({ verifyDelayMs: 50 });
+    // NOTE: no paymentInteraction option → defaults to 'optional'.
+    const serverTransport = withServerPayments(
+      new NostrServerTransport({
+        signer: new PrivateKeySigner(serverPrivateKey),
+        relayHandler: new ApplesauceRelayPool([relayUrl]),
+        encryptionMode: EncryptionMode.DISABLED,
+      }),
+      {
+        processors: [processor],
+        pricedCapabilities: [
+          {
+            method: 'tools/call',
+            name: 'add',
+            amount: 1,
+            currencyUnit: 'test',
+          },
+        ],
+      },
+    );
+    await mcpServer.connect(serverTransport);
+
+    // --- Transparent client (omits payment_interaction): stays on notifications ---
+    await sleepPastSecondBoundary();
+    const transparentSK = generateSecretKey();
+    const transparentTransport = new NostrClientTransport({
+      signer: new PrivateKeySigner(bytesToHex(transparentSK)),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      serverPubkey: serverPublicKey,
+      encryptionMode: EncryptionMode.DISABLED,
+    });
+    const transparentPaid = withClientPayments(transparentTransport, {
+      handlers: [new FakePaymentHandler({ pmi: 'fake', delayMs: 10 })],
+    });
+    const transparentClient = new Client({
+      name: 'transparent-client',
+      version: '1.0.0',
+    });
+    await transparentClient.connect(transparentPaid);
+
+    const transparentResult = await transparentClient.callTool({
+      name: 'add',
+      arguments: { a: 1, b: 2 },
+    });
+    const transparentTyped = transparentResult as {
+      content: Array<{ type: string; text?: string }>;
+    };
+    expect(transparentTyped.content[0]).toMatchObject({
+      type: 'text',
+      text: '3',
+    });
+
+    await transparentClient.close();
+
+    // --- Explicit-gating client (requests payment_interaction=explicit_gating): gated ---
+    await sleepPastSecondBoundary();
+    let explicitHandled = false;
+    const explicitSK = generateSecretKey();
+    const explicitTransport = new NostrClientTransport({
+      signer: new PrivateKeySigner(bytesToHex(explicitSK)),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      serverPubkey: serverPublicKey,
+      encryptionMode: EncryptionMode.DISABLED,
+    });
+    const explicitPaid = withClientPayments(explicitTransport, {
+      handlers: [],
+      paymentInteraction: 'explicit_gating',
+      onPaymentRequired: async () => {
+        await sleepPastSecondBoundary();
+        explicitHandled = true;
+        return { paid: true };
+      },
+    });
+    const explicitClient = new Client({
+      name: 'explicit-client',
+      version: '1.0.0',
+    });
+    await explicitClient.connect(explicitPaid);
+
+    const explicitResult = await explicitClient.callTool({
+      name: 'add',
+      arguments: { a: 4, b: 5 },
+    });
+    const explicitTyped = explicitResult as {
+      content: Array<{ type: string; text?: string }>;
+    };
+    expect(explicitTyped.content[0]).toMatchObject({
+      type: 'text',
+      text: '9',
+    });
+    expect(explicitHandled).toBe(true);
+
+    // Both lifecycles reached the underlying handler exactly once.
+    expect(toolCallCount).toBe(2);
+
+    await explicitClient.close();
     await mcpServer.close();
   }, 20000);
 });

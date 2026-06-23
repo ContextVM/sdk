@@ -205,7 +205,16 @@ export class ClientInboundCoordinator {
       (tag) =>
         tag[0] === NOSTR_TAGS.PAYMENT_INTERACTION && typeof tag[1] === 'string',
     );
-    if (paymentInteractionTag) {
+    if (
+      paymentInteractionTag &&
+      // CEP-8: the effective mode observed on a response is authoritative only
+      // when the client requested a non-default mode. Otherwise the tag is a
+      // server availability advertisement and MUST NOT be recorded as this
+      // session's effective mode (which would leave a transparent client
+      // incorrectly believing it is on the explicit-gating lifecycle).
+      this.deps.capabilityNegotiator.getRequestedPaymentInteraction() ===
+        'explicit_gating'
+    ) {
       const mode = paymentInteractionTag[1];
       if (mode === 'transparent' || mode === 'explicit_gating') {
         this.deps.metadataStore.setEffectivePaymentInteraction(

@@ -52,7 +52,7 @@ import { ServerOpenStreamFactory } from './nostr-server/open-stream-factory.js';
 import { ServerEventPipeline } from './nostr-server/event-pipeline.js';
 import { ServerInboundCoordinator } from './nostr-server/inbound-coordinator.js';
 import type { InboundMiddlewareFn } from './middleware.js';
-import type { PaymentInteractionMode } from '../payments/types.js';
+import type { PaymentInteractionPolicy } from '../payments/types.js';
 
 export type { InboundMiddlewareFn } from './middleware.js';
 /**
@@ -489,10 +489,10 @@ export class NostrServerTransport
   }
 
   /**
-   * Sets the supported payment interaction mode for this server.
+   * Sets the supported payment interaction policy for this server.
    */
   public setSupportedPaymentInteraction(
-    mode: PaymentInteractionMode | undefined,
+    mode: PaymentInteractionPolicy | undefined,
   ): void {
     this.inboundCoordinator.setSupportedPaymentInteraction(mode);
   }

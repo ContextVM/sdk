@@ -26,6 +26,12 @@ execution.
   (SHA-256 over JCS-canonicalized method + params + client pubkey).
 - Shared `resolveAndInitiatePayment` pipeline eliminates duplication between transparent and
   explicit-gating server middlewares.
+- New `PaymentInteractionPolicy` type (`'optional' | 'transparent'`) separates the server-side
+  policy from the wire-level `PaymentInteractionMode`. `withServerPayments` now defaults to
+  `'optional'`: a server that accepts payments advertises `explicit_gating` support and mirrors
+  each client's requested lifecycle, so explicit-gating clients are gated while transparent
+  clients keep the notification flow. Pass `paymentInteraction: 'transparent'` for a
+  transparent-only server.
 
 **Client**
 
@@ -34,9 +40,17 @@ execution.
   `maxPendingRetries` and exponential backoff.
 - Effective-mode guard prevents auto-satisfying transparent payments when the server rejected
   explicit gating—synthesizes a local `-32000` decline instead.
+- An inbound `payment_interaction` tag on a server response is now recorded as the session's
+  effective mode only when the client itself requested `explicit_gating`. Otherwise the tag is
+  treated as a server availability advertisement, preventing a transparent client from
+  incorrectly believing it is on the explicit-gating lifecycle.
 
 **Backward Compatibility**
 
-- 100% backward compatible. Legacy clients not advertising the new mode continue using the
+- Wire and client compatible: legacy clients not advertising the new mode continue using the
   default `transparent` flow. Per-session middleware guards ensure explicit-gating behavior
   only activates for sessions that opted in.
+- The new `'optional'` server default is a behavioral change for server operators who relied on
+  the previous implicit transparent-only default: their server now also accepts
+  `explicit_gating` requests from clients that ask for it. Set `paymentInteraction: 'transparent'`
+  to restore transparent-only behavior.

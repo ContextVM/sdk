@@ -51,4 +51,20 @@ describe('ClientCapabilityNegotiator', () => {
     });
     expect(afterTags.some((t) => t[0] === 'payment_interaction')).toBe(false);
   });
+
+  test('getRequestedPaymentInteraction reflects the negotiated mode', () => {
+    const negotiator = new ClientCapabilityNegotiator({
+      encryptionMode: EncryptionMode.OPTIONAL,
+      giftWrapMode: GiftWrapMode.EPHEMERAL,
+      oversizedEnabled: false,
+      openStreamEnabled: false,
+      composeOutboundTags: () => [],
+    });
+
+    // Defaults to undefined (transparent client).
+    expect(negotiator.getRequestedPaymentInteraction()).toBeUndefined();
+
+    negotiator.setPaymentInteraction('explicit_gating');
+    expect(negotiator.getRequestedPaymentInteraction()).toBe('explicit_gating');
+  });
 });

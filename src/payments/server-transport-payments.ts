@@ -1,4 +1,5 @@
 import type { NostrServerTransport } from '../transport/nostr-server-transport.js';
+import type { PaymentInteractionPolicy } from './types.js';
 import type { ServerPaymentsOptions } from './server-payments.js';
 import { createCapTagsFromPricedCapabilities } from './cap-tags.js';
 import { createPmiTagsFromProcessors } from './pmi-tags.js';
@@ -11,6 +12,12 @@ import { NOSTR_TAGS } from '../core/constants.js';
 
 /**
  * Attaches CEP-8 payments gating to a NostrServerTransport.
+ *
+ * By default the server uses the `optional` policy: it advertises
+ * `explicit_gating` support and mirrors each client's requested lifecycle, so a
+ * client that requests `explicit_gating` is gated while transparent clients keep
+ * the notification-based flow. Pass `paymentInteraction: 'transparent'` for a
+ * transparent-only server.
  */
 export function withServerPayments(
   transport: NostrServerTransport,
@@ -22,10 +29,16 @@ export function withServerPayments(
     createLogger('server-payments'),
   );
 
-  // CEP-8 discovery tags: advertise supported PMIs + reference pricing on announcement/list events.
+  const policy: PaymentInteractionPolicy =
+    options.paymentInteraction ?? 'optional';
+  const supportsExplicitGating = policy === 'optional';
+
+  // CEP-8 discovery tags: advertise supported PMIs + reference pricing on
+  // announcement/list events. When explicit gating is supported, also advertise
+  // it as an available opt-in mode (availability, not effective session mode).
   const extraTags: string[][] = createPmiTagsFromProcessors(options.processors);
 
-  if (options.paymentInteraction === 'explicit_gating') {
+  if (supportsExplicitGating) {
     extraTags.push([NOSTR_TAGS.PAYMENT_INTERACTION, 'explicit_gating']);
   }
 
@@ -34,8 +47,9 @@ export function withServerPayments(
     createCapTagsFromPricedCapabilities(options.pricedCapabilities),
   );
 
-  // Expose the configured payment interaction mode to the transport coordinator.
-  transport.setSupportedPaymentInteraction(options.paymentInteraction);
+  // Expose the configured policy to the transport coordinator so it can accept
+  // or reject per-session `payment_interaction` requests.
+  transport.setSupportedPaymentInteraction(policy);
 
   transport.addInboundMiddleware(
     createServerPaymentsMiddleware({
@@ -45,7 +59,10 @@ export function withServerPayments(
     }),
   );
 
-  if (options.paymentInteraction === 'explicit_gating') {
+  // The transparent middleware self-gates on the per-session effective mode, so
+  // it is safe to register the explicit-gating middleware alongside it. Each
+  // request is routed to exactly one lifecycle based on the negotiated mode.
+  if (supportsExplicitGating) {
     const authorizationStore = new AuthorizationStore({});
     transport.addInboundMiddleware(
       createExplicitGatingMiddleware({

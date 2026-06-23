@@ -319,17 +319,23 @@ export class OutboundResponseRouter {
     tags: string[][],
     session: ClientSession,
   ): void {
-    // CEP-8: Disclose effective mode on first response if client requested a non-default mode
+    // CEP-8: Disclose effective mode on first response if client requested a non-default mode.
     if (
       session.requestedPaymentInteraction &&
       session.requestedPaymentInteraction !== 'transparent' &&
       !session.hasDisclosedPaymentInteraction &&
       session.effectivePaymentInteraction
     ) {
-      tags.push([
-        NOSTR_TAGS.PAYMENT_INTERACTION,
-        session.effectivePaymentInteraction,
-      ]);
+      const effective = session.effectivePaymentInteraction;
+      // The availability advertisement (extraCommonTags) may already be flushed
+      // onto this first response with the same value. Avoid emitting a duplicate
+      // tag; the existing one already satisfies the disclosure obligation.
+      const alreadyPresent = tags.some(
+        (t) => t[0] === NOSTR_TAGS.PAYMENT_INTERACTION && t[1] === effective,
+      );
+      if (!alreadyPresent) {
+        tags.push([NOSTR_TAGS.PAYMENT_INTERACTION, effective]);
+      }
       session.hasDisclosedPaymentInteraction = true;
     }
   }

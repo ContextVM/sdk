@@ -28,7 +28,10 @@ import {
 import { GiftWrapMode } from '../../core/interfaces.js';
 import { type OpenStreamWriter } from '../open-stream/index.js';
 import { UNSUPPORTED_PAYMENT_INTERACTION_ERROR_CODE } from '../../payments/constants.js';
-import type { PaymentInteractionMode } from '../../payments/types.js';
+import type {
+  PaymentInteractionMode,
+  PaymentInteractionPolicy,
+} from '../../payments/types.js';
 
 export interface ServerInboundCoordinatorDeps {
   sessionStore: SessionStore;
@@ -41,7 +44,7 @@ export interface ServerInboundCoordinatorDeps {
   oversizedEnabled: boolean;
   openStreamEnabled: boolean;
   giftWrapMode: GiftWrapMode;
-  supportedPaymentInteraction?: PaymentInteractionMode;
+  supportedPaymentInteraction?: PaymentInteractionPolicy;
   sendMcpMessage: (
     msg: JSONRPCMessage,
     pubkey: string,
@@ -80,7 +83,7 @@ export class ServerInboundCoordinator {
   }
 
   public setSupportedPaymentInteraction(
-    mode: PaymentInteractionMode | undefined,
+    mode: PaymentInteractionPolicy | undefined,
   ): void {
     this.deps.supportedPaymentInteraction = mode;
   }
@@ -176,7 +179,7 @@ export class ServerInboundCoordinator {
         .map((tag) => tag[1] as string);
 
       const serverSupportsExplicitGating =
-        this.deps.supportedPaymentInteraction === 'explicit_gating';
+        this.deps.supportedPaymentInteraction === 'optional';
 
       const paymentInteractionTag = event.tags.find(
         (tag) =>

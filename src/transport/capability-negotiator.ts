@@ -215,6 +215,17 @@ export class ClientCapabilityNegotiator {
   }
 
   /**
+   * Returns the payment interaction mode this client requested, if any.
+   *
+   * Used to distinguish an inbound `payment_interaction` tag observed as the
+   * session's effective mode (authoritative only when the client requested a
+   * non-default mode) from a server availability advertisement.
+   */
+  public getRequestedPaymentInteraction(): PaymentInteractionMode | undefined {
+    return this.paymentInteraction;
+  }
+
+  /**
    * Updates server capability flags from discovered peer tags.
    * Called by the transport when it learns new capabilities from inbound events.
    */

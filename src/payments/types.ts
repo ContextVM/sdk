@@ -62,8 +62,30 @@ export type PaymentRequiredNotification = JSONRPCNotification & {
   };
 };
 
-/** CEP-8 payment interaction modes. */
+/**
+ * CEP-8 payment interaction modes.
+ *
+ * These are the wire/session-level modes negotiated via the `payment_interaction`
+ * tag: `transparent` (default) and `explicit_gating` (opt-in).
+ */
 export type PaymentInteractionMode = 'transparent' | 'explicit_gating';
+
+/**
+ * Server-side policy for which payment interaction lifecycles it accepts.
+ *
+ * This is a server configuration concern, distinct from the wire-level
+ * {@link PaymentInteractionMode}. It mirrors the OPTIONAL policy used for
+ * encryption and gift wrapping, where the peer's chosen mode is mirrored rather
+ * than forced.
+ *
+ * - `optional`: Accept both lifecycles and mirror the client's requested mode
+ *   for the session (the default). A client that requests `explicit_gating`
+ *   gets it; a client that omits the tag or requests `transparent` stays on the
+ *   transparent lifecycle.
+ * - `transparent`: Transparent-only. Reject `explicit_gating` requests with a
+ *   `-32602` negotiation error per CEP-8 effective-mode disclosure.
+ */
+export type PaymentInteractionPolicy = 'optional' | 'transparent';
 
 /** A single payment option inside a -32042 error.data.payment_options entry. */
 export interface PaymentOption {
