@@ -1,5 +1,33 @@
 # @contextvm/sdk
 
+## 0.13.3
+
+### Patch Changes
+
+- fix(transport): preserve discovery tags on responses routed through oversized measurement
+
+A progress token on the request (e.g. callTool with onprogress) routed
+responses through the oversized-measurement branch in OutboundResponseRouter.
+That branch built startFrameTags via buildOutboundTags(), which consumes the
+per-session discovery-tag latch (hasSentCommonTags) as a side effect. Those
+tags were fed only to measurePublishedMcpMessageSize() — a throwaway
+measurement, never published.
+
+When the response fit in a single event, control fell through to the normal
+send path, which called buildOutboundTags() again — now the latch was already
+consumed, so it returned [] and the real response shipped with no
+name/about/website/picture or capability tags. Stateless clients therefore
+never learned server identity (getServerInitializeName() always undefined),
+violating CEP-35 first-direct-message discovery.
+
+Fix: reuse the tags already built for measurement instead of rebuilding.
+
+Also corrects stale JSDoc on AnnouncementManager.getCommonTags/
+getServerInfoTags/getCapabilityTags that claimed server metadata is excluded
+from per-session discovery — the code includes it per CEP-35, and the old
+wording would mislead non-SDK implementers.
+
+
 ## 0.13.2
 
 ### Patch Changes
