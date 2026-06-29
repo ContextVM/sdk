@@ -150,6 +150,12 @@ export class OutboundResponseRouter {
     // Restore the original request ID in the response
     responseToSend.id = route.originalRequestId;
 
+    // discovery tags already computed for the oversized-measurement branch, if it
+    // ran without fragmenting. buildOutboundTags() consumes the per-session
+    // discovery latch as a side effect, so the send path must reuse these rather
+    // than rebuild (otherwise the response ships with no discovery tags).
+    let oversizedTags: string[][] | undefined;
+
     // CEP-22 Oversized Transfer (proactive path for server responses)
     if (
       this.deps.oversizedConfig.enabled &&
@@ -219,18 +225,30 @@ export class OutboundResponseRouter {
             logger: this.deps.logger,
           },
         );
-        // Note: Oversized transfers skip maybeAppendPaymentInteractionDisclosure() and marking discovery
-        // tags as sent on this early return path. This is low risk in practice because oversized transfers
-        // only trigger for large payloads, and negotiation usually happens early with small messages.
+        // CEP-35 discovery tags ride on the start frame (startFrameTags) above.
+        // Payment-interaction disclosure is also covered: the server's
+        // availability advertisement (extraCommonTags, e.g.
+        // ['payment_interaction','explicit_gating']) flows through getCommonTags()
+        // into startFrameTags, and its value always equals the effective session
+        // mode when both are present — so no separate disclosure call is needed.
         return;
       }
+
+      // Response fit in a single event: reuse the tags already built for
+      // measurement instead of rebuilding, which would drop discovery tags.
+      oversizedTags = startFrameTags;
     }
 
     // Send the response back to the original requester
-    const tags = this.deps.buildOutboundTags({
-      baseTags: this.deps.createResponseTags(route.clientPubkey, nostrEventId),
-      session,
-    });
+    const tags =
+      oversizedTags ??
+      this.deps.buildOutboundTags({
+        baseTags: this.deps.createResponseTags(
+          route.clientPubkey,
+          nostrEventId,
+        ),
+        session,
+      });
 
     this.maybeAppendPaymentInteractionDisclosure(tags, session);
 

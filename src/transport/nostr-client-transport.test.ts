@@ -1051,6 +1051,80 @@ describe.serial('NostrClientTransport', () => {
     await client.close();
     await statelessServer.close();
   }, 20000);
+
+  // Regression: a progress token on the request (e.g. callTool with onprogress)
+  // routed responses through the oversized-measurement branch, whose throwaway
+  // measurement consumed the per-session discovery-tag latch. The real response
+  // then shipped with no discovery tags, so the client never learned server
+  // identity. See outbound-response-router.ts route().
+  test('learns discovery tags from first stateless response with progress token', async () => {
+    // Dedicated keypair + server so this test cannot pick up another test's
+    // published events under the shared serverPublicKey (race under --concurrent).
+    const progressServerSk = generateSecretKey();
+    const progressServerPubkey = getPublicKey(progressServerSk);
+
+    const progressServer = new McpServer({
+      name: 'Progress Discovery Server',
+      version: '1.0.0',
+    });
+    progressServer.registerTool(
+      'add',
+      {
+        title: 'Addition Tool',
+        description: 'Add two numbers',
+        inputSchema: { a: z.number(), b: z.number() },
+      },
+      async ({ a, b }) => ({
+        content: [{ type: 'text', text: String(a + b) }],
+      }),
+    );
+
+    const progressServerTransport = new NostrServerTransport({
+      signer: new PrivateKeySigner(bytesToHex(progressServerSk)),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      serverInfo: {
+        name: 'Progress Discovery Server',
+        about: 'Learns metadata with progress token',
+      },
+      encryptionMode: EncryptionMode.OPTIONAL,
+    });
+
+    await progressServer.connect(progressServerTransport);
+
+    const client = new Client({ name: 'Progress-Client', version: '1.0.0' });
+    const clientPrivateKey = bytesToHex(generateSecretKey());
+    const clientTransport = new NostrClientTransport({
+      signer: new PrivateKeySigner(clientPrivateKey),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      serverPubkey: progressServerPubkey,
+      isStateless: true,
+      encryptionMode: EncryptionMode.OPTIONAL,
+    });
+
+    await client.connect(clientTransport);
+    await client.callTool(
+      { name: 'add', arguments: { a: 1, b: 2 } },
+      undefined,
+      { onprogress: () => undefined, resetTimeoutOnProgress: true },
+    );
+
+    // Wait for the inbound response to be processed and discovery learned,
+    // rather than a fixed sleep (flaky under full-suite load).
+    await waitFor({
+      produce: () => clientTransport.getServerInitializeEvent(),
+      timeoutMs: 5_000,
+    });
+
+    expect(clientTransport.getServerInitializeName()).toBe(
+      'Progress Discovery Server',
+    );
+    expect(clientTransport.getServerInitializeAbout()).toBe(
+      'Learns metadata with progress token',
+    );
+
+    await client.close();
+    await progressServer.close();
+  }, 20000);
 });
 
 describe('NostrClientTransport instance shape', () => {

@@ -321,7 +321,10 @@ export class AnnouncementManager {
   }
 
   /**
-   * Generates common tags from server information for use in Nostr events.
+   * Generates common tags (server identity + transport capability) for use in
+   * Nostr events. This is the per-session discovery surface replayed on the
+   * first direct server→client message per CEP-35, as well as on public
+   * announcement and initialize events.
    * @returns Array of tag arrays for Nostr events.
    */
   getCommonTags(): string[][] {
@@ -341,9 +344,10 @@ export class AnnouncementManager {
   /**
    * Returns server metadata tags (name/about/website/picture).
    *
-   * These tags are informational and may be large (e.g. `about`). They are intended
-   * for announcements and initialize semantics, not for lightweight capability
-   * discovery.
+   * These are part of the per-session discovery surface (CEP-35): they are
+   * replayed alongside capability tags on the server's first direct message
+   * of a session so stateless clients can learn server identity without an
+   * initialize round-trip. They may be large (e.g. `about`).
    */
   public getServerInfoTags(): string[][] {
     const tags: string[][] = [];
@@ -365,10 +369,10 @@ export class AnnouncementManager {
   }
 
   /**
-   * Returns transport capability tags.
-   *
-   * This is used for lightweight per-session discovery (e.g. stateless clients)
-   * and intentionally excludes server metadata.
+   * Returns transport capability tags (encryption / oversized / open-stream
+   * support, plus caller-provided extra/internal tags). Sent on the server's
+   * first direct message of a session (CEP-35) combined with server identity
+   * tags via {@link getCommonTags}.
    */
   public getCapabilityTags(): string[][] {
     const tags: string[][] = [];
