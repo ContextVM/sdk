@@ -500,6 +500,10 @@ export class NostrClientTransport
     queueMicrotask(() => {
       try {
         this.onmessage?.(response);
+        this.onmessageWithContext?.(response, {
+          eventId: 'emulated',
+          correlatedEventId: 'emulated',
+        });
       } catch (error) {
         this.logger.error('Error in emulated initialize response callback', {
           error: error instanceof Error ? error.message : String(error),

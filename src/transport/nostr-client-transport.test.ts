@@ -1093,6 +1093,53 @@ describe('NostrClientTransport instance shape', () => {
     );
   });
 
+  test('stateless emulated initialize fires both onmessage and onmessageWithContext (regression: withClientPayments drops stateless init)', async () => {
+    const transport = new NostrClientTransport({
+      serverPubkey: 'a'.repeat(64),
+      signer: new PrivateKeySigner('a'.repeat(64)),
+      relayHandler: [],
+      isStateless: true,
+    });
+
+    const seen: JSONRPCMessage[] = [];
+    const seenWithContext: Array<{
+      message: JSONRPCMessage;
+      ctx: { eventId: string; correlatedEventId?: string };
+    }> = [];
+
+    transport.onmessage = (msg) => seen.push(msg);
+    transport.onmessageWithContext = (message, ctx) =>
+      seenWithContext.push({ message, ctx });
+
+    // Drives the exact stateless path that broke the withClientPayments wrapper:
+    // `send(initialize)` short-circuits to emulateInitializeResponse.
+    await transport.send({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: {
+        protocolVersion: '2025-06-18',
+        capabilities: {},
+        clientInfo: { name: 'c', version: '1.0.0' },
+      },
+    } as JSONRPCMessage);
+
+    // Emulated delivery is async (queueMicrotask); wait for both handlers.
+    await waitFor({
+      produce: () =>
+        seen.length === 1 && seenWithContext.length === 1
+          ? { seen, seenWithContext }
+          : undefined,
+    });
+
+    expect(seen[0]).toEqual(seenWithContext[0]!.message);
+    expect((seenWithContext[0]!.message as { id?: unknown }).id).toBe(1);
+    expect(seenWithContext[0]!.ctx).toEqual({
+      eventId: 'emulated',
+      correlatedEventId: 'emulated',
+    });
+  });
+
   test('throws a clear error for unsupported serverPubkey formats', () => {
     expect(
       () =>

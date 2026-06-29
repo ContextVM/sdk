@@ -1,5 +1,23 @@
 # @contextvm/sdk
 
+## 0.13.2
+
+### Patch Changes
+
+- fix(client): deliver stateless emulated initialize response through both transport handlers
+
+  `NostrClientTransport.emulateInitializeResponse()` (stateless mode) fired only
+  `onmessage`, while every other response producer fires both `onmessage` and
+  `onmessageWithContext`. The `withClientPayments` wrapper relies on that two-path
+  invariant to dedupe delivery, so in `stateless + withClientPayments` the emulated
+  `initialize` result was dropped — the MCP handshake hung and failed with
+  `MCP error -32001: Request timed out`, breaking every call (free or paid).
+
+  The emulated response now mirrors `handleResponse`, calling both handlers with an
+  `'emulated'` event-id sentinel. Real capabilities are still learned from the
+  first real server response per CEP-35 first-message discovery, so the synthetic
+  response content is unchanged.
+
 ## 0.13.1
 
 ### Patch Changes
