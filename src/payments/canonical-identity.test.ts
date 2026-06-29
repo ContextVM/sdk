@@ -72,6 +72,48 @@ describe('Canonical Invocation Identity', () => {
       expect(hash1).not.toBe(hash2);
     });
 
+    test('excludes params._meta from the identity (progressToken/stream do not affect hash)', () => {
+      // `_meta` is MCP's reserved per-request extension namespace (progressToken,
+      // stream, related-task metadata, ...) and MUST NOT affect the canonical
+      // identity — the MCP client SDK regenerates progressToken on every call.
+      const noMeta = computeCanonicalInvocationHash('tools/call', {
+        name: 'add',
+        arguments: { a: 1, b: 2 },
+      });
+      const metaProgress1 = computeCanonicalInvocationHash('tools/call', {
+        name: 'add',
+        arguments: { a: 1, b: 2 },
+        _meta: { progressToken: 1 },
+      });
+      const metaProgress999 = computeCanonicalInvocationHash('tools/call', {
+        name: 'add',
+        arguments: { a: 1, b: 2 },
+        _meta: { progressToken: 999, stream: 'writer' },
+      });
+
+      expect(noMeta).toBe(metaProgress1);
+      expect(noMeta).toBe(metaProgress999);
+
+      // Semantic params still differentiate identities.
+      const differentArgs = computeCanonicalInvocationHash('tools/call', {
+        name: 'add',
+        arguments: { a: 2, b: 2 },
+        _meta: { progressToken: 1 },
+      });
+      expect(noMeta).not.toBe(differentArgs);
+    });
+
+    test('passes array and primitive params through unchanged (no _meta slot)', () => {
+      // JSON-RPC permits positional (array) and primitive params; only the
+      // object form has a reserved _meta, so these hash as-is.
+      expect(computeCanonicalInvocationHash('tools/call', [1, 2, 3])).toMatch(
+        /^[0-9a-f]{64}$/,
+      );
+      expect(computeCanonicalInvocationHash('tools/call', 'literal')).toMatch(
+        /^[0-9a-f]{64}$/,
+      );
+    });
+
     test('throws error for circular references', () => {
       const obj: Record<string, unknown> = {};
       obj.self = obj;

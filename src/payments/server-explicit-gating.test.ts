@@ -574,6 +574,55 @@ describe('Explicit Gating Middleware', () => {
     expect(sentResponses).toHaveLength(0);
   });
 
+  test('grant matches across different params._meta.progressToken (_meta excluded from identity)', async () => {
+    const store = new AuthorizationStore();
+    const sentResponses: JSONRPCErrorResponse[] = [];
+
+    const mw = createExplicitGatingMiddleware({
+      options: {
+        processors: [processor],
+        pricedCapabilities: [...pricedCapabilities],
+      },
+      authorizationStore: store,
+      sendResponse: async (_pubkey, response) => {
+        sentResponses.push(response);
+      },
+    });
+
+    // Identity is computed from method + semantic params only; `params._meta`
+    // (MCP's reserved transport/extension namespace, incl. progressToken) is
+    // excluded from the canonical form. The MCP client SDK regenerates
+    // progressToken on every callTool, so a retry/re-invoke carries a fresh
+    // token — this locks that retries still match a paid grant.
+    const paramsWithMeta = (progressToken: number): JSONRPCRequest => ({
+      ...message,
+      params: {
+        ...message.params,
+        _meta: { progressToken },
+      },
+    });
+
+    // Grant authorization for the invocation carrying progressToken 1.
+    store.grant(
+      computeCanonicalInvocationIdentity(
+        ctx.clientPubkey,
+        message.method,
+        paramsWithMeta(1).params,
+      ),
+      10000,
+    );
+
+    // Retry with a DIFFERENT progressToken (2) but identical semantic params.
+    let forwarded = false;
+    await mw(paramsWithMeta(2), ctx, async () => {
+      forwarded = true;
+    });
+
+    // The grant must still match despite the different progressToken.
+    expect(forwarded).toBe(true);
+    expect(sentResponses).toHaveLength(0);
+  });
+
   test('concurrent requests after a grant: exactly one consumes it, the other is gated', async () => {
     const store = new AuthorizationStore();
     const sentResponses: JSONRPCErrorResponse[] = [];

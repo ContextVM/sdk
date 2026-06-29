@@ -6,19 +6,24 @@ import { bytesToHex } from '@noble/hashes/utils.js';
 import type { CanonicalInvocationIdentity } from './types.js';
 
 /**
- * Computes a deterministic SHA-256 hash of an invocation's method and parameters.
- * Uses RFC 8785 JSON Canonicalization Scheme (JCS) to ensure structurally
- * identical JSON objects produce the same hash regardless of key ordering.
- *
- * @param method - The JSON-RPC method (e.g. 'tools/call')
- * @param params - The JSON-RPC parameters
- * @returns A hex-encoded SHA-256 hash string
+ * Computes a deterministic SHA-256 hash of an invocation's `method` and
+ * semantic `params` (RFC 8785 JCS, key-order independent). `params._meta`
+ * (MCP's reserved per-request extension namespace: progressToken, stream, ...)
+ * is excluded so retries/re-invocations match a paid authorization regardless
+ * of per-request transport metadata. The full `params` (incl. `_meta`) are
+ * still forwarded to the handler at execution time.
  */
 export function computeCanonicalInvocationHash(
   method: string,
   params: unknown,
 ): string {
-  const payload = { method, params };
+  // Only object params carry a reserved `_meta`; arrays/primitives pass through.
+  let semanticParams = params;
+  if (params && typeof params === 'object' && !Array.isArray(params)) {
+    const { _meta: _omit, ...rest } = params as Record<string, unknown>;
+    semanticParams = rest;
+  }
+  const payload = { method, params: semanticParams };
   let canonicalString: string | undefined;
   try {
     // Pre-validate that all values are strictly JSON-serializable.

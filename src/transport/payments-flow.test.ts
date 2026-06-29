@@ -2037,4 +2037,132 @@ describe.serial('payments fake flow (transport-level)', () => {
     await explicitClient.close();
     await mcpServer.close();
   }, 20000);
+
+  // CEP-8 explicit_gating canonical-identity fix: `params._meta` (MCP's
+  // reserved per-request extension namespace, which carries `progressToken`)
+  // is excluded from the canonical invocation identity. The MCP client SDK
+  // regenerates `progressToken` on every `callTool`, so two semantically
+  // identical invocations hash to the SAME identity. A paid authorization
+  // from one call is therefore consumable by a later identical re-invocation
+  // — exactly the property an agent needs when it re-issues a priced tool after
+  // seeing `Payment Required`. Reproduced via the SDK's own `onprogress` option;
+  // no hand-injected token.
+  test('explicit gating: identical calls match across different progressTokens (_meta excluded from identity)', async () => {
+    const serverSK = generateSecretKey();
+    const serverPrivateKey = bytesToHex(serverSK);
+    const serverPublicKey = getPublicKey(serverSK);
+
+    const mcpServer = new McpServer({
+      name: 'identity-fix-server',
+      version: '1.0.0',
+    });
+    let toolCallCount = 0;
+    mcpServer.registerTool(
+      'add',
+      {
+        title: 'Addition Tool',
+        description: 'Add two numbers',
+        inputSchema: { a: z.number(), b: z.number() },
+      },
+      async ({ a, b }: { a: number; b: number }) => {
+        toolCallCount++;
+        return { content: [{ type: 'text', text: String(a + b) }] };
+      },
+    );
+
+    const processor = new FakePaymentProcessor({ verifyDelayMs: 50 });
+    const createSpy = spyOn(processor, 'createPaymentRequired');
+    const verifySpy = spyOn(processor, 'verifyPayment');
+
+    const serverTransport = withServerPayments(
+      new NostrServerTransport({
+        signer: new PrivateKeySigner(serverPrivateKey),
+        relayHandler: new ApplesauceRelayPool([relayUrl]),
+        encryptionMode: EncryptionMode.DISABLED,
+      }),
+      {
+        processors: [processor],
+        pricedCapabilities: [
+          {
+            method: 'tools/call',
+            name: 'add',
+            amount: 1,
+            currencyUnit: 'test',
+            description: 'explicit test payment',
+          },
+        ],
+        paymentInteraction: 'optional',
+      },
+    );
+    await mcpServer.connect(serverTransport);
+
+    const clientSK = generateSecretKey();
+    const clientPrivateKey = bytesToHex(clientSK);
+    const clientTransport = new NostrClientTransport({
+      signer: new PrivateKeySigner(clientPrivateKey),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      serverPubkey: serverPublicKey,
+      encryptionMode: EncryptionMode.DISABLED,
+    });
+    const paidClientTransport = withClientPayments(clientTransport, {
+      handlers: [],
+      paymentInteraction: 'explicit_gating',
+      // Decline so Call A surfaces -32042 instead of auto-retrying. The server
+      // still verifies + grants server-side, so Call A's identity has a paid
+      // authorization waiting to be claimed by the next matching invocation.
+      onPaymentRequired: async () => ({ paid: false, reason: 'declined' }),
+    });
+
+    const client = new Client({
+      name: 'identity-fix-client',
+      version: '1.0.0',
+    });
+    await client.connect(paidClientTransport);
+
+    // Real-world emulation: rely on the SDK to mint its own progressToken by
+    // passing `onprogress`. No hand-injected token anywhere in the test.
+    const params = { name: 'add', arguments: { a: 1, b: 2 } };
+
+    // --- Call A: priced → -32042, declined by the client. ---
+    await sleepPastSecondBoundary();
+    await expect(
+      client.callTool(params, undefined, {
+        onprogress: () => undefined,
+        resetTimeoutOnProgress: true,
+      }),
+    ).rejects.toMatchObject({
+      code: -32042,
+      data: { reason: 'declined' },
+    });
+
+    // Let the server's async verifyPayment resolve and grant a paid
+    // authorization for Call A's canonical identity.
+    await sleep(150);
+    expect(verifySpy).toHaveBeenCalledTimes(1);
+
+    // --- Call B: identical semantic params, but the SDK mints a NEW
+    //     progressToken. With `_meta` excluded from the canonical identity,
+    //     Call B matches Call A's paid grant → claims it → forwards to the
+    //     handler → returns the result. No fresh -32042, no second payment. ---
+    await sleepPastSecondBoundary();
+    const result = await client.callTool(params, undefined, {
+      onprogress: () => undefined,
+      resetTimeoutOnProgress: true,
+    });
+    const typedResult = result as {
+      content: Array<{ type: string; text?: string }>;
+    };
+    expect(typedResult.content[0]).toMatchObject({ type: 'text', text: '3' });
+
+    // The tool ran exactly once (Call B consumed Call A's grant). Call A never
+    // reached the handler (declined); Call B claimed the paid authorization.
+    expect(toolCallCount).toBe(1);
+    // A single payment cycle: only Call A triggered create/verify. Call B
+    // claimed the existing grant, so no second payment was issued.
+    expect(createSpy).toHaveBeenCalledTimes(1);
+    expect(verifySpy).toHaveBeenCalledTimes(1);
+
+    await client.close();
+    await mcpServer.close();
+  }, 20000);
 });

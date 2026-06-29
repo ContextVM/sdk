@@ -117,15 +117,13 @@ export type PaymentInteractionTag = [
 
 /**
  * Canonical invocation identity for explicit-gating authorization matching.
- *
- * `invocationHash` is SHA-256 over JCS({method, params}). This means `params` MUST be
- * deterministic — no timestamps, UUIDs, or ephemeral IDs that change across retries.
- * Clients MUST preserve the exact original `params` object when retrying after payment
- * so the retry computes the same `invocationHash` and matches the paid authorization.
+ * `invocationHash` excludes `params._meta`, so retries with regenerated
+ * transport metadata (e.g. progressToken) still match a paid authorization;
+ * only the semantic `method` and params must be preserved when retrying.
  */
 export interface CanonicalInvocationIdentity {
   clientPubkey: string;
-  /** Hex-encoded SHA-256 of JCS({method, params}). */
+  /** Hex-encoded SHA-256 of JCS({method, params}) with `params._meta` excluded. */
   invocationHash: string;
 }
 

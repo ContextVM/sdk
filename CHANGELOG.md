@@ -1,5 +1,14 @@
 # @contextvm/sdk
 
+## 0.13.1
+
+### Patch Changes
+
+- feat(identity): exclude params.\_meta from canonical invocation hash
+
+  - Add test verifying that `_meta` properties (e.g. progressToken, stream) are ignored during hash computation.
+  - Bump applesauce-relay dependency to ^6.2.0.
+
 ## 0.13.0
 
 ### Minor Changes
