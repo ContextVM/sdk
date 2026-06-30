@@ -96,30 +96,11 @@ export class ApplesauceRelayPool implements RelayHandler {
   private relays: Relay[] = [];
 
   /**
-   * Terminates a relay for discard. `Relay.close()` (applesauce-relay >= 6.2)
-   * cancels the armed reconnect timer and tears down internal watchers, but
-   * does NOT complete `_ready$` — the source of the watchTower. Its
-   * reconnect-on-error path could then re-arm a reconnect timer after close,
-   * leaking a timer and racing freshly-built relays during rebuild.
-   *
-   * Order matters: complete `_ready$` BEFORE `close()`, otherwise close()'s
-   * socket teardown can trip the watchTower's reconnect path and arm a timer
-   * that completing the source won't cancel. `close()` then also cancels any
-   * reconnect timer armed before this call.
+   * Terminates a relay for discard. `Relay.close()` (applesauce-relay >= 6.2.1)
+   * is terminal: it cancels the reconnect timer, tears down internal watchers,
+   * and completes the watchTower source (`_ready$`).
    */
   private discardRelay(relay: Relay): void {
-    const ready$ = (
-      relay as Relay & {
-        _ready$?: { complete?: () => void; closed?: boolean };
-      }
-    )._ready$;
-    if (ready$ && !ready$.closed) {
-      try {
-        ready$.complete();
-      } catch {
-        // ignore
-      }
-    }
     try {
       relay.close();
     } catch (error) {
