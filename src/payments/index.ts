@@ -17,3 +17,4 @@ export * from './handlers/ln-bolt11-lnbits-payment-handler.js';
 export * from './processors/ln-bolt11-nwc-payment-processor.js';
 export * from './processors/ln-bolt11-lnbits-payment-processor.js';
 export * from './processors/ln-bolt11-zap-payment-processor.js';
+export * from './constants.js';
