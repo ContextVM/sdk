@@ -161,10 +161,12 @@ export interface PaymentHandlerRequest {
 }
 
 /**
- * Client-side module that can execute a payment for a single PMI.
+ * Client-side module that can execute a payment for a single PMI in-band
+ * (e.g. a wallet handler). A client that wants to pay out-of-band instead
+ * simply omits {@link ClientPaymentsOptions.handlers}.
  */
 export interface PaymentHandler {
-  /** The PMI this handler supports (e.g. "bitcoin-lightning-bolt11") */
+  /** The PMI this handler supports (e.g. "bitcoin-lightning-bolt11"). */
   readonly pmi: string;
 
   /** Optional policy check that can decline handling. */

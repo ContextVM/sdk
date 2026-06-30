@@ -529,7 +529,6 @@ describe.serial('payments fake flow (transport-level)', () => {
     await mcpServer.connect(serverTransport);
 
     const clientPrivateKey = bytesToHex(generateSecretKey());
-    const handlers = [new FakePaymentHandler({ delayMs: 1 })];
     const clientTransport = new NostrClientTransport({
       signer: new PrivateKeySigner(clientPrivateKey),
       relayHandler: new ApplesauceRelayPool([relayUrl]),
@@ -538,9 +537,8 @@ describe.serial('payments fake flow (transport-level)', () => {
     });
 
     let observedPaymentPmi: string | undefined;
-    const paidClientTransport = withClientPayments(clientTransport, {
-      handlers,
-    });
+    // No handlers: client advertises no PMI and pays out-of-band.
+    const paidClientTransport = withClientPayments(clientTransport, {});
     const client = new Client({ name: 'paid-client', version: '1.0.0' });
     await client.connect(paidClientTransport);
 

@@ -9,21 +9,22 @@ import {
   type JSONRPCErrorResponse,
 } from '@contextvm/mcp-sdk/types.js';
 import { NostrClientTransport } from '../transport/nostr-client-transport.js';
-import {
+import type {
   PaymentHandler,
   PaymentRejectedNotification,
   PaymentRequiredNotification,
   PaymentHandlerRequest,
-} from './types.js';
-import { LruCache } from '../core/utils/lru-cache.js';
-import { createLogger } from '../core/utils/logger.js';
-import type { OriginalRequestContext } from '../transport/nostr-client/correlation-store.js';
-import type {
   PaymentInteractionMode,
   PaymentOption,
   PaymentRequiredErrorData,
   PaymentPendingErrorData,
 } from './types.js';
+import { LruCache } from '../core/utils/lru-cache.js';
+import { createLogger } from '../core/utils/logger.js';
+import type {
+  OriginalRequestContext,
+  PendingRequest,
+} from '../transport/nostr-client/correlation-store.js';
 
 import {
   DEFAULT_SYNTHETIC_PROGRESS_INTERVAL_MS,
@@ -36,7 +37,18 @@ import {
 } from './constants.js';
 
 export interface ClientPaymentsOptions {
-  handlers: readonly PaymentHandler[];
+  /**
+   * Payment handlers for in-band (programmatic) payment, indexed by their
+   * {@link PaymentHandler.pmi}. Each handler's `pmi` is advertised to the
+   * server so it can pick a matching rail (the wallet-client fast path).
+   *
+   * **Omit entirely** for a PMI-agnostic client that pays out-of-band: no PMIs
+   * are advertised, so per CEP-8 the server sends `payment_required` for any of
+   * its processors. The notification is forwarded to the application via
+   * `onmessage`, synthetic progress keeps the original MCP request alive while
+   * the payment settles out-of-band, and the server's TTL is the timeout.
+   */
+  handlers?: readonly PaymentHandler[];
   /**
    * Interval for periodic synthetic progress heartbeats (milliseconds).
    *
@@ -267,13 +279,14 @@ export function withClientPayments(
     rawRequestCache.clear();
   };
 
-  // Ensure CEP-8 discovery/negotiation: when using Nostr transports, always advertise
-  // supported PMIs derived from the handler list (preference order = handler order).
+  // Ensure CEP-8 discovery/negotiation: when using Nostr transports, always
+  // advertise the handler PMIs in preference order. Omitting handlers entirely
+  // advertises no PMI, so the server sends payment_required for any processor
+  // (CEP-8: client that specified no PMI).
+  const advertisedPmis = (options.handlers ?? []).map((h) => h.pmi);
   if (transport instanceof NostrClientTransport) {
-    transport.setClientPmis(options.handlers.map((h) => h.pmi));
-    logger.debug('advertised client PMIs', {
-      pmis: options.handlers.map((h) => h.pmi),
-    });
+    transport.setClientPmis(advertisedPmis);
+    logger.debug('advertised client PMIs', { pmis: advertisedPmis });
     if (options.paymentInteraction === 'explicit_gating') {
       transport.setPaymentInteraction('explicit_gating');
       logger.debug('advertised requested payment interaction mode', {
@@ -282,19 +295,16 @@ export function withClientPayments(
     }
   }
 
-  const handlersByPmi = new Map(
-    options.handlers.map((h) => [h.pmi, h] as const),
-  );
-
-  // Warn on duplicate PMI handlers — Map construction silently keeps only the last.
-  const seenHandlerPmis = new Set<string>();
-  for (const h of options.handlers) {
-    if (seenHandlerPmis.has(h.pmi)) {
+  // Index handlers by PMI. Warn on duplicates — Map construction silently keeps
+  // only the last.
+  const handlersByPmi = new Map<string, PaymentHandler>();
+  for (const h of options.handlers ?? []) {
+    if (handlersByPmi.has(h.pmi)) {
       logger.warn('duplicate PMI handler registered, last one wins', {
         pmi: h.pmi,
       });
     }
-    seenHandlerPmis.add(h.pmi);
+    handlersByPmi.set(h.pmi, h);
   }
 
   // Prevent double-paying if relays or servers deliver duplicate payment_required notifications.
@@ -320,6 +330,34 @@ export function withClientPayments(
         data: params.data,
       },
     } as JSONRPCMessage);
+  };
+
+  /**
+   * Synthesize a generic `-32000` decline for the original request, carrying the
+   * PMI/amount and the original request's method/capability. No-op when there
+   * is no correlated pending request to fail. Shared by the no-handler,
+   * explicit-gating-rejected, and payment_rejected paths.
+   */
+  const synthesizePaymentDecline = (
+    pending: PendingRequest | undefined,
+    message: string,
+    pmi: string,
+    amount: number,
+  ): void => {
+    if (pending?.originalRequestId == null) {
+      return;
+    }
+    synthesizePaymentError({
+      id: pending.originalRequestId,
+      code: -32000,
+      message,
+      data: {
+        pmi,
+        amount,
+        method: pending.originalRequestContext?.method,
+        capability: pending.originalRequestContext?.capability,
+      },
+    });
   };
 
   /**
@@ -472,15 +510,6 @@ export function withClientPayments(
     message: PaymentRequiredNotification,
     requestEventId: string,
   ): Promise<void> {
-    const handler = handlersByPmi.get(message.params.pmi);
-    if (!handler) {
-      logger.debug('no handler for PMI, ignoring payment_required', {
-        pmi: message.params.pmi,
-        requestEventId,
-      });
-      return;
-    }
-
     const isNostrTransport = transport instanceof NostrClientTransport;
 
     const pending = isNostrTransport
@@ -507,20 +536,12 @@ export function withClientPayments(
         'declining transparent payment_required: explicit_gating was not accepted by the server',
         { requestEventId, pmi: message.params.pmi },
       );
-      if (pending?.originalRequestId != null) {
-        synthesizePaymentError({
-          id: pending.originalRequestId,
-          code: -32000,
-          message:
-            'Payment declined: explicit_gating was not accepted by the server',
-          data: {
-            pmi: message.params.pmi,
-            amount: message.params.amount,
-            method: pending.originalRequestContext?.method,
-            capability: pending.originalRequestContext?.capability,
-          },
-        });
-      }
+      synthesizePaymentDecline(
+        pending,
+        'Payment declined: explicit_gating was not accepted by the server',
+        message.params.pmi,
+        message.params.amount,
+      );
       return;
     }
 
@@ -570,6 +591,22 @@ export function withClientPayments(
       }
     }
 
+    // Resolve an in-band handler for this PMI. If none matches, the payment is
+    // left to the application: the notification was already forwarded via
+    // onmessage, synthetic progress above keeps the request alive while it
+    // settles out-of-band, and the server's TTL is the ultimate timeout.
+    const handler = handlersByPmi.get(message.params.pmi);
+    if (!handler) {
+      logger.debug(
+        'no in-band handler for PMI; leaving payment to the application',
+        {
+          pmi: message.params.pmi,
+          requestEventId,
+        },
+      );
+      return;
+    }
+
     // Best-effort client-side dedupe keyed by pay_req.
     // IMPORTANT: claim synchronously before any await to avoid double-pay races.
     if (inFlightPayReqs.has(message.params.pay_req)) {
@@ -595,25 +632,10 @@ export function withClientPayments(
       const synthesizeClientDeclineError = (params: {
         message: string;
       }): void => {
-        if (pending?.originalRequestId == null) {
-          return;
-        }
-
-        if (pending.progressToken) {
+        if (pending?.progressToken) {
           stopSyntheticProgress(pending.progressToken);
         }
-
-        synthesizePaymentError({
-          id: pending.originalRequestId,
-          code: -32000,
-          message: params.message,
-          data: {
-            pmi: req.pmi,
-            amount: req.amount,
-            method: pending.originalRequestContext?.method,
-            capability: pending.originalRequestContext?.capability,
-          },
-        });
+        synthesizePaymentDecline(pending, params.message, req.pmi, req.amount);
       };
 
       logger.info('processing payment_required', {

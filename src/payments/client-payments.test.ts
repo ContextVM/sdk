@@ -167,6 +167,62 @@ describe('withClientPayments()', () => {
     expect(handleCalls).toBe(0);
   });
 
+  test('keeps the request alive and does not error when no handler matches', async () => {
+    const transport = createMockNostrTransport();
+
+    const observed: JSONRPCMessage[] = [];
+    const paid = withClientPayments(transport, {
+      handlers: [
+        { pmi: 'bitcoin-lightning-bolt11', async handle(): Promise<void> {} },
+      ],
+    });
+
+    paid.onmessage = (msg) => observed.push(msg);
+    await paid.start();
+
+    (
+      transport as unknown as {
+        correlationStore: {
+          registerRequest: (eventId: string, req: unknown) => void;
+        };
+      }
+    ).correlationStore.registerRequest('req-event-id', {
+      originalRequestId: 13,
+      isInitialize: false,
+      progressToken: 'tok-1',
+      originalRequestContext: { method: 'tools/call', capability: 'tool:paid' },
+    });
+
+    (transport as unknown as TransportWithContext).onmessageWithContext?.(
+      {
+        jsonrpc: '2.0',
+        method: 'notifications/payment_required',
+        params: { amount: 7, pay_req: 'cashu-token', pmi: 'bitcoin-cashu' },
+      } as JSONRPCMessage,
+      { eventId: 'evt', correlatedEventId: 'req-event-id' },
+    );
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    // No handler matches 'bitcoin-cashu': the client must NOT fail the original
+    // request — the app pays out-of-band. Synthetic progress keeps it alive.
+    const errResp = observed.find(
+      (
+        m,
+      ): m is {
+        jsonrpc: '2.0';
+        id: number;
+        error: { code: number; message: string };
+      } => 'id' in m && m.id === 13 && 'error' in m,
+    );
+    expect(errResp).toBeUndefined();
+    expect(
+      observed.some(
+        (m) => 'method' in m && m.method === 'notifications/progress',
+      ),
+    ).toBe(true);
+  });
+
   test('does not pay when canHandle returns false', async () => {
     let handleCalls = 0;
 

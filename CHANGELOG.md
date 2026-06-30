@@ -1,5 +1,19 @@
 # @contextvm/sdk
 
+## 0.13.4
+
+### Patch Changes
+
+- feat(payments): support out-of-band payments by making handlers optional
+
+Allow clients to omit payment handlers entirely to operate in an
+out-of-band payment mode. When no matching handler is found, the
+original request is not failed and synthetic progress notifications
+keep the request alive while the application settles the payment
+externally.
+
+Also add test to verify this behavior.
+
 ## 0.13.3
 
 ### Patch Changes
@@ -26,7 +40,6 @@ Also corrects stale JSDoc on AnnouncementManager.getCommonTags/
 getServerInfoTags/getCapabilityTags that claimed server metadata is excluded
 from per-session discovery — the code includes it per CEP-35, and the old
 wording would mislead non-SDK implementers.
-
 
 ## 0.13.2
 
