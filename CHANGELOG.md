@@ -1,5 +1,26 @@
 # @contextvm/sdk
 
+## 0.13.6
+
+### Patch Changes
+
+- feat(proxy): wrap NostrMCPProxy's internal transport with withClientPayments
+
+  `NostrMCPProxy` previously relayed MCP messages blind: it never negotiated the
+  CEP-8 `payment_interaction` tag, dropped `payment_required` notifications on
+  agent hosts that can't pay them, and could not surface priced-tool errors. The
+  internal `NostrClientTransport` is now wrapped with `withClientPayments`, so the
+  proxy handles payments exactly like a direct client (e.g. `call`).
+
+  `NostrMCPProxyOptions` gains an optional `paymentOptions?: ClientPaymentsOptions`
+  field, forwarded verbatim to `withClientPayments`. For agent hosts, pass
+  `{ paymentInteraction: 'explicit_gating' }`: a priced tool call surfaces a clean
+  `-32042` JSON-RPC error carrying `payment_options` instead of streaming an
+  invoice that no human is watching. Pass `handlers` to let the proxy settle
+  invoices in-band. Omit for the transparent, PMI-agnostic default.
+
+  Bumped `nostr-tools` to ^2.23.9
+
 ## 0.13.5
 
 ### Patch Changes

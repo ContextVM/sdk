@@ -4,6 +4,8 @@ import {
   NostrClientTransport,
   NostrTransportOptions,
 } from '../transport/nostr-client-transport.js';
+import { withClientPayments } from '../payments/client-payments.js';
+import type { ClientPaymentsOptions } from '../payments/client-payments.js';
 import { createLogger } from '../core/utils/logger.js';
 
 const logger = createLogger('proxy');
@@ -20,6 +22,18 @@ export interface NostrMCPProxyOptions {
    * Configuration options for the client-facing Nostr transport.
    */
   nostrTransportOptions: NostrTransportOptions;
+  /**
+   * CEP-8 client payment configuration, forwarded verbatim to
+   * {@link withClientPayments} on the internal Nostr transport. Omit for the
+   * default (transparent, PMI-agnostic) behavior.
+   *
+   * For agent hosts (e.g. an LLM reached over stdio), pass
+   * `{ paymentInteraction: 'explicit_gating' }`: a priced tool call surfaces a
+   * clean `-32042` JSON-RPC error carrying `payment_options`, instead of
+   * streaming an invoice that no human is watching. Pass `handlers` for in-band
+   * (programmatic) payment so the proxy can settle invoices itself.
+   */
+  paymentOptions?: ClientPaymentsOptions;
 }
 
 /**
@@ -31,12 +45,18 @@ export interface NostrMCPProxyOptions {
  */
 export class NostrMCPProxy {
   private mcpHostTransport: Transport;
-  private nostrTransport: NostrClientTransport;
+  private nostrTransport: Transport;
 
   constructor(options: NostrMCPProxyOptions) {
     this.mcpHostTransport = options.mcpHostTransport;
-    this.nostrTransport = new NostrClientTransport(
-      options.nostrTransportOptions,
+    // Wrap with `withClientPayments` so CEP-8 negotiation (`payment_interaction`,
+    // PMIs) and `-32042` / `payment_required` routing match a direct client.
+    // No handlers ⇒ PMI-agnostic: explicit_gating surfaces `-32042` as an error;
+    // transparent forwards `payment_required` and keeps the request alive with
+    // synthetic progress.
+    this.nostrTransport = withClientPayments(
+      new NostrClientTransport(options.nostrTransportOptions),
+      options.paymentOptions ?? {},
     );
   }
 

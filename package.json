@@ -1,6 +1,6 @@
 {
   "name": "@contextvm/sdk",
-  "version": "0.13.5",
+  "version": "0.13.6",
   "description": "ContextVM SDK for JavaScript/TypeScript",
   "license": "LGPL-3.0-1",
   "author": "ContextVM",
@@ -106,7 +106,7 @@
     "@noble/hashes": "^2.2.0",
     "applesauce-relay": "^6.2.1",
     "canonicalize": "^2.1.0",
-    "nostr-tools": "~2.18.2",
+    "nostr-tools": "^2.23.9",
     "pino": "^10.3.1",
     "rxjs": "^7.8.2",
     "ws": "^8.20.0",
