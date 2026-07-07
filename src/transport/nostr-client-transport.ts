@@ -120,7 +120,13 @@ export class NostrClientTransport
     reject: (error: Error) => void;
   }> = [];
 
-  /** Public event handlers required by the Transport interface */
+  /**
+   * Public event handlers. For inbound messages BOTH `onmessage` and
+   * `onmessageWithContext` fire (the dual-fire is asserted by the transport
+   * tests). Consumers that set BOTH must forward from exactly one handler to
+   * avoid duplicate delivery — `withClientPayments` is the reference
+   * implementation; a bare `onmessage` is correct for plain MCP consumers.
+   */
   public onmessage?: (message: JSONRPCMessage) => void;
   public onmessageWithContext:
     | ((

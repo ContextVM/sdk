@@ -202,6 +202,16 @@ export class NostrMCPGateway {
         await this.closeClientTransport(ctx.clientPubkey);
       }
 
+      // Single-client mode: `onmessage` already forwarded this message to the
+      // shared MCP transport, and contextless announcements never reach this
+      // handler (they fire `onmessage` only via the announcement manager).
+      // Returning here prevents `forwardMessage`'s dual-fire from dispatching
+      // the same request a second time. Mirrors the per-client early-return in
+      // `onmessage` above.
+      if (!this.createMcpClientTransport) {
+        return;
+      }
+
       logger.debug('Received message from Nostr (context):', {
         clientPubkey: ctx.clientPubkey,
         message,

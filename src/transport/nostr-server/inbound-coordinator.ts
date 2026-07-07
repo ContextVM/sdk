@@ -23,6 +23,7 @@ import {
   CTXVM_MESSAGES_KIND,
   EPHEMERAL_GIFT_WRAP_KIND,
   GIFT_WRAP_KIND,
+  INITIALIZE_METHOD,
   NOTIFICATIONS_INITIALIZED_METHOD,
 } from '../../core/index.js';
 import { GiftWrapMode } from '../../core/interfaces.js';
@@ -187,13 +188,39 @@ export class ServerInboundCoordinator {
           typeof tag[1] === 'string',
       );
 
-      if (paymentInteractionTag && !session.requestedPaymentInteraction) {
+      // CEP-8 renegotiation: a fresh `initialize` request signals a new session
+      // negotiation (stateful clients send it on every reconnect). Clear any
+      // previously established payment-interaction state so the block below
+      // re-derives the effective mode from this request's tags. Pure-stateless
+      // clients never send `initialize`; they rely on the upsert path below.
+      if (
+        isJSONRPCRequest(mcpMessage) &&
+        mcpMessage.method === INITIALIZE_METHOD
+      ) {
+        session.requestedPaymentInteraction = undefined;
+        session.effectivePaymentInteraction = undefined;
+        session.hasDisclosedPaymentInteraction = undefined;
+      }
+
+      // CEP-8 mid-session upsert: `payment_interaction` MAY appear on any direct
+      // client→server message to establish or change the session's mode; an
+      // absent tag inherits the current effective mode. The effective mode is
+      // re-disclosed on the next response only when it actually changes.
+      if (paymentInteractionTag) {
         const mode = paymentInteractionTag[1];
+        const prevEffective = session.effectivePaymentInteraction;
+        const applyEffective = (next: PaymentInteractionMode): void => {
+          if (next !== prevEffective) {
+            session.effectivePaymentInteraction = next;
+            session.hasDisclosedPaymentInteraction = false;
+          }
+        };
+
         if (mode === 'transparent' || mode === 'explicit_gating') {
           session.requestedPaymentInteraction = mode as PaymentInteractionMode;
 
           if (mode === 'explicit_gating' && !serverSupportsExplicitGating) {
-            session.effectivePaymentInteraction = 'transparent';
+            applyEffective('transparent');
 
             if (isJSONRPCRequest(inboundMessage)) {
               const errorResponse: JSONRPCErrorResponse = {
@@ -239,12 +266,14 @@ export class ServerInboundCoordinator {
             }
           }
 
-          session.effectivePaymentInteraction = serverSupportsExplicitGating
-            ? session.requestedPaymentInteraction
-            : 'transparent';
+          applyEffective(
+            serverSupportsExplicitGating
+              ? session.requestedPaymentInteraction
+              : 'transparent',
+          );
         } else {
           session.requestedPaymentInteraction = 'transparent';
-          session.effectivePaymentInteraction = 'transparent';
+          applyEffective('transparent');
         }
       }
 

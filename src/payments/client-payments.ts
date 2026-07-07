@@ -287,10 +287,10 @@ export function withClientPayments(
   if (transport instanceof NostrClientTransport) {
     transport.setClientPmis(advertisedPmis);
     logger.debug('advertised client PMIs', { pmis: advertisedPmis });
-    if (options.paymentInteraction === 'explicit_gating') {
-      transport.setPaymentInteraction('explicit_gating');
+    if (options.paymentInteraction) {
+      transport.setPaymentInteraction(options.paymentInteraction);
       logger.debug('advertised requested payment interaction mode', {
-        mode: 'explicit_gating',
+        mode: options.paymentInteraction,
       });
     }
   }

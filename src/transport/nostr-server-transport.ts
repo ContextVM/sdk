@@ -164,6 +164,14 @@ export class NostrServerTransport
   extends BaseNostrTransport
   implements Transport
 {
+  /**
+   * Delivery callbacks. For client messages BOTH fire — `onmessage` for MCP
+   * `Transport` conformance, `onmessageWithContext` to carry the Nostr
+   * `clientPubkey`. Contextless announcements fire `onmessage` only. Consumers
+   * that set BOTH must forward from exactly one handler, otherwise every
+   * request is dispatched twice. See `NostrMCPGateway` and `withClientPayments`
+   * for the established pattern.
+   */
   public onmessage?: (message: JSONRPCMessage) => void;
   public onmessageWithContext?: (
     message: JSONRPCMessage,
@@ -367,6 +375,10 @@ export class NostrServerTransport
       createResponseTags: (clientPubkey, requestId) =>
         this.createResponseTags(clientPubkey, String(requestId)),
       getOrCreateClientSession: this.getOrCreateClientSession.bind(this),
+      // Both callbacks fire by design (MCP `Transport` contract + Nostr pubkey
+      // context). Consumers that set both must forward exactly once — see
+      // NostrMCPGateway / withClientPayments. Contextless announcements bypass
+      // this path via `announcementManager.onDispatchMessage` (`onmessage` only).
       forwardMessage: async (msg: JSONRPCMessage, clientPubkey: string) => {
         this.onmessage?.(msg);
         this.onmessageWithContext?.(msg, { clientPubkey });

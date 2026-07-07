@@ -209,9 +209,16 @@ export class ClientCapabilityNegotiator {
 
   /**
    * Sets the requested payment interaction mode for negotiation.
+   *
+   * Calling this with a mode different from the current one resets the send
+   * latch so the `payment_interaction` tag is re-emitted on the next outbound
+   * request, establishing or upserting the session's mode per CEP-8 mid-session
+   * update semantics. No-op when the mode is unchanged.
    */
   public setPaymentInteraction(mode: PaymentInteractionMode): void {
+    if (this.paymentInteraction === mode) return;
     this.paymentInteraction = mode;
+    this.hasSentPaymentInteraction = false;
   }
 
   /**
@@ -274,11 +281,9 @@ export class ClientCapabilityNegotiator {
     if (this.clientPmis) {
       tags.push(...this.clientPmis.map((pmi) => ['pmi', pmi]));
     }
-    if (
-      this.paymentInteraction &&
-      this.paymentInteraction !== 'transparent' &&
-      !this.hasSentPaymentInteraction
-    ) {
+    // CEP-8: emit the tag for `transparent` too, so a downgrade intent is
+    // distinguishable from "first contact, no preference" (absent tag).
+    if (this.paymentInteraction && !this.hasSentPaymentInteraction) {
       tags.push([NOSTR_TAGS.PAYMENT_INTERACTION, this.paymentInteraction]);
     }
     return tags;
@@ -313,7 +318,7 @@ export class ClientCapabilityNegotiator {
     if (this.getPendingDiscoveryTags().length > 0) {
       this.hasSentDiscoveryTags = true;
     }
-    if (this.paymentInteraction && this.paymentInteraction !== 'transparent') {
+    if (this.paymentInteraction) {
       this.hasSentPaymentInteraction = true;
     }
   }

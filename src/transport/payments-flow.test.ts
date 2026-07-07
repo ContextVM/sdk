@@ -1910,6 +1910,411 @@ describe.serial('payments fake flow (transport-level)', () => {
     await mcpServer.close();
   }, 20000);
 
+  // CEP-8 renegotiation (bug fix): once a pubkey negotiates explicit_gating
+  // the session could not be downgraded — the server latched the mode for the
+  // whole LRU lifetime. Reset-on-initialize plus mid-session upsert must let a
+  // reconnect from the SAME pubkey requesting transparent flip the session back
+  // to the transparent lifecycle, so priced tools use
+  // notifications/payment_required instead of -32042.
+  test('explicit_gating session downgrades to transparent on reconnect (same pubkey)', async () => {
+    const serverSK = generateSecretKey();
+    const serverPublicKey = getPublicKey(serverSK);
+    const serverPrivateKey = bytesToHex(serverSK);
+
+    const mcpServer = new McpServer({
+      name: 'renegotiation-server',
+      version: '1.0.0',
+    });
+    mcpServer.registerTool(
+      'add',
+      {
+        title: 'Addition Tool',
+        description: 'Add two numbers',
+        inputSchema: { a: z.number(), b: z.number() },
+      },
+      async ({ a, b }: { a: number; b: number }) => {
+        return { content: [{ type: 'text', text: String(a + b) }] };
+      },
+    );
+
+    const processor = new FakePaymentProcessor({ verifyDelayMs: 50 });
+    const serverTransport = withServerPayments(
+      new NostrServerTransport({
+        signer: new PrivateKeySigner(serverPrivateKey),
+        relayHandler: new ApplesauceRelayPool([relayUrl]),
+        encryptionMode: EncryptionMode.DISABLED,
+      }),
+      {
+        processors: [processor],
+        pricedCapabilities: [
+          {
+            method: 'tools/call',
+            name: 'add',
+            amount: 1,
+            currencyUnit: 'test',
+          },
+        ],
+        paymentInteraction: 'optional',
+      },
+    );
+    await mcpServer.connect(serverTransport);
+
+    // Same signer/pubkey for both phases: the server session survives the
+    // reconnect (Nostr is connectionless; the LRU entry is not removed).
+    const clientSK = generateSecretKey();
+    const clientPrivateKey = bytesToHex(clientSK);
+
+    // Phase 1 — establish explicit_gating for this pubkey.
+    let explicitHandled = false;
+    const transport1 = new NostrClientTransport({
+      signer: new PrivateKeySigner(clientPrivateKey),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      serverPubkey: serverPublicKey,
+      encryptionMode: EncryptionMode.DISABLED,
+    });
+    const paid1 = withClientPayments(transport1, {
+      handlers: [],
+      paymentInteraction: 'explicit_gating',
+      onPaymentRequired: async () => {
+        await sleepPastSecondBoundary();
+        explicitHandled = true;
+        return { paid: true };
+      },
+    });
+    const client1 = new Client({ name: 'explicit', version: '1.0.0' });
+    await client1.connect(paid1);
+    const result1 = (await client1.callTool({
+      name: 'add',
+      arguments: { a: 1, b: 2 },
+    })) as { content: Array<{ type: string; text?: string }> };
+    expect(result1.content[0]).toMatchObject({ type: 'text', text: '3' });
+    expect(explicitHandled).toBe(true); // proves the session was explicit_gating
+    await client1.close();
+
+    // Phase 2 — reconnect the SAME pubkey requesting transparent. Under the bug
+    // the session stays explicit_gating and this callTool rejects with -32042
+    // (no explicit onPaymentRequired wired). With the fix it auto-pays via the
+    // transparent notification path and succeeds.
+    const transport2 = new NostrClientTransport({
+      signer: new PrivateKeySigner(clientPrivateKey),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      serverPubkey: serverPublicKey,
+      encryptionMode: EncryptionMode.DISABLED,
+    });
+    const paid2 = withClientPayments(transport2, {
+      handlers: [new FakePaymentHandler({ pmi: 'fake', delayMs: 50 })],
+      paymentInteraction: 'transparent',
+    });
+    const client2 = new Client({ name: 'transparent', version: '1.0.0' });
+    await client2.connect(paid2);
+    const result2 = (await client2.callTool({
+      name: 'add',
+      arguments: { a: 4, b: 5 },
+    })) as { content: Array<{ type: string; text?: string }> };
+    expect(result2.content[0]).toMatchObject({ type: 'text', text: '9' });
+
+    await client2.close();
+    await mcpServer.close();
+  }, 20000);
+
+  // CEP-8 reset-on-initialize (the bug report's "omit the tag" scenario): a
+  // stateful client that reconnects WITHOUT sending a payment_interaction tag
+  // (an older client, or one that omits the option) must still downgrade from a
+  // previously established explicit_gating session. The server treats a fresh
+  // `initialize` as a session-negotiation reset (CEP-35 local policy). Unlike
+  // the reconnect test above, this does NOT rely on the client emitting a
+  // transparent tag — it pins the reset-on-initialize path directly.
+  test('explicit_gating session downgrades to transparent on reconnect with no payment_interaction tag', async () => {
+    const serverSK = generateSecretKey();
+    const serverPublicKey = getPublicKey(serverSK);
+    const serverPrivateKey = bytesToHex(serverSK);
+
+    const mcpServer = new McpServer({
+      name: 'reset-server',
+      version: '1.0.0',
+    });
+    mcpServer.registerTool(
+      'add',
+      {
+        title: 'Addition Tool',
+        description: 'Add two numbers',
+        inputSchema: { a: z.number(), b: z.number() },
+      },
+      async ({ a, b }: { a: number; b: number }) => {
+        return { content: [{ type: 'text', text: String(a + b) }] };
+      },
+    );
+
+    const processor = new FakePaymentProcessor({ verifyDelayMs: 50 });
+    const serverTransport = withServerPayments(
+      new NostrServerTransport({
+        signer: new PrivateKeySigner(serverPrivateKey),
+        relayHandler: new ApplesauceRelayPool([relayUrl]),
+        encryptionMode: EncryptionMode.DISABLED,
+      }),
+      {
+        processors: [processor],
+        pricedCapabilities: [
+          {
+            method: 'tools/call',
+            name: 'add',
+            amount: 1,
+            currencyUnit: 'test',
+          },
+        ],
+        paymentInteraction: 'optional',
+      },
+    );
+    await mcpServer.connect(serverTransport);
+
+    const clientSK = generateSecretKey();
+    const clientPrivateKey = bytesToHex(clientSK);
+
+    // Phase 1 — establish explicit_gating for this pubkey.
+    let explicitHandled = false;
+    const transport1 = new NostrClientTransport({
+      signer: new PrivateKeySigner(clientPrivateKey),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      serverPubkey: serverPublicKey,
+      encryptionMode: EncryptionMode.DISABLED,
+    });
+    const paid1 = withClientPayments(transport1, {
+      handlers: [],
+      paymentInteraction: 'explicit_gating',
+      onPaymentRequired: async () => {
+        await sleepPastSecondBoundary();
+        explicitHandled = true;
+        return { paid: true };
+      },
+    });
+    const client1 = new Client({ name: 'explicit', version: '1.0.0' });
+    await client1.connect(paid1);
+    const result1 = (await client1.callTool({
+      name: 'add',
+      arguments: { a: 1, b: 2 },
+    })) as { content: Array<{ type: string; text?: string }> };
+    expect(result1.content[0]).toMatchObject({ type: 'text', text: '3' });
+    expect(explicitHandled).toBe(true);
+    await client1.close();
+
+    // Phase 2 — reconnect the SAME pubkey with NO paymentInteraction option, so
+    // no payment_interaction tag is emitted on the wire. The server must reset
+    // the session on initialize; otherwise this rejects with -32042.
+    const transport2 = new NostrClientTransport({
+      signer: new PrivateKeySigner(clientPrivateKey),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      serverPubkey: serverPublicKey,
+      encryptionMode: EncryptionMode.DISABLED,
+    });
+    const paid2 = withClientPayments(transport2, {
+      handlers: [new FakePaymentHandler({ pmi: 'fake', delayMs: 50 })],
+      // Intentionally no paymentInteraction option → no tag emitted.
+    });
+    const client2 = new Client({ name: 'transparent-omitted', version: '1.0.0' });
+    await client2.connect(paid2);
+    const result2 = (await client2.callTool({
+      name: 'add',
+      arguments: { a: 4, b: 5 },
+    })) as { content: Array<{ type: string; text?: string }> };
+    expect(result2.content[0]).toMatchObject({ type: 'text', text: '9' });
+
+    await client2.close();
+    await mcpServer.close();
+  }, 20000);
+
+  // CEP-8 mid-session upsert (stateless-compatible): a `payment_interaction`
+  // tag on a NON-initialize message must upsert the session's mode. Unlike the
+  // reconnect test above this does not rely on reset-on-initialize — it exercises
+  // the pure upsert path that a stateless client (no initialize handshake) uses.
+  test('mid-session payment_interaction tag upserts effective mode (transparent -> explicit_gating)', async () => {
+    const serverSK = generateSecretKey();
+    const serverPublicKey = getPublicKey(serverSK);
+    const serverPrivateKey = bytesToHex(serverSK);
+
+    const mcpServer = new McpServer({
+      name: 'upsert-server',
+      version: '1.0.0',
+    });
+    mcpServer.registerTool(
+      'add',
+      {
+        title: 'Addition Tool',
+        description: 'Add two numbers',
+        inputSchema: { a: z.number(), b: z.number() },
+      },
+      async ({ a, b }: { a: number; b: number }) => {
+        return { content: [{ type: 'text', text: String(a + b) }] };
+      },
+    );
+
+    const processor = new FakePaymentProcessor({ verifyDelayMs: 50 });
+    const serverTransport = withServerPayments(
+      new NostrServerTransport({
+        signer: new PrivateKeySigner(serverPrivateKey),
+        relayHandler: new ApplesauceRelayPool([relayUrl]),
+        encryptionMode: EncryptionMode.DISABLED,
+      }),
+      {
+        processors: [processor],
+        pricedCapabilities: [
+          {
+            method: 'tools/call',
+            name: 'add',
+            amount: 1,
+            currencyUnit: 'test',
+          },
+        ],
+        paymentInteraction: 'optional',
+      },
+    );
+    await mcpServer.connect(serverTransport);
+
+    const clientSK = generateSecretKey();
+    const clientPrivateKey = bytesToHex(clientSK);
+    const clientTransport = new NostrClientTransport({
+      signer: new PrivateKeySigner(clientPrivateKey),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      serverPubkey: serverPublicKey,
+      encryptionMode: EncryptionMode.DISABLED,
+    });
+    // Transparent client: handler satisfies transparent payment_required, and
+    // no explicit onPaymentRequired is wired, so a -32042 surfaces as an error.
+    const paidTransport = withClientPayments(clientTransport, {
+      handlers: [new FakePaymentHandler({ pmi: 'fake', delayMs: 50 })],
+      paymentInteraction: 'transparent',
+    });
+    const client = new Client({ name: 'upsert-client', version: '1.0.0' });
+    await client.connect(paidTransport);
+
+    // Phase 1: transparent — priced call succeeds via the notification path.
+    const result1 = (await client.callTool({
+      name: 'add',
+      arguments: { a: 1, b: 2 },
+    })) as { content: Array<{ type: string; text?: string }> };
+    expect(result1.content[0]).toMatchObject({ type: 'text', text: '3' });
+
+    // Phase 2: mid-session upsert to explicit_gating on the SAME connection.
+    // The tag rides on the next (non-initialize) request; the server must upsert
+    // and gate the priced call with -32042 instead of a notification.
+    clientTransport.setPaymentInteraction('explicit_gating');
+    await expect(
+      client.callTool({ name: 'add', arguments: { a: 3, b: 4 } }),
+    ).rejects.toThrow(/-32042|Payment Required/);
+
+    await client.close();
+    await mcpServer.close();
+  }, 20000);
+
+  // CEP-8 security invariant: a paid explicit-gating authorization (keyed by
+  // canonical invocation identity) MUST NOT be consumed by the transparent
+  // lifecycle after a mode flip. The two lifecycles use disjoint correlation
+  // stores by design (see CEP-8 "Correlation, Authorization Identity, and
+  // Idempotency"). Locks the non-migration guarantee for the upsert path.
+  test('mode change does not migrate paid authorizations across lifecycles', async () => {
+    const serverSK = generateSecretKey();
+    const serverPublicKey = getPublicKey(serverSK);
+    const serverPrivateKey = bytesToHex(serverSK);
+
+    const mcpServer = new McpServer({
+      name: 'isolation-server',
+      version: '1.0.0',
+    });
+    mcpServer.registerTool(
+      'add',
+      {
+        title: 'Addition Tool',
+        description: 'Add two numbers',
+        inputSchema: { a: z.number(), b: z.number() },
+      },
+      async ({ a, b }: { a: number; b: number }) => {
+        return { content: [{ type: 'text', text: String(a + b) }] };
+      },
+    );
+
+    const processor = new FakePaymentProcessor({ verifyDelayMs: 50 });
+    const serverTransport = withServerPayments(
+      new NostrServerTransport({
+        signer: new PrivateKeySigner(serverPrivateKey),
+        relayHandler: new ApplesauceRelayPool([relayUrl]),
+        encryptionMode: EncryptionMode.DISABLED,
+      }),
+      {
+        processors: [processor],
+        pricedCapabilities: [
+          {
+            method: 'tools/call',
+            name: 'add',
+            amount: 1,
+            currencyUnit: 'test',
+          },
+        ],
+        paymentInteraction: 'optional',
+      },
+    );
+    await mcpServer.connect(serverTransport);
+
+    const clientSK = generateSecretKey();
+    const clientPrivateKey = bytesToHex(clientSK);
+    // Identical canonical invocation across both phases.
+    const args = { a: 7, b: 8 };
+
+    // Phase 1: explicit_gating — pay once, establishing a reusable grant keyed
+    // on (clientPubkey, hash('tools/call', args)) in the authorization store.
+    const transport1 = new NostrClientTransport({
+      signer: new PrivateKeySigner(clientPrivateKey),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      serverPubkey: serverPublicKey,
+      encryptionMode: EncryptionMode.DISABLED,
+    });
+    const paid1 = withClientPayments(transport1, {
+      handlers: [],
+      paymentInteraction: 'explicit_gating',
+      onPaymentRequired: async () => {
+        await sleepPastSecondBoundary();
+        return { paid: true };
+      },
+    });
+    const client1 = new Client({ name: 'explicit', version: '1.0.0' });
+    await client1.connect(paid1);
+    const result1 = (await client1.callTool({
+      name: 'add',
+      arguments: args,
+    })) as { content: Array<{ type: string; text?: string }> };
+    expect(result1.content[0]).toMatchObject({ type: 'text', text: '15' });
+    await client1.close();
+
+    // Phase 2: reconnect the SAME pubkey as transparent and issue the IDENTICAL
+    // canonical invocation. The transparent lifecycle keys by request event id,
+    // not canonical identity, so the explicit grant MUST NOT satisfy it — a
+    // fresh transparent payment must be demanded.
+    const handler2 = new FakePaymentHandler({ pmi: 'fake', delayMs: 50 });
+    const handleSpy = spyOn(handler2, 'handle');
+    const transport2 = new NostrClientTransport({
+      signer: new PrivateKeySigner(clientPrivateKey),
+      relayHandler: new ApplesauceRelayPool([relayUrl]),
+      serverPubkey: serverPublicKey,
+      encryptionMode: EncryptionMode.DISABLED,
+    });
+    const paid2 = withClientPayments(transport2, {
+      handlers: [handler2],
+      paymentInteraction: 'transparent',
+    });
+    const client2 = new Client({ name: 'transparent', version: '1.0.0' });
+    await client2.connect(paid2);
+    const result2 = (await client2.callTool({
+      name: 'add',
+      arguments: args,
+    })) as { content: Array<{ type: string; text?: string }> };
+    expect(result2.content[0]).toMatchObject({ type: 'text', text: '15' });
+
+    // The transparent handler was invoked ⇒ a fresh payment was demanded ⇒ the
+    // explicit grant did not migrate across the lifecycle boundary.
+    expect(handleSpy).toHaveBeenCalledTimes(1);
+
+    await client2.close();
+    await mcpServer.close();
+  }, 20000);
+
   // CEP-8 optional default: when `paymentInteraction` is omitted the server
   // defaults to the optional policy and mirrors each client's requested
   // lifecycle. A transparent client (no tag) gets the notification flow, while
