@@ -2110,7 +2110,10 @@ describe.serial('payments fake flow (transport-level)', () => {
       handlers: [new FakePaymentHandler({ pmi: 'fake', delayMs: 50 })],
       // Intentionally no paymentInteraction option → no tag emitted.
     });
-    const client2 = new Client({ name: 'transparent-omitted', version: '1.0.0' });
+    const client2 = new Client({
+      name: 'transparent-omitted',
+      version: '1.0.0',
+    });
     await client2.connect(paid2);
     const result2 = (await client2.callTool({
       name: 'add',
