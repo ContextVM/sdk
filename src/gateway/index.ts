@@ -7,6 +7,8 @@ import {
   NostrServerTransport,
   NostrServerTransportOptions,
 } from '../transport/nostr-server-transport.js';
+import { withServerPayments } from '../payments/index.js';
+import type { ServerPaymentsOptions } from '../payments/server-payments.js';
 import { NOTIFICATIONS_INITIALIZED_METHOD } from '../core/index.js';
 import { createLogger } from '../core/utils/logger.js';
 import { LruCache } from '../core/utils/lru-cache.js';
@@ -64,6 +66,20 @@ export interface NostrMCPGatewayOptions {
 
   /** Maximum number of per-client MCP transports to keep in memory. @default 1000 */
   maxClientTransports?: number;
+
+  /**
+   * CEP-8 server payment configuration, forwarded verbatim to
+   * {@link withServerPayments} on the internal Nostr server transport. Omit for
+   * a free (non-gated) server.
+   *
+   * Requires at least one {@link PaymentProcessor} (the wallet that issues and
+   * verifies invoices) and the {@link PricedCapability} list (which capabilities
+   * cost what). Pass `paymentInteraction: 'transparent'` for a transparent-only
+   * server; the default `'optional'` mirrors each client's requested mode so
+   * `explicit_gating` clients get a clean `-32042` while transparent clients
+   * receive an invoice notification.
+   */
+  paymentOptions?: ServerPaymentsOptions;
 }
 
 /**
@@ -108,11 +124,19 @@ export class NostrMCPGateway {
     this.handleServerErrorBound = this.handleServerError.bind(this);
     this.handleServerCloseBound = this.handleServerClose.bind(this);
 
-    this.nostrServerTransport = new NostrServerTransport({
+    const nostrServerTransport = new NostrServerTransport({
       ...options.nostrTransportOptions,
       onClientSessionEvicted: ({ clientPubkey }) =>
         this.closeClientTransport(clientPubkey),
     });
+
+    // Wrap with `withServerPayments` so CEP-8 gating, PMI/cap advertisement and
+    // payment_interaction negotiation are attached when a processor + priced
+    // capabilities are provided. Mirrors the client-side `withClientPayments`
+    // wiring in NostrMCPProxy. No-op when paymentOptions is omitted.
+    this.nostrServerTransport = options.paymentOptions
+      ? withServerPayments(nostrServerTransport, options.paymentOptions)
+      : nostrServerTransport;
 
     if (this.createMcpClientTransport) {
       this.clientTransportPromises = new Map();
