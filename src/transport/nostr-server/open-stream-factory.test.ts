@@ -5,8 +5,26 @@ import type {
 } from '@contextvm/mcp-sdk/types.js';
 import type { Logger } from '../../core/utils/logger.js';
 import type { CorrelationStore } from './correlation-store.js';
-import type { SessionStore } from './session-store.js';
+import type {
+  ClientSession,
+  SessionStore,
+} from './session-store.js';
 import { ServerOpenStreamFactory } from './open-stream-factory.js';
+
+/** Polls `condition` until it returns true or `timeoutMs` elapses. */
+async function waitFor(
+  condition: () => boolean,
+  timeoutMs = 500,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (condition()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  if (!condition()) {
+    throw new Error('waitFor condition never became true');
+  }
+}
 
 const testLogger: Logger = {
   debug: () => undefined,
@@ -126,5 +144,85 @@ describe('ServerOpenStreamFactory.deferIfStreamActive', () => {
     expect(factory.deferIfStreamActive('evt-4', sampleResponse('evt-4'))).toBe(
       false,
     );
+  });
+});
+
+describe('ServerOpenStreamFactory.getOpenStreams', () => {
+  test('lists active writers with resolved client context and metadata', async () => {
+    const { factory } = createFactory();
+
+    const before = Date.now();
+    factory.createWriterIfEnabled('evt-1', 'a'.repeat(64), 'token-1');
+    const after = Date.now();
+
+    const streams = factory.getOpenStreams();
+    expect(streams).toHaveLength(1);
+    expect(streams[0]).toMatchObject({
+      eventId: 'evt-1',
+      clientPubkey: 'a'.repeat(64),
+      progressToken: 'token-1',
+      isActive: true,
+    });
+    expect(streams[0]!.startedAt).toBeGreaterThanOrEqual(before);
+    expect(streams[0]!.startedAt).toBeLessThanOrEqual(after);
+  });
+
+  test('drops a stream from the list once its writer terminates', async () => {
+    const { factory } = createFactory();
+
+    const writer = factory.createWriterIfEnabled('evt-2', 'b'.repeat(64), 'token-2');
+    expect(factory.getOpenStreams()).toHaveLength(1);
+
+    await writer!.abort('done');
+
+    expect(factory.getOpenStreams()).toHaveLength(0);
+  });
+
+  test('keepalive probe timeout evicts the session and removes the writer without a manual abort', async () => {
+    const session: ClientSession = {
+      isInitialized: true,
+      isEncrypted: false,
+      hasSentCommonTags: true,
+      supportsEncryption: false,
+      supportsEphemeralEncryption: false,
+      supportsOversizedTransfer: false,
+      supportsOpenStream: true,
+    };
+    const sessions = new Map<string, ClientSession>([['pk-1', session]]);
+    const evicted: string[] = [];
+    const localSessionStore = {
+      getSession: (pk: string): ClientSession | undefined => sessions.get(pk),
+      removeSession: (pk: string): boolean => {
+        const had = sessions.has(pk);
+        sessions.delete(pk);
+        return had;
+      },
+    } as unknown as SessionStore;
+
+    const factory = new ServerOpenStreamFactory({
+      openStreamEnabled: true,
+      sessionStore: localSessionStore,
+      correlationStore,
+      sendNotification: async () => undefined,
+      handleResponse: async () => undefined,
+      onClientSessionEvicted: async ({ clientPubkey }): Promise<void> => {
+        evicted.push(clientPubkey);
+      },
+      policy: { idleTimeoutMs: 10, probeTimeoutMs: 10 },
+      logger: testLogger,
+    });
+
+    const writer = factory.createWriterIfEnabled('evt-pt', 'pk-1', 'token-pt');
+    await writer!.start();
+
+    // No manual abort, no ackProbe: the writer's own keepalive must drive the
+    // termination and cascade through handleProbeTimeout.
+    await waitFor(() => !writer!.isActive);
+
+    expect(writer!.isActive).toBe(false);
+    expect(sessions.has('pk-1')).toBe(false);
+    expect(evicted).toEqual(['pk-1']);
+    expect(factory.getWriter('evt-pt')).toBeUndefined();
+    expect(factory.getOpenStreams()).toHaveLength(0);
   });
 });

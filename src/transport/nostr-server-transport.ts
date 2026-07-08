@@ -48,7 +48,10 @@ import type { OpenStreamTransportPolicy } from './open-stream-policy.js';
 import { InboundNotificationDispatcher } from './nostr-server/inbound-notification-dispatcher.js';
 import { OutboundResponseRouter } from './nostr-server/outbound-response-router.js';
 import { OutboundNotificationBroadcaster } from './nostr-server/outbound-notification-broadcaster.js';
-import { ServerOpenStreamFactory } from './nostr-server/open-stream-factory.js';
+import {
+  ServerOpenStreamFactory,
+  type ServerOpenStreamInfo,
+} from './nostr-server/open-stream-factory.js';
 import { ServerEventPipeline } from './nostr-server/event-pipeline.js';
 import { ServerInboundCoordinator } from './nostr-server/inbound-coordinator.js';
 import type { InboundMiddlewareFn } from './middleware.js';
@@ -623,6 +626,15 @@ export class NostrServerTransport
    */
   public getNostrRequestEvent(requestEventId: string): NostrEvent | undefined {
     return this.correlationStore.getRequestEvent(requestEventId);
+  }
+
+  /**
+   * Lists currently open server-side CEP-41 streams with resolved client
+   * context, so consumers can inspect/attribute streams without reaching into
+   * transport internals.
+   */
+  public getOpenStreams(): ServerOpenStreamInfo[] {
+    return this.openStreamFactory.getOpenStreams();
   }
 
   /**

@@ -87,13 +87,7 @@ export class InboundNotificationDispatcher {
         const progressToken = String(
           inboundMessage.params?.progressToken ?? '',
         );
-        const eventId = this.deps.correlationStore.getEventIdByProgressToken(
-          progressToken,
-          event.pubkey,
-        );
-        const writer = eventId
-          ? this.deps.openStreamFactory.getWriter(eventId)
-          : undefined;
+        const writer = this.resolveWriter(progressToken, event.pubkey);
 
         if (writer) {
           void writer.abort(frame.reason).catch((err: unknown) => {
@@ -122,13 +116,7 @@ export class InboundNotificationDispatcher {
           'nonce' in frame && typeof frame.nonce === 'string'
             ? frame.nonce
             : '';
-        const eventId = this.deps.correlationStore.getEventIdByProgressToken(
-          progressToken,
-          event.pubkey,
-        );
-        const writer = eventId
-          ? this.deps.openStreamFactory.getWriter(eventId)
-          : undefined;
+        const writer = this.resolveWriter(progressToken, event.pubkey);
 
         if (writer) {
           void writer.pong(nonce).catch((err: unknown) => {
@@ -145,6 +133,26 @@ export class InboundNotificationDispatcher {
             );
           });
 
+          return true;
+        }
+      }
+
+      if (frame?.frameType === 'pong') {
+        // Peer acknowledging our sender-side keepalive probe. Feed it to the
+        // writer so its idle/probe cycle resets; only intercept when a writer
+        // exists (server->client stream). Client->server streams fall through
+        // to the receiver below.
+        const progressToken = String(
+          inboundMessage.params?.progressToken ?? '',
+        );
+        const nonce =
+          'nonce' in frame && typeof frame.nonce === 'string'
+            ? frame.nonce
+            : '';
+        const writer = this.resolveWriter(progressToken, event.pubkey);
+
+        if (writer) {
+          writer.ackProbe(nonce);
           return true;
         }
       }
@@ -264,5 +272,19 @@ export class InboundNotificationDispatcher {
     }
 
     return false;
+  }
+
+  /** Resolves the server-side writer for an inbound control frame, if any. */
+  private resolveWriter(
+    progressToken: string,
+    clientPubkey: string,
+  ): OpenStreamWriter | undefined {
+    const eventId = this.deps.correlationStore.getEventIdByProgressToken(
+      progressToken,
+      clientPubkey,
+    );
+    return eventId
+      ? this.deps.openStreamFactory.getWriter(eventId)
+      : undefined;
   }
 }

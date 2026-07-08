@@ -5,6 +5,10 @@ import {
   buildOpenStreamPongFrame,
   buildOpenStreamAbortFrame,
 } from '../open-stream/index.js';
+import {
+  DEFAULT_OPEN_STREAM_IDLE_TIMEOUT_MS,
+  DEFAULT_OPEN_STREAM_PROBE_TIMEOUT_MS,
+} from '../open-stream/constants.js';
 import { type OpenStreamRegistryOptions } from '../open-stream/registry.js';
 import { type Logger } from '../../core/utils/logger.js';
 import { type CorrelationStore } from './correlation-store.js';
@@ -40,10 +44,26 @@ export interface ServerOpenStreamFactoryDeps {
 }
 
 /**
+ * Read-only view of a server-side open stream, with the client correlation
+ * already resolved so consumers never touch the internal correlation store.
+ */
+export interface ServerOpenStreamInfo {
+  eventId: string;
+  clientPubkey: string;
+  progressToken: string;
+  startedAt: number;
+  isActive: boolean;
+}
+
+/**
  * Manages the lifecycle of CEP-41 OpenStream instances for the server transport.
  */
 export class ServerOpenStreamFactory {
   private readonly writers = new Map<string, OpenStreamWriter>();
+  private readonly writerMeta = new Map<
+    string,
+    { clientPubkey: string; startedAt: number }
+  >();
   private readonly pendingResponses = new Map<string, JSONRPCResponse>();
   private readonly receiver: OpenStreamReceiver;
   private readonly pendingSessionEvictions = new Map<
@@ -135,10 +155,30 @@ export class ServerOpenStreamFactory {
   }
 
   /**
+   * Lists currently open server-side streams with resolved client context.
+   */
+  public getOpenStreams(): ServerOpenStreamInfo[] {
+    return Array.from(this.writers.entries()).map(([eventId, writer]) => {
+      const meta = this.writerMeta.get(eventId);
+      return {
+        eventId,
+        clientPubkey: meta?.clientPubkey ?? '',
+        progressToken: writer.progressToken,
+        startedAt: meta?.startedAt ?? 0,
+        isActive: writer.isActive,
+      };
+    });
+  }
+
+  /**
    * Clears all active writers and pending responses.
    */
   public clear(): void {
+    for (const writer of this.writers.values()) {
+      writer.dispose();
+    }
     this.writers.clear();
+    this.writerMeta.clear();
     this.pendingResponses.clear();
     this.pendingSessionEvictions.clear();
     this.evictedClientPubkeys.clear();
@@ -184,6 +224,7 @@ export class ServerOpenStreamFactory {
     // leak. See docs/ISSUE-open-stream-progress-token-conflict.md (Part A).
     if (existingWriter) {
       this.writers.delete(eventId);
+      this.writerMeta.delete(eventId);
     }
     return false;
   }
@@ -222,9 +263,15 @@ export class ServerOpenStreamFactory {
         await this.deps.onAbort?.(clientPubkey, eventId, reason);
         await this.flushPendingResponse(eventId);
       },
+      idleTimeoutMs:
+        this.deps.policy?.idleTimeoutMs ?? DEFAULT_OPEN_STREAM_IDLE_TIMEOUT_MS,
+      probeTimeoutMs:
+        this.deps.policy?.probeTimeoutMs ??
+        DEFAULT_OPEN_STREAM_PROBE_TIMEOUT_MS,
     });
 
     this.writers.set(eventId, writer);
+    this.writerMeta.set(eventId, { clientPubkey, startedAt: Date.now() });
     return writer;
   }
 
@@ -235,6 +282,7 @@ export class ServerOpenStreamFactory {
     const pendingResponse = this.pendingResponses.get(eventId);
     this.pendingResponses.delete(eventId);
     this.writers.delete(eventId);
+    this.writerMeta.delete(eventId);
 
     if (!pendingResponse) {
       return;

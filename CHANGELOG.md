@@ -1,5 +1,41 @@
 # @contextvm/sdk
 
+## 0.13.8
+
+### Patch Changes
+
+- fix(open-stream): abort server writers on silent client disconnect + add `getOpenStreams()` and a writer `signal`
+
+  Server-side `OpenStreamWriter`s leaked when a client silently disappeared
+  (crash/sleep/network drop). CEP-41 mandates that each peer maintain an idle
+  timeout and probe the other with `ping`/`pong`, but the writer had no
+  sender-side keepalive: only the receiver session ran timers, and only for
+  inbound (client→server) streams. So on a server→client stream nothing detected
+  a dead client, the writer lived forever, `extra.signal`/`isActive` never
+  flipped, and producer loops keyed on them leaked (subscription sets, relay
+  publishes) until throughput collapsed.
+
+  - `OpenStreamWriter` now arms an idle timer once it starts streaming, probes the
+    peer on idle, and aborts with reason `'Probe timeout'` when no matching `pong`
+    arrives within the probe window. This activates the previously-dead
+    `handleProbeTimeout` path (client-session eviction + pending-response flush).
+    Added `ackProbe(nonce)` (fed by inbound `pong`) and `dispose()`.
+  - `OpenStreamWriter` now exposes a public `signal: AbortSignal` — the reactive
+    counterpart to `isActive`. It aborts on any termination (explicit
+    `close()`/`abort()`, keepalive probe timeout, or transport teardown), so
+    long-lived producers can tear down upstream sources
+    (`addEventListener(..., { signal })`, `fetch(url, { signal })`) the moment a
+    client goes silent, instead of polling `isActive` only when the next event
+    arrives. Web Platform API; browser-safe.
+  - The server inbound dispatcher now routes inbound `pong` frames for a stream
+    that has a writer to `writer.ackProbe`, completing the keepalive round trip.
+  - `NostrServerTransport.getOpenStreams()` returns a read-only list of open
+    server streams with resolved context (`eventId`, `clientPubkey`,
+    `progressToken`, `startedAt`, `isActive`), so consumers no longer need to
+    reach into `@internal` accessors or the correlation store to inspect streams.
+    `ServerOpenStreamInfo` is exported from the transport barrel.
+  - Transport `close()` now disposes writer keepalive timers so they do not leak.
+
 ## 0.13.7
 
 ### Patch Changes

@@ -2,6 +2,21 @@ import { describe, expect, test } from 'bun:test';
 import type { OpenStreamProgress } from './types.js';
 import { OpenStreamWriter } from './writer.js';
 
+/** Polls `condition` until it returns true or `timeoutMs` elapses. */
+async function waitFor(
+  condition: () => boolean,
+  timeoutMs = 500,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (condition()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  if (!condition()) {
+    throw new Error('waitFor condition never became true');
+  }
+}
+
 describe('OpenStreamWriter', () => {
   test('hasStarted reflects whether the writer has emitted a start/chunk frame', async () => {
     const frames: OpenStreamProgress[] = [];
@@ -351,5 +366,163 @@ describe('OpenStreamWriter', () => {
         lastChunkIndex: 1,
       },
     });
+  });
+});
+
+describe('OpenStreamWriter keepalive', () => {
+  test('aborts the writer with "Probe timeout" when the peer never acks', async () => {
+    const frames: OpenStreamProgress[] = [];
+    const aborts: Array<string | undefined> = [];
+    const writer = new OpenStreamWriter({
+      progressToken: 'token-keepalive-timeout',
+      publishFrame: async (frame): Promise<string | undefined> => {
+        frames.push(frame);
+        return undefined;
+      },
+      onAbort: async (reason?: string): Promise<void> => {
+        aborts.push(reason);
+      },
+      idleTimeoutMs: 10,
+      probeTimeoutMs: 10,
+    });
+
+    await writer.start();
+    await waitFor(() => !writer.isActive);
+
+    expect(writer.isActive).toBe(false);
+    expect(aborts).toEqual(['Probe timeout']);
+    const types = frames.map((frame) => frame.cvm.frameType);
+    expect(types).toContain('start');
+    expect(types).toContain('ping');
+    expect(types.filter((type) => type === 'abort')).toHaveLength(1);
+  });
+
+  test('stays alive while the peer acks each keepalive probe', async () => {
+    const frames: OpenStreamProgress[] = [];
+    const writer = new OpenStreamWriter({
+      progressToken: 'token-keepalive-ack',
+      publishFrame: async (frame): Promise<string | undefined> => {
+        frames.push(frame);
+        return undefined;
+      },
+      idleTimeoutMs: 10,
+      probeTimeoutMs: 20,
+    });
+
+    await writer.start();
+
+    // Act as a live peer: ack every probe nonce as soon as it is published.
+    const acked = new Set<string>();
+    const until = Date.now() + 120;
+    while (Date.now() < until) {
+      for (const frame of frames) {
+        if (
+          frame.cvm.frameType === 'ping' &&
+          !acked.has(frame.cvm.nonce)
+        ) {
+          acked.add(frame.cvm.nonce);
+          writer.ackProbe(frame.cvm.nonce);
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, 3));
+    }
+
+    expect(writer.isActive).toBe(true);
+    writer.dispose();
+  });
+
+  test('ignores ackProbe for a nonce that does not match the pending probe', async () => {
+    const frames: OpenStreamProgress[] = [];
+    const writer = new OpenStreamWriter({
+      progressToken: 'token-keepalive-bad-ack',
+      publishFrame: async (frame): Promise<string | undefined> => {
+        frames.push(frame);
+        return undefined;
+      },
+      idleTimeoutMs: 10,
+      probeTimeoutMs: 10,
+    });
+
+    await writer.start();
+    await waitFor(() =>
+      frames.some((frame) => frame.cvm.frameType === 'ping'),
+    );
+
+    writer.ackProbe('not-the-pending-nonce');
+
+    await waitFor(() => !writer.isActive);
+    expect(writer.isActive).toBe(false);
+  });
+
+  test('dispose clears keepalive timers without publishing an abort', async () => {
+    const frames: OpenStreamProgress[] = [];
+    const writer = new OpenStreamWriter({
+      progressToken: 'token-keepalive-dispose',
+      publishFrame: async (frame): Promise<string | undefined> => {
+        frames.push(frame);
+        return undefined;
+      },
+      onAbort: async (): Promise<void> => {
+        throw new Error('onAbort must not run during dispose');
+      },
+      idleTimeoutMs: 10,
+      probeTimeoutMs: 10,
+    });
+
+    await writer.start();
+    writer.dispose();
+
+    expect(writer.isActive).toBe(false);
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(frames.map((frame) => frame.cvm.frameType)).not.toContain('abort');
+  });
+});
+
+describe('OpenStreamWriter signal', () => {
+  test('aborts when the writer closes normally', async () => {
+    const writer = new OpenStreamWriter({
+      progressToken: 'token-signal-close',
+      publishFrame: async (): Promise<string | undefined> => undefined,
+    });
+    expect(writer.signal.aborted).toBe(false);
+
+    await writer.start();
+    await writer.close();
+
+    expect(writer.signal.aborted).toBe(true);
+    expect(writer.isActive).toBe(false);
+  });
+
+  test('aborts and fires listeners on keepalive probe timeout', async () => {
+    const writer = new OpenStreamWriter({
+      progressToken: 'token-signal-probe',
+      publishFrame: async (): Promise<string | undefined> => undefined,
+      idleTimeoutMs: 10,
+      probeTimeoutMs: 10,
+    });
+    let fired = false;
+    writer.signal.addEventListener('abort', () => {
+      fired = true;
+    });
+
+    await writer.start();
+    await waitFor(() => writer.signal.aborted);
+
+    expect(writer.signal.aborted).toBe(true);
+    expect(fired).toBe(true);
+  });
+
+  test('aborts on dispose without running onAbort', async () => {
+    const writer = new OpenStreamWriter({
+      progressToken: 'token-signal-dispose',
+      publishFrame: async (): Promise<string | undefined> => undefined,
+      onAbort: async (): Promise<void> => {
+        throw new Error('onAbort must not run during dispose');
+      },
+    });
+    await writer.start();
+    writer.dispose();
+
+    expect(writer.signal.aborted).toBe(true);
   });
 });
