@@ -28,22 +28,6 @@ export class TaskQueue {
   }
 
   /**
-   * Gets the current queue size (number of pending tasks).
-   * @returns The number of pending tasks
-   */
-  getQueueSize(): number {
-    return this.queue.length;
-  }
-
-  /**
-   * Gets the number of currently running tasks.
-   * @returns The number of running tasks
-   */
-  getRunningCount(): number {
-    return this.running;
-  }
-
-  /**
    * Shuts down the queue, waiting for running tasks to complete with a timeout.
    * @param timeoutMs - Maximum time to wait for running tasks (default: 5000ms)
    * @returns Promise that resolves when shutdown is complete
