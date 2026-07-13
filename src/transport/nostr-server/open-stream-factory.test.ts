@@ -5,10 +5,7 @@ import type {
 } from '@contextvm/mcp-sdk/types.js';
 import type { Logger } from '../../core/utils/logger.js';
 import type { CorrelationStore } from './correlation-store.js';
-import type {
-  ClientSession,
-  SessionStore,
-} from './session-store.js';
+import type { ClientSession, SessionStore } from './session-store.js';
 import { ServerOpenStreamFactory } from './open-stream-factory.js';
 
 /** Polls `condition` until it returns true or `timeoutMs` elapses. */
@@ -170,7 +167,11 @@ describe('ServerOpenStreamFactory.getOpenStreams', () => {
   test('drops a stream from the list once its writer terminates', async () => {
     const { factory } = createFactory();
 
-    const writer = factory.createWriterIfEnabled('evt-2', 'b'.repeat(64), 'token-2');
+    const writer = factory.createWriterIfEnabled(
+      'evt-2',
+      'b'.repeat(64),
+      'token-2',
+    );
     expect(factory.getOpenStreams()).toHaveLength(1);
 
     await writer!.abort('done');

@@ -283,8 +283,6 @@ export class InboundNotificationDispatcher {
       progressToken,
       clientPubkey,
     );
-    return eventId
-      ? this.deps.openStreamFactory.getWriter(eventId)
-      : undefined;
+    return eventId ? this.deps.openStreamFactory.getWriter(eventId) : undefined;
   }
 }

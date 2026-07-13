@@ -716,4 +716,83 @@ describe('OpenStreamSession', () => {
     expect(chunks).toEqual(['hello']);
     await expect(session.closed).resolves.toBeUndefined();
   });
+
+  test('does not leak an unhandled rejection when `closed` is unconsumed', async () => {
+    // Regression: previously `closed` was a rejecting promise with no internal
+    // consumer, so any abort on a session whose `closed` field went untouched
+    // surfaced as "Uncaught (in promise)".
+    const rejections: unknown[] = [];
+    const handler = (reason: unknown): void => {
+      rejections.push(reason);
+    };
+    process.on('unhandledRejection', handler);
+    try {
+      const session = new OpenStreamSession({
+        progressToken: 'token-no-leak',
+        maxBufferedChunks: 8,
+        maxBufferedBytes: 1024,
+      });
+
+      await session.processFrame(1, {
+        type: 'open-stream',
+        frameType: 'start',
+      });
+      await session.processFrame(2, {
+        type: 'open-stream',
+        frameType: 'abort',
+        reason: 'remote',
+      });
+
+      // Abandon `closed` on purpose. Flush the runtime's unhandled-rejection
+      // queue; with the internal no-op handler it stays empty.
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      expect(rejections).toHaveLength(0);
+      expect(session.isActive).toBe(false);
+
+      // Public contract unchanged: a caller that does attach a handler still
+      // observes the abort.
+      await expect(session.closed).rejects.toBeInstanceOf(OpenStreamAbortError);
+    } finally {
+      process.off('unhandledRejection', handler);
+    }
+  });
+
+  test('aborts the stream when a for-await consumer breaks early', async () => {
+    const aborts: Array<string | undefined> = [];
+    const session = new OpenStreamSession({
+      progressToken: 'token-break',
+      maxBufferedChunks: 8,
+      maxBufferedBytes: 1024,
+      sendAbort: async (reason?: string): Promise<void> => {
+        aborts.push(reason);
+      },
+    });
+
+    await session.processFrame(1, { type: 'open-stream', frameType: 'start' });
+    await session.processFrame(2, {
+      type: 'open-stream',
+      frameType: 'chunk',
+      chunkIndex: 0,
+      data: 'first',
+    });
+    await session.processFrame(3, {
+      type: 'open-stream',
+      frameType: 'chunk',
+      chunkIndex: 1,
+      data: 'second',
+    });
+
+    const seen: string[] = [];
+    for await (const chunk of session) {
+      seen.push(chunk.value);
+      break;
+    }
+
+    expect(seen).toEqual(['first']);
+    expect(session.isActive).toBe(false);
+    // `break` triggers iterator `return()`, which aborts and notifies the peer.
+    expect(aborts).toEqual([undefined]);
+    await expect(session.closed).rejects.toBeInstanceOf(OpenStreamAbortError);
+  });
 });

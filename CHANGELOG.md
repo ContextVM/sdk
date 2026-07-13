@@ -1,5 +1,21 @@
 # @contextvm/sdk
 
+## 0.13.9
+
+### Patch Changes
+
+- 0ac22c6: refactor: remove deprecated NIP-04, unused queue methods, simplify base64
+
+  - Remove deprecated NIP-04 encryption support from NostrSigner interface.
+  - Remove unused getQueueSize() and getRunningCount() methods from TaskQueue.
+  - Replace custom base64 encoding with native btoa, using TextEncoder for UTF-8 support.
+  - Update docs submodule pointer.
+
+- Fix unhandled promise rejection from `OpenStreamSession.closed` and add async-iterator cleanup on early break.
+
+  - Attach an internal no-op rejection handler to `OpenStreamSession.closed` so an abandoned session (e.g. a `callToolStream` consumer that iterates the stream but never touches `closed`) no longer surfaces as "Uncaught (in promise)" when the stream aborts. The public contract is unchanged: callers that attach their own handler still observe the rejection.
+  - Add `return()` to `OpenStreamSession`'s async iterator, so `for await...of` with an early `break` now aborts the stream and notifies the peer instead of relying on an explicit `abort()` call.
+
 ## 0.13.8
 
 ### Patch Changes

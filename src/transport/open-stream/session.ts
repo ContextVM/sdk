@@ -107,6 +107,12 @@ export class OpenStreamSession implements OpenStreamSessionLike<string> {
     this.onAbort = options.onAbort;
     this.onClose = options.onClose;
     this.closed = this.closeDeferred.promise;
+    // Guarantee `closed` never surfaces as an unhandled rejection when a
+    // consumer abandons it (e.g. iterates the stream but never touches
+    // `closed`). This no-op handler marks the promise permanently handled;
+    // external callers that attach their own handler still receive the same
+    // rejection. Browser- and Node-safe: plain promise plumbing.
+    void this.closed.catch(() => undefined);
   }
 
   public get isActive(): boolean {
@@ -220,6 +226,15 @@ export class OpenStreamSession implements OpenStreamSessionLike<string> {
         const waiter = createDeferred<IteratorResult<PendingChunk>>();
         this.waiters.push(waiter);
         return waiter.promise;
+      },
+      return: async (): Promise<IteratorResult<PendingChunk>> => {
+        // Invoked by `for await...of` on an early `break`/`return`/`throw`.
+        // Abort so the peer is notified and armed timers are torn down;
+        // best-effort so a clean break never throws even if the transport is
+        // already dead (local finalization inside `abort()` is synchronous).
+        // No-op when the session has already terminated.
+        await this.abort().catch(() => undefined);
+        return { done: true, value: undefined };
       },
     };
   }

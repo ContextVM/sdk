@@ -416,10 +416,7 @@ describe('OpenStreamWriter keepalive', () => {
     const until = Date.now() + 120;
     while (Date.now() < until) {
       for (const frame of frames) {
-        if (
-          frame.cvm.frameType === 'ping' &&
-          !acked.has(frame.cvm.nonce)
-        ) {
+        if (frame.cvm.frameType === 'ping' && !acked.has(frame.cvm.nonce)) {
           acked.add(frame.cvm.nonce);
           writer.ackProbe(frame.cvm.nonce);
         }
@@ -444,9 +441,7 @@ describe('OpenStreamWriter keepalive', () => {
     });
 
     await writer.start();
-    await waitFor(() =>
-      frames.some((frame) => frame.cvm.frameType === 'ping'),
-    );
+    await waitFor(() => frames.some((frame) => frame.cvm.frameType === 'ping'));
 
     writer.ackProbe('not-the-pending-nonce');
 
