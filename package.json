@@ -96,10 +96,8 @@
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-import": "^2.32.0",
     "prettier": "^3.8.3",
+    "typescript": "^5.9.3",
     "typescript-eslint": "^8.59.2"
-  },
-  "peerDependencies": {
-    "typescript": "^5.9.3"
   },
   "dependencies": {
     "@contextvm/mcp-sdk": "^1.30.0",
