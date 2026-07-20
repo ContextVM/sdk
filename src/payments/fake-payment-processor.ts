@@ -46,10 +46,25 @@ export class FakePaymentProcessor implements PaymentProcessor {
     };
   }
 
-  public async verifyPayment(_params: PaymentProcessorVerifyParams) {
-    await new Promise<void>((resolve) =>
-      setTimeout(resolve, this.verifyDelayMs),
-    );
+  public async verifyPayment(params: PaymentProcessorVerifyParams) {
+    // Honor abortSignal: a cancelled verify MUST reject, never resolve as settled.
+    // Makes cancellation/timeout tests deterministic without relying solely on the
+    // caller's withTimeout wrapper (mirrors rs-sdk's select on the cancel token).
+    const signal = params.abortSignal;
+    if (signal?.aborted) {
+      throw signal.reason ?? new Error('verifyPayment aborted');
+    }
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(resolve, this.verifyDelayMs);
+      signal?.addEventListener(
+        'abort',
+        () => {
+          clearTimeout(timer);
+          reject(signal.reason ?? new Error('verifyPayment aborted'));
+        },
+        { once: true },
+      );
+    });
     return { _meta: { settled: true } };
   }
 }
