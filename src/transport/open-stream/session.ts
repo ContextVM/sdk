@@ -90,6 +90,7 @@ export class OpenStreamSession implements OpenStreamSessionLike<string> {
   private idleTimer: ReturnType<typeof setTimeout> | undefined;
   private probeTimer: ReturnType<typeof setTimeout> | undefined;
   private closeGraceTimer: ReturnType<typeof setTimeout> | undefined;
+  private lastActivityTimestamp = Date.now();
 
   constructor(options: OpenStreamSessionOptions) {
     this.progressToken = options.progressToken;
@@ -117,6 +118,28 @@ export class OpenStreamSession implements OpenStreamSessionLike<string> {
 
   public get isActive(): boolean {
     return this.active;
+  }
+
+  /**
+   * Wall-clock timestamp (ms) of the last received frame (data, ping, or
+   * pong). Updated on every inbound frame regardless of active/closed state.
+   */
+  public get lastActivityAt(): number {
+    return this.lastActivityTimestamp;
+  }
+
+  /**
+   * True when the keepalive should have confirmed liveness by now but hasn't.
+   * Pure wall-clock over the session's own idle + probe window (+ margin), so
+   * consumers in timer-throttled environments (browser background tabs) can
+   * read it from a reliable trigger they own (e.g. Page Visibility). A cleanly
+   * closed stream eventually reads stale — gate on {@link isActive} first.
+   */
+  public isStale(marginMs = 0): boolean {
+    return (
+      Date.now() - this.lastActivityTimestamp >
+      this.idleTimeoutMs + this.probeTimeoutMs + marginMs
+    );
   }
 
   public async abort(reason?: string): Promise<void> {
@@ -379,6 +402,8 @@ export class OpenStreamSession implements OpenStreamSessionLike<string> {
   }
 
   private refreshIdleTimer(): void {
+    // Refresh activity even past close so staleness holds during close-grace.
+    this.lastActivityTimestamp = Date.now();
     if (!this.active || this.closedRemotely) {
       return;
     }
@@ -396,22 +421,24 @@ export class OpenStreamSession implements OpenStreamSessionLike<string> {
 
     const nonce = this.nextControlNonce();
     this.pendingProbeNonce = nonce;
+    // Arm BEFORE publishing: a stuck sendPing must not suppress detection; the
+    // probe window intentionally covers publish latency. A late pong/resolve is
+    // reconciled by handlePong's nonce match and clearTimers in finalize.
+    this.clearProbeTimer();
+    this.probeTimer = setTimeout(() => {
+      this.handleProbeTimeout(nonce).catch(() => undefined);
+    }, this.probeTimeoutMs);
 
     try {
       await this.sendPing?.(nonce);
     } catch (error) {
+      if (!this.active) return; // probe timeout may have already finalized
       await this.finishAborted(
         error instanceof Error ? error : new Error(String(error)),
         'Failed to send keepalive ping',
         false,
       );
-      return;
     }
-
-    this.clearProbeTimer();
-    this.probeTimer = setTimeout(() => {
-      this.handleProbeTimeout(nonce).catch(() => undefined);
-    }, this.probeTimeoutMs);
   }
 
   private async handleProbeTimeout(nonce: string): Promise<void> {
