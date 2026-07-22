@@ -1,5 +1,38 @@
 # @contextvm/sdk
 
+## 0.13.10
+
+### Patch Changes
+
+- fix(open-stream): arm keepalive probe before the ping publish and expose session staleness
+
+  The CEP-41 open-stream keepalive armed its probe timer only *after* the ping
+  publish resolved, on both `OpenStreamSession` and `OpenStreamWriter`. A slow
+  or unhealthy Nostr relay whose publish retries indefinitely parked the probe
+  window forever: the probe timer never armed, the idle timer (one-shot) never
+  rescheduled, the async iterator blocked on its waiter with no rejection, and
+  the stream died silently — most acutely for long-lived browser clients
+  consuming server→client `subscribe` streams. The writer gained sender-side
+  keepalive in 0.13.8 (`2aaa38a`), which exposed the pre-existing symmetric
+  receiver weakness.
+
+  - `OpenStreamSession.handleIdleTimeout` and `OpenStreamWriter.handleIdleTimeout`
+    now arm the probe timer **before** awaiting the ping publish. A stuck publish
+    can no longer suppress liveness detection: if the relay cannot deliver a
+    control frame within `probeTimeoutMs`, that is itself treated as a probe
+    failure. Late pong/resolve is reconciled by existing guards (the nonce match
+    in `handlePong`/`ackProbe`, `clearTimers`/`clearKeepalive` on finalize). The
+    writer's "publish-failed ⇒ re-arm idle" policy is preserved.
+  - `OpenStreamSession` now exposes `lastActivityAt` (wall-clock ms of the last
+    received frame) and `isStale(marginMs = 0)`, which returns true when
+    `idleTimeoutMs + probeTimeoutMs` (+ margin) has elapsed without any inbound
+    frame. The threshold uses the session's own client-driven cadence, so it does
+    not depend on the peer's keepalive policy. Consumers in timer-throttled
+    environments (e.g. browser background tabs, where the session's own
+    `setTimeout` may not fire) can read `isStale()` from a reliable trigger they
+    own (e.g. Page Visibility) to build an app-level watchdog. Read-only and
+    additive; no transport, handshake, or browser coupling added.
+
 ## 0.13.9
 
 ### Patch Changes

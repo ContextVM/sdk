@@ -279,6 +279,12 @@ export class OpenStreamWriter {
 
     const nonce = this.nextControlNonce();
     this.pendingProbeNonce = nonce;
+    // Arm BEFORE publishing: a stuck publishFrame must not suppress detection.
+    // A racing ackProbe/abort reconciles via the nonce check and clearKeepalive.
+    this.clearProbeTimer();
+    this.probeTimer = setTimeout(() => {
+      void this.handleProbeTimeout(nonce);
+    }, this.probeTimeoutMs ?? DEFAULT_OPEN_STREAM_PROBE_TIMEOUT_MS);
 
     try {
       // Bypass the operation queue so a stuck app write cannot block
@@ -293,20 +299,12 @@ export class OpenStreamWriter {
       );
     } catch {
       if (!this.active) {
-        return;
+        return; // probe timeout may have already finalized
       }
       this.pendingProbeNonce = undefined;
+      this.clearProbeTimer();
       this.armIdle();
-      return;
     }
-
-    if (!this.active || this.pendingProbeNonce !== nonce) {
-      return;
-    }
-
-    this.probeTimer = setTimeout(() => {
-      void this.handleProbeTimeout(nonce);
-    }, this.probeTimeoutMs ?? DEFAULT_OPEN_STREAM_PROBE_TIMEOUT_MS);
   }
 
   private async handleProbeTimeout(nonce: string): Promise<void> {

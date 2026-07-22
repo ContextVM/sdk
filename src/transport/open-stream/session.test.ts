@@ -796,3 +796,133 @@ describe('OpenStreamSession', () => {
     await expect(session.closed).rejects.toBeInstanceOf(OpenStreamAbortError);
   });
 });
+
+describe('OpenStreamSession keepalive deadlock', () => {
+  test('aborts with "Probe timeout" when sendPing hangs (never resolves)', async () => {
+    // Regression: pre-0.13.10 armed the probe timer only after the ping
+    // publish resolved, so a stuck relay parked the session forever.
+    const pings: string[] = [];
+    const aborts: Array<string | undefined> = [];
+    let resolvePing: () => void = () => undefined;
+    const session = new OpenStreamSession({
+      progressToken: 'token-stuck-ping',
+      maxBufferedChunks: 8,
+      maxBufferedBytes: 1024,
+      idleTimeoutMs: 10,
+      probeTimeoutMs: 10,
+      closeGracePeriodMs: 100,
+      sendPing: (nonce: string): Promise<void> => {
+        pings.push(nonce);
+        return new Promise<void>((resolve) => {
+          resolvePing = resolve;
+        });
+      },
+      sendAbort: async (reason?: string): Promise<void> => {
+        aborts.push(reason);
+      },
+    });
+    const closed = session.closed.catch((error: unknown) => error);
+
+    await session.processFrame(1, { type: 'open-stream', frameType: 'start' });
+
+    await new Promise((resolve) => setTimeout(resolve, 35));
+
+    expect(pings).toHaveLength(1);
+    expect(aborts).toEqual(['Probe timeout']);
+    expect(await closed).toBeInstanceOf(OpenStreamAbortError);
+
+    // Release the hung publish so the test does not leak a pending promise.
+    resolvePing();
+  });
+
+  test('aborts with "Failed to send keepalive ping" when sendPing rejects', async () => {
+    const reasons: Array<string | undefined> = [];
+    const session = new OpenStreamSession({
+      progressToken: 'token-rejected-ping',
+      maxBufferedChunks: 8,
+      maxBufferedBytes: 1024,
+      idleTimeoutMs: 10,
+      probeTimeoutMs: 1000, // long probe so the rejection wins the race
+      closeGracePeriodMs: 100,
+      sendPing: async (): Promise<void> => {
+        throw new Error('relay down');
+      },
+      onAbort: async (reason?: string): Promise<void> => {
+        reasons.push(reason);
+      },
+    });
+    const closed = session.closed.catch((error: unknown) => error);
+
+    await session.processFrame(1, { type: 'open-stream', frameType: 'start' });
+
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    // publishAbort=false, so the reason surfaces via onAbort, not sendAbort;
+    // `closed` rejects with the underlying ping error.
+    expect(reasons).toEqual(['Failed to send keepalive ping']);
+    const error = (await closed) as Error;
+    expect(error).toBeInstanceOf(Error);
+    expect(error.message).toBe('relay down');
+  });
+});
+
+describe('OpenStreamSession staleness', () => {
+  test('a fresh session is not stale and exposes lastActivityAt', () => {
+    const session = new OpenStreamSession({
+      progressToken: 'token-fresh',
+      maxBufferedChunks: 8,
+      maxBufferedBytes: 1024,
+      idleTimeoutMs: 1000,
+      probeTimeoutMs: 1000,
+    });
+    expect(session.isStale()).toBe(false);
+    expect(typeof session.lastActivityAt).toBe('number');
+    session.dispose();
+  });
+
+  test('becomes stale after idle + probe window; margin widens the threshold', async () => {
+    const session = new OpenStreamSession({
+      progressToken: 'token-stale',
+      maxBufferedChunks: 8,
+      maxBufferedBytes: 1024,
+      idleTimeoutMs: 10,
+      probeTimeoutMs: 10,
+      closeGracePeriodMs: 100,
+      sendPing: async (): Promise<void> => undefined,
+      sendAbort: async (): Promise<void> => undefined,
+    });
+    await session.processFrame(1, { type: 'open-stream', frameType: 'start' });
+
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    expect(session.isStale()).toBe(true);
+    // A 100ms margin pushes the threshold past the elapsed window.
+    expect(session.isStale(100)).toBe(false);
+    await session.closed.catch(() => undefined);
+  });
+
+  test('receiving a frame advances lastActivityAt and clears staleness', async () => {
+    const session = new OpenStreamSession({
+      progressToken: 'token-reset',
+      maxBufferedChunks: 8,
+      maxBufferedBytes: 1024,
+      idleTimeoutMs: 1000,
+      probeTimeoutMs: 1000,
+    });
+    await session.processFrame(1, { type: 'open-stream', frameType: 'start' });
+    const first = session.lastActivityAt;
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    // A peer ping counts as activity and refreshes the timestamp.
+    await session.processFrame(2, {
+      type: 'open-stream',
+      frameType: 'ping',
+      nonce: 'n1',
+    });
+
+    expect(session.lastActivityAt).toBeGreaterThanOrEqual(first + 20);
+    expect(session.isStale()).toBe(false);
+    session.dispose();
+    await session.closed.catch(() => undefined);
+  });
+});

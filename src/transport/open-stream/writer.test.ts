@@ -397,6 +397,47 @@ describe('OpenStreamWriter keepalive', () => {
     expect(types.filter((type) => type === 'abort')).toHaveLength(1);
   });
 
+  test('aborts with "Probe timeout" when the keepalive publish hangs (never resolves)', async () => {
+    // Regression: pre-0.13.10 armed the probe timer only after the ping
+    // publish resolved, so a stuck relay parked the writer forever.
+    const frames: OpenStreamProgress[] = [];
+    const aborts: Array<string | undefined> = [];
+    let resolvePing: () => void = () => undefined;
+    const writer = new OpenStreamWriter({
+      progressToken: 'token-stuck-publish',
+      publishFrame: (frame): Promise<string | undefined> => {
+        frames.push(frame);
+        // Let start/abort resolve so streaming begins and teardown completes;
+        // only the ping publish hangs to simulate a stuck relay.
+        if (frame.cvm.frameType === 'ping') {
+          return new Promise<string | undefined>((resolve) => {
+            resolvePing = () => resolve(undefined);
+          });
+        }
+        return Promise.resolve(undefined);
+      },
+      onAbort: async (reason?: string): Promise<void> => {
+        aborts.push(reason);
+      },
+      idleTimeoutMs: 10,
+      probeTimeoutMs: 10,
+    });
+
+    await writer.start();
+    await waitFor(() => !writer.isActive);
+
+    expect(writer.isActive).toBe(false);
+    expect(aborts).toEqual(['Probe timeout']);
+    expect(
+      frames
+        .map((frame) => frame.cvm.frameType)
+        .filter((type) => type === 'ping'),
+    ).toHaveLength(1);
+
+    // Release the hung publish so the test does not leak a pending promise.
+    resolvePing();
+  });
+
   test('stays alive while the peer acks each keepalive probe', async () => {
     const frames: OpenStreamProgress[] = [];
     const writer = new OpenStreamWriter({
