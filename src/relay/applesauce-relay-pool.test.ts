@@ -725,14 +725,18 @@ describe('ApplesauceRelayPool Integration', () => {
         const sub = testPool.relayGroup
           .req(filters)
           .subscribe({
-            next: (message) => {
-              if (message === 'EOSE') {
+            next: (message: any) => {
+              if (message === 'EOSE' || message?.type === 'EOSE') {
                 onEose?.();
                 return;
               }
 
-              if (typeof message === 'object' && message !== null && 'id' in message) {
-                onEvent(message as NostrEvent);
+              if (typeof message === 'object' && message !== null) {
+                if ('id' in message) {
+                  onEvent(message as NostrEvent);
+                } else if (message.type === 'EVENT' && message.event) {
+                  onEvent(message.event as NostrEvent);
+                }
               }
             },
             error: () => {},

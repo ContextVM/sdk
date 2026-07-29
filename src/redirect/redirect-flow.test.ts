@@ -117,7 +117,7 @@ describe.serial('Redirect Flow E2E', () => {
     });
 
     expect(result.content).toBeArray();
-    expect((result.content as any[])?.[0]).toEqual({ type: 'text', text: 'hello redirect' });
+    expect((result.content as unknown[])?.[0]).toEqual({ type: 'text', text: 'hello redirect' });
 
     // Verify current transport server is now pkB
     const activeTransport = clientTransport as unknown as NostrClientTransport;
@@ -162,7 +162,7 @@ describe.serial('Redirect Flow E2E', () => {
       arguments: { message: 'chain test' },
     });
 
-    expect((result.content as any[])?.[0]).toEqual({ type: 'text', text: 'chain test' });
+    expect((result.content as unknown[])?.[0]).toEqual({ type: 'text', text: 'chain test' });
     expect((clientTransport as unknown as NostrClientTransport).serverPubkey).toBe(pkC);
 
     await client.close();

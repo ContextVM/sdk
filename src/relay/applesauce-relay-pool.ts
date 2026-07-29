@@ -359,11 +359,15 @@ export class ApplesauceRelayPool implements RelayHandler {
     const sub = this.relayGroup
       .req(filters)
       .subscribe({
-        next: (message) => {
-          if (message === 'EOSE') {
+        next: (message: any) => {
+          if (message === 'EOSE' || message?.type === 'EOSE') {
             onEose?.();
-          } else if (typeof message === 'object' && message !== null && 'id' in message) {
-            onEvent(message as NostrEvent);
+          } else if (typeof message === 'object' && message !== null) {
+            if ('id' in message) {
+              onEvent(message as NostrEvent);
+            } else if (message.type === 'EVENT' && message.event) {
+              onEvent(message.event as NostrEvent);
+            }
           }
           // OPEN / CLOSED / ERROR are intentionally ignored; the old
           // base-nostr-transport behaviour is preserved.
