@@ -357,16 +357,16 @@ export class ApplesauceRelayPool implements RelayHandler {
     //     layer dedup by event id (whether applesauce 6.0.3's `distinct()` or a
     //     local `Set`) silently swallows that retry and deadlocks the flow.
     const sub = this.relayGroup
-      .req(filters, { reconnect: Infinity, resubscribe: Infinity })
+      .req(filters)
       .subscribe({
         next: (message) => {
-          if (message.type === 'EOSE') {
+          if (message === 'EOSE') {
             onEose?.();
-          } else if (message.type === 'EVENT') {
-            onEvent(message.event);
+          } else if (typeof message === 'object' && message !== null && 'id' in message) {
+            onEvent(message as NostrEvent);
           }
           // OPEN / CLOSED / ERROR are intentionally ignored; the old
-          // `subscription()` filtered them out as well.
+          // base-nostr-transport behaviour is preserved.
         },
         complete: () => {
           logger.debug('Subscription complete');

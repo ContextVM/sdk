@@ -723,19 +723,16 @@ describe('ApplesauceRelayPool Integration', () => {
         // the test override exercises the same dispatch path as the pool. No
         // dedup (see production createSubscription for rationale).
         const sub = testPool.relayGroup
-          .req(filters, {
-            reconnect: false, // Disable applesauce recovery
-            resubscribe: false, // Disable applesauce recovery
-          })
+          .req(filters)
           .subscribe({
             next: (message) => {
-              if (message.type === 'EOSE') {
+              if (message === 'EOSE') {
                 onEose?.();
                 return;
               }
 
-              if (message.type === 'EVENT') {
-                onEvent(message.event);
+              if (typeof message === 'object' && message !== null && 'id' in message) {
+                onEvent(message as NostrEvent);
               }
             },
             error: () => {},

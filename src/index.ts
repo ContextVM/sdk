@@ -5,3 +5,4 @@ export * from './gateway/index.js';
 export * from './proxy/index.js';
 export * from './transport/index.js';
 export * from './payments/index.js';
+export * from './redirect/index.js';

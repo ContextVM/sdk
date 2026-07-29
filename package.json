@@ -72,6 +72,14 @@
     "./payments/*": {
       "types": "./dist/esm/payments/*.d.ts",
       "default": "./dist/esm/payments/*.js"
+    },
+    "./redirect": {
+      "types": "./dist/esm/redirect/index.d.ts",
+      "default": "./dist/esm/redirect/index.js"
+    },
+    "./redirect/*": {
+      "types": "./dist/esm/redirect/*.d.ts",
+      "default": "./dist/esm/redirect/*.js"
     }
   },
   "types": "./dist/esm/index.d.ts",

@@ -6,6 +6,7 @@ import {
 } from '../transport/nostr-client-transport.js';
 import { withClientPayments } from '../payments/client-payments.js';
 import type { ClientPaymentsOptions } from '../payments/client-payments.js';
+import { withClientRedirect, type ClientRedirectOptions } from '../redirect/index.js';
 import { createLogger } from '../core/utils/logger.js';
 
 const logger = createLogger('proxy');
@@ -34,6 +35,11 @@ export interface NostrMCPProxyOptions {
    * (programmatic) payment so the proxy can settle invoices itself.
    */
   paymentOptions?: ClientPaymentsOptions;
+  /**
+   * CEP-47 client redirect configuration and hooks.
+   * When provided, transparently follows server redirections before payment gating.
+   */
+  redirectOptions?: ClientRedirectOptions;
 }
 
 /**
@@ -54,10 +60,32 @@ export class NostrMCPProxy {
     // No handlers ⇒ PMI-agnostic: explicit_gating surfaces `-32042` as an error;
     // transparent forwards `payment_required` and keeps the request alive with
     // synthetic progress.
-    this.nostrTransport = withClientPayments(
+    const initialTransport = withClientPayments(
       new NostrClientTransport(options.nostrTransportOptions),
       options.paymentOptions ?? {},
     );
+
+    if (options.redirectOptions) {
+      const {
+        serverPubkey: _serverPubkey,
+        relayHandler: _relayHandler,
+        discoveryRelayUrls: _discoveryRelayUrls,
+        fallbackOperationalRelayUrls: _fallbackOperationalRelayUrls,
+        ...baseOpts
+      } = options.nostrTransportOptions;
+
+      this.nostrTransport = withClientRedirect(
+        initialTransport,
+        {
+          ...baseOpts,
+          wrapTransport: (t) =>
+            withClientPayments(t, options.paymentOptions ?? {}),
+        },
+        options.redirectOptions,
+      );
+    } else {
+      this.nostrTransport = initialTransport;
+    }
   }
 
   /**

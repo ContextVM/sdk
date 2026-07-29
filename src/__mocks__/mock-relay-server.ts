@@ -200,7 +200,8 @@ export function startMockRelay(
       this.send(['OK', event.id, true, '']);
 
       for (const [uniqueSubId, { instance, filters }] of state.subs.entries()) {
-        if (matchFilters(filters, event)) {
+        const isMatch = matchFilters(filters, event);
+        if (isMatch) {
           const originalSubId = uniqueSubId.includes(':')
             ? uniqueSubId.split(':').slice(1).join(':')
             : uniqueSubId;
