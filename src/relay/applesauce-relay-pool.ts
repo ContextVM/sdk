@@ -360,8 +360,22 @@ export class ApplesauceRelayPool implements RelayHandler {
       .req(filters)
       .subscribe({
         next: (message: unknown) => {
+          if (message === 'EOSE') {
+            onEose?.();
+            return;
+          }
+
+          if (Array.isArray(message)) {
+            if (message[0] === 'EOSE') {
+              onEose?.();
+            } else if (message[0] === 'EVENT' && message[2]) {
+              onEvent(message[2] as NostrEvent);
+            }
+            return;
+          }
+
           const msgObj = message as Record<string, unknown>;
-          if (message === 'EOSE' || msgObj?.type === 'EOSE') {
+          if (msgObj?.type === 'EOSE') {
             onEose?.();
           } else if (typeof message === 'object' && message !== null) {
             if ('id' in msgObj) {
