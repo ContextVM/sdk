@@ -359,14 +359,15 @@ export class ApplesauceRelayPool implements RelayHandler {
     const sub = this.relayGroup
       .req(filters)
       .subscribe({
-        next: (message: any) => {
-          if (message === 'EOSE' || message?.type === 'EOSE') {
+        next: (message: unknown) => {
+          const msgObj = message as Record<string, unknown>;
+          if (message === 'EOSE' || msgObj?.type === 'EOSE') {
             onEose?.();
           } else if (typeof message === 'object' && message !== null) {
-            if ('id' in message) {
-              onEvent(message as NostrEvent);
-            } else if (message.type === 'EVENT' && message.event) {
-              onEvent(message.event as NostrEvent);
+            if ('id' in msgObj) {
+              onEvent(msgObj as unknown as NostrEvent);
+            } else if (msgObj.type === 'EVENT' && msgObj.event) {
+              onEvent(msgObj.event as NostrEvent);
             }
           }
           // OPEN / CLOSED / ERROR are intentionally ignored; the old
