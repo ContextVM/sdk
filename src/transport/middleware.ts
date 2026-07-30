@@ -17,6 +17,7 @@ export type InboundMiddlewareFn = (
     clientPubkey: string;
     clientPmis?: readonly string[];
     paymentInteraction?: PaymentInteractionMode;
+    requestEventId?: string;
   },
   forward: (message: JSONRPCMessage) => Promise<void>,
 ) => Promise<void>;
