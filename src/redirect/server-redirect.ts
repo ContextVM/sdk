@@ -41,7 +41,7 @@ export function createRedirectMiddleware(
       return;
     }
 
-    const requestEventId = String(message.id);
+    const requestEventId = ctx.requestEventId ?? String(message.id);
     let result;
     try {
       result = await config.resolveRedirect({

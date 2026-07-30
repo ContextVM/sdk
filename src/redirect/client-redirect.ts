@@ -10,6 +10,7 @@ import {
 } from '@contextvm/mcp-sdk/types.js';
 
 import { NostrClientTransport } from '../transport/nostr-client-transport.js';
+import { ApplesauceRelayPool } from '../relay/applesauce-relay-pool.js';
 import { REDIRECT_ERROR_CODE } from '../payments/constants.js';
 import { LruCache } from '../core/utils/lru-cache.js';
 import { createLogger } from '../core/utils/logger.js';
@@ -170,7 +171,7 @@ export function withClientRedirect(
     const newNostrTransport = new NostrClientTransport({
       ...baseOpts,
       serverPubkey: target,
-      relayHandler: relays && relays.length > 0 ? relays : undefined,
+      relayHandler: relays && relays.length > 0 ? new ApplesauceRelayPool(relays) : undefined,
     });
 
     let newTransport: Transport = newNostrTransport;
@@ -179,9 +180,7 @@ export function withClientRedirect(
     }
 
     bindTransportHandlers(newTransport);
-    console.log('--- STARTING NEW TRANSPORT ---');
     await newTransport.start();
-    console.log('--- NEW TRANSPORT STARTED ---');
 
     currentTransport = newTransport;
     currentServerPubkey = target;
