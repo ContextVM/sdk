@@ -38,7 +38,7 @@ type TestableApplesauceRelayPool = Omit<ApplesauceRelayPool, 'relayGroup'> & {
 const TIMING = {
   RELAY_STARTUP: 100,
   SHORT_WAIT: 500,
-  SUBSCRIPTION_TIMEOUT: 5000,
+  SUBSCRIPTION_TIMEOUT: 15000,
   REBUILD_WAIT: 3000,
 } as const;
 

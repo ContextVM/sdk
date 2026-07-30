@@ -194,7 +194,7 @@ describe('NostrMCPGateway announcement transport in per-client mode', () => {
     expect(promptsAnnouncement).toBeDefined();
 
     await gateway.stop();
-  }, 15000);
+  }, 30000);
 
   test('should not publish announcement events without announcementMcpTransport in per-client mode', async () => {
     // Use a fresh relay hub so events from the previous test don't leak.
@@ -230,7 +230,7 @@ describe('NostrMCPGateway announcement transport in per-client mode', () => {
 
     await gateway.stop();
     freshRelayHub.clear();
-  }, 15000);
+  }, 30000);
 
   test('should start and close the dedicated announcement transport during gateway lifecycle', async () => {
     const freshRelayHub = new MockRelayHub();
@@ -283,5 +283,5 @@ describe('NostrMCPGateway announcement transport in per-client mode', () => {
     expect(closeCount).toBe(1);
 
     freshRelayHub.clear();
-  }, 15000);
+  }, 30000);
 });

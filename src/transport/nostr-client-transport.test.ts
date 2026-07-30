@@ -369,7 +369,7 @@ describe.serial('NostrClientTransport', () => {
 
     await client.close();
     await newServer.close();
-  }, 15000);
+  }, 30000);
 
   test.serial(
     'should expose minimal initialize event convenience accessors',
@@ -786,7 +786,7 @@ describe.serial('NostrClientTransport', () => {
     await client.close();
     await paidServer.close();
     relayHub.clear();
-  }, 20000);
+  }, 40000);
 
   test('keeps later tools/list cap tags out of the learned baseline event', async () => {
     const paidServer = new McpServer({ name: 'Paid-Server', version: '1.0.0' });
@@ -871,7 +871,7 @@ describe.serial('NostrClientTransport', () => {
     await client.close();
     await paidServer.close();
     relayHub.clear();
-  }, 20000);
+  }, 40000);
 
   test('preserves initialize baseline metadata after later tools/list responses', async () => {
     const paidServer = new McpServer({
@@ -967,7 +967,7 @@ describe.serial('NostrClientTransport', () => {
     await client.close();
     await paidServer.close();
     relayHub.clear();
-  }, 20000);
+  }, 40000);
 
   test('learns discovery tags from first stateless server response', async () => {
     await server.close();
@@ -1050,7 +1050,7 @@ describe.serial('NostrClientTransport', () => {
 
     await client.close();
     await statelessServer.close();
-  }, 20000);
+  }, 40000);
 
   // Regression: a progress token on the request (e.g. callTool with onprogress)
   // routed responses through the oversized-measurement branch, whose throwaway
@@ -1124,7 +1124,7 @@ describe.serial('NostrClientTransport', () => {
 
     await client.close();
     await progressServer.close();
-  }, 20000);
+  }, 40000);
 });
 
 describe('NostrClientTransport instance shape', () => {

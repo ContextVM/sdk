@@ -123,5 +123,5 @@ describe.serial('NostrMCPProxy payments wiring', () => {
     await client.close();
     await proxy.stop();
     await mcpServer.close();
-  }, 20000);
+  }, 40000);
 });

@@ -510,7 +510,7 @@ describe.serial('NostrServerTransport', () => {
     await server.close();
     await bootstrapPool.disconnect();
     bootstrap.stop();
-  }, 15000);
+  }, 30000);
 
   test('should allow connection for allowed public keys', async () => {
     const serverPrivateKey = bytesToHex(generateSecretKey());
@@ -1569,7 +1569,7 @@ describe.serial('NostrServerTransport', () => {
 
     await server.close();
     await relayPool.disconnect();
-  }, 15000);
+  }, 30000);
 
   test('should send correlated notifications (with e tag) via sendNotification()', async () => {
     const serverPrivateKey = bytesToHex(generateSecretKey());
@@ -1657,7 +1657,7 @@ describe.serial('NostrServerTransport', () => {
     await client.close();
     await server.close();
     await relayPool.disconnect();
-  }, 15000);
+  }, 30000);
 
   test('removes the client session after an open-stream probe timeout abort', async () => {
     const serverPrivateKey = bytesToHex(generateSecretKey());

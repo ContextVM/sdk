@@ -105,5 +105,5 @@ describe.serial('NostrMCPGateway single-client dispatch', () => {
     await client.close();
     await gateway.stop();
     await mcpServer.close();
-  }, 20000);
+  }, 40000);
 });

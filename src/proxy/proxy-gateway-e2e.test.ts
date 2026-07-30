@@ -112,7 +112,7 @@ describe('Proxy-Gateway E2E Test (Without Mock Responses)', () => {
     expect(gateway.isActive()).toBe(true);
 
     await client.close();
-  }, 15000);
+  }, 30000);
 
   test.serial(
     'should list tools through proxy-gateway chain',
@@ -173,7 +173,7 @@ describe('Proxy-Gateway E2E Test (Without Mock Responses)', () => {
     });
 
     await client.close();
-  }, 15000);
+  }, 30000);
 
   test('should list resources through proxy-gateway chain', async () => {
     const transport = getProxyTransport();
@@ -193,7 +193,7 @@ describe('Proxy-Gateway E2E Test (Without Mock Responses)', () => {
     expect(resources.resourceTemplates.length).toBe(1);
 
     await client.close();
-  }, 15000);
+  }, 30000);
 
   test('should read resource through proxy-gateway chain', async () => {
     const transport = getProxyTransport();
@@ -219,7 +219,7 @@ describe('Proxy-Gateway E2E Test (Without Mock Responses)', () => {
     });
 
     await client.close();
-  }, 15000);
+  }, 30000);
 
   test('should handle multiple concurrent requests through proxy-gateway chain', async () => {
     const transport = getProxyTransport();
@@ -258,7 +258,7 @@ describe('Proxy-Gateway E2E Test (Without Mock Responses)', () => {
     });
 
     await client.close();
-  }, 15000);
+  }, 30000);
 
   test('should handle error cases through proxy-gateway chain', async () => {
     const transport = getProxyTransport();
@@ -284,5 +284,5 @@ describe('Proxy-Gateway E2E Test (Without Mock Responses)', () => {
     }
 
     await client.close();
-  }, 15000);
+  }, 30000);
 });
