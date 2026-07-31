@@ -1,5 +1,8 @@
 import { describe, expect, test, mock } from 'bun:test';
-import type { JSONRPCRequest, JSONRPCNotification } from '@contextvm/mcp-sdk/types.js';
+import type {
+  JSONRPCRequest,
+  JSONRPCNotification,
+} from '@contextvm/mcp-sdk/types.js';
 import { createRedirectMiddleware } from './server-redirect.js';
 import { withServerRedirect } from './server-transport-redirect.js';
 import { REDIRECT_ERROR_CODE } from '../payments/constants.js';

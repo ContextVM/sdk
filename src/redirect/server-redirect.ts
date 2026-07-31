@@ -1,4 +1,7 @@
-import { isJSONRPCRequest, type JSONRPCErrorResponse } from '@contextvm/mcp-sdk/types.js';
+import {
+  isJSONRPCRequest,
+  type JSONRPCErrorResponse,
+} from '@contextvm/mcp-sdk/types.js';
 
 import type { InboundMiddlewareFn } from '../transport/middleware.js';
 import type { ServerRedirectConfig } from './types.js';

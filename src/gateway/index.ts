@@ -9,7 +9,10 @@ import {
 } from '../transport/nostr-server-transport.js';
 import { withServerPayments } from '../payments/index.js';
 import type { ServerPaymentsOptions } from '../payments/server-payments.js';
-import { withServerRedirect, type ServerRedirectConfig } from '../redirect/index.js';
+import {
+  withServerRedirect,
+  type ServerRedirectConfig,
+} from '../redirect/index.js';
 import { NOTIFICATIONS_INITIALIZED_METHOD } from '../core/index.js';
 import { createLogger } from '../core/utils/logger.js';
 import { LruCache } from '../core/utils/lru-cache.js';

@@ -37,9 +37,7 @@ function supportsOnmessageWithContext(
   );
 }
 
-function isRedirectError(
-  msg: JSONRPCMessage,
-): msg is JSONRPCErrorResponse {
+function isRedirectError(msg: JSONRPCMessage): msg is JSONRPCErrorResponse {
   return (
     isJSONRPCErrorResponse(msg) &&
     msg.error.code === REDIRECT_ERROR_CODE &&
@@ -129,7 +127,11 @@ export function withClientRedirect(
         return;
       }
       if (isJSONRPCResultResponse(message) || isJSONRPCErrorResponse(message)) {
-        if ('id' in message && message.id != null && !isRedirectError(message)) {
+        if (
+          'id' in message &&
+          message.id != null &&
+          !isRedirectError(message)
+        ) {
           const reqId = message.id as string | number;
           rawRequestCache.delete(String(reqId));
           redirectCounts.delete(reqId);
@@ -155,7 +157,10 @@ export function withClientRedirect(
     };
   };
 
-  const performTransition = async (target: string, relays?: string[]): Promise<void> => {
+  const performTransition = async (
+    target: string,
+    relays?: string[],
+  ): Promise<void> => {
     if (currentServerPubkey === target) {
       return;
     }
@@ -171,7 +176,10 @@ export function withClientRedirect(
     const newNostrTransport = new NostrClientTransport({
       ...baseOpts,
       serverPubkey: target,
-      relayHandler: relays && relays.length > 0 ? new ApplesauceRelayPool(relays) : undefined,
+      relayHandler:
+        relays && relays.length > 0
+          ? new ApplesauceRelayPool(relays)
+          : undefined,
     });
 
     let newTransport: Transport = newNostrTransport;
@@ -248,10 +256,12 @@ export function withClientRedirect(
     }
 
     if (!activeTransitionPromise) {
-      activeTransitionPromise = performTransition(errorData.target, errorData.relays)
-        .finally(() => {
-          activeTransitionPromise = null;
-        });
+      activeTransitionPromise = performTransition(
+        errorData.target,
+        errorData.relays,
+      ).finally(() => {
+        activeTransitionPromise = null;
+      });
     }
 
     try {
@@ -272,9 +282,12 @@ export function withClientRedirect(
 
     const origReq = rawRequestCache.get(String(reqId));
     if (!origReq) {
-      logger.error('Cannot re-issue redirected request: original request not found in cache', {
-        requestId: reqId,
-      });
+      logger.error(
+        'Cannot re-issue redirected request: original request not found in cache',
+        {
+          requestId: reqId,
+        },
+      );
       redirectCounts.delete(reqId);
       forwardMessage(message, ctx);
       return;

@@ -32,7 +32,6 @@ export const PAYMENT_PENDING_ERROR_CODE = -32043;
 /** CEP-47 JSON-RPC error: server redirect. */
 export const REDIRECT_ERROR_CODE = -32044;
 
-
 /**
  * CEP-8 unsupported payment_interaction negotiation error.
  *

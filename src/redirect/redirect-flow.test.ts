@@ -108,7 +108,10 @@ describe.serial('Redirect Flow E2E', () => {
       { maxRedirects: 3 },
     );
 
-    const client = new Client({ name: 'test-client', version: '1.0.0' }, { capabilities: {} });
+    const client = new Client(
+      { name: 'test-client', version: '1.0.0' },
+      { capabilities: {} },
+    );
     await client.connect(clientTransport);
 
     const result = await client.callTool({
@@ -117,7 +120,10 @@ describe.serial('Redirect Flow E2E', () => {
     });
 
     expect(result.content).toBeArray();
-    expect((result.content as unknown[])?.[0]).toEqual({ type: 'text', text: 'hello redirect' });
+    expect((result.content as unknown[])?.[0]).toEqual({
+      type: 'text',
+      text: 'hello redirect',
+    });
 
     // Verify current transport server is now pkB
     const activeTransport = clientTransport as unknown as NostrClientTransport;
@@ -132,7 +138,7 @@ describe.serial('Redirect Flow E2E', () => {
     const skA = generateSecretKey();
     const skB = generateSecretKey();
     const skC = generateSecretKey();
-    
+
     const pkB = getPublicKey(skB);
     const pkC = getPublicKey(skC);
 
@@ -154,7 +160,10 @@ describe.serial('Redirect Flow E2E', () => {
 
     const clientTransport = withClientRedirect(baseTransport, baseOpts);
 
-    const client = new Client({ name: 'test-client', version: '1.0.0' }, { capabilities: {} });
+    const client = new Client(
+      { name: 'test-client', version: '1.0.0' },
+      { capabilities: {} },
+    );
     await client.connect(clientTransport);
 
     const result = await client.callTool({
@@ -162,8 +171,13 @@ describe.serial('Redirect Flow E2E', () => {
       arguments: { message: 'chain test' },
     });
 
-    expect((result.content as unknown[])?.[0]).toEqual({ type: 'text', text: 'chain test' });
-    expect((clientTransport as unknown as NostrClientTransport).serverPubkey).toBe(pkC);
+    expect((result.content as unknown[])?.[0]).toEqual({
+      type: 'text',
+      text: 'chain test',
+    });
+    expect(
+      (clientTransport as unknown as NostrClientTransport).serverPubkey,
+    ).toBe(pkC);
 
     await client.close();
     await transportA.close();
@@ -193,9 +207,14 @@ describe.serial('Redirect Flow E2E', () => {
     });
 
     // Set a small hop cap
-    const clientTransport = withClientRedirect(baseTransport, baseOpts, { maxRedirects: 2 });
+    const clientTransport = withClientRedirect(baseTransport, baseOpts, {
+      maxRedirects: 2,
+    });
 
-    const client = new Client({ name: 'test-client', version: '1.0.0' }, { capabilities: {} });
+    const client = new Client(
+      { name: 'test-client', version: '1.0.0' },
+      { capabilities: {} },
+    );
 
     // It should hit max redirects on the initialize request and return the -32044 error
     await expect(client.connect(clientTransport)).rejects.toMatchObject({

@@ -722,26 +722,24 @@ describe('ApplesauceRelayPool Integration', () => {
         // Mirror production shape: subscribe to the raw req() message stream so
         // the test override exercises the same dispatch path as the pool. No
         // dedup (see production createSubscription for rationale).
-        const sub = testPool.relayGroup
-          .req(filters)
-          .subscribe({
-            next: (message: unknown) => {
-              const msgObj = message as Record<string, unknown>;
-              if (message === 'EOSE' || msgObj?.type === 'EOSE') {
-                onEose?.();
-                return;
-              }
+        const sub = testPool.relayGroup.req(filters).subscribe({
+          next: (message: unknown) => {
+            const msgObj = message as Record<string, unknown>;
+            if (message === 'EOSE' || msgObj?.type === 'EOSE') {
+              onEose?.();
+              return;
+            }
 
-              if (typeof message === 'object' && message !== null) {
-                if ('id' in msgObj) {
-                  onEvent(msgObj as unknown as NostrEvent);
-                } else if (msgObj.type === 'EVENT' && msgObj.event) {
-                  onEvent(msgObj.event as NostrEvent);
-                }
+            if (typeof message === 'object' && message !== null) {
+              if ('id' in msgObj) {
+                onEvent(msgObj as unknown as NostrEvent);
+              } else if (msgObj.type === 'EVENT' && msgObj.event) {
+                onEvent(msgObj.event as NostrEvent);
               }
-            },
-            error: () => {},
-          });
+            }
+          },
+          error: () => {},
+        });
 
         return () => sub.unsubscribe();
       };

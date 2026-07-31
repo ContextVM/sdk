@@ -6,7 +6,10 @@ import {
 } from '../transport/nostr-client-transport.js';
 import { withClientPayments } from '../payments/client-payments.js';
 import type { ClientPaymentsOptions } from '../payments/client-payments.js';
-import { withClientRedirect, type ClientRedirectOptions } from '../redirect/index.js';
+import {
+  withClientRedirect,
+  type ClientRedirectOptions,
+} from '../redirect/index.js';
 import { createLogger } from '../core/utils/logger.js';
 
 const logger = createLogger('proxy');
