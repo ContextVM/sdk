@@ -343,49 +343,30 @@ export class ApplesauceRelayPool implements RelayHandler {
   ): () => void {
     logger.debug('Creating subscription', { filters });
 
-    // NOTE: applesauce-relay 6.0.3 changed `RelayGroup.subscription()` to emit
-    // only deduplicated NostrEvents and no longer surfaces EOSE markers.
+    // Use subscription() with reconnect/resubscribe to survive relay restarts,
+    // and eventStore: null to disable relay-level event deduplication.
     //
-    // We deliberately subscribe to the raw `RelayGroup.req()` message stream
-    // and forward EVERY event without deduplication. Dedup is intentionally NOT
-    // performed at the relay layer:
+    // Dedup is intentionally NOT performed at the relay layer:
     //   - The transport layer already deduplicates gift-wrap envelopes and
     //     decrypted inner events via its own `seenEventIds` cache, with
     //     protocol-aware semantics.
     //   - The explicit-gating payment flow republishes the SAME request event
     //     id after payment and relies on the server re-observing it. Relay-
-    //     layer dedup by event id (whether applesauce 6.0.3's `distinct()` or a
-    //     local `Set`) silently swallows that retry and deadlocks the flow.
+    //     layer dedup by event id silently swallows that retry and deadlocks
+    //     the flow.
     const sub = this.relayGroup
-      .req(filters)
+      .subscription(filters, {
+        reconnect: Infinity,
+        resubscribe: Infinity,
+        eventStore: null,
+      })
       .subscribe({
-        next: (message: unknown) => {
+        next: (message) => {
           if (message === 'EOSE') {
             onEose?.();
-            return;
+          } else {
+            onEvent(message);
           }
-
-          if (Array.isArray(message)) {
-            if (message[0] === 'EOSE') {
-              onEose?.();
-            } else if (message[0] === 'EVENT' && message[2]) {
-              onEvent(message[2] as NostrEvent);
-            }
-            return;
-          }
-
-          const msgObj = message as Record<string, unknown>;
-          if (msgObj?.type === 'EOSE') {
-            onEose?.();
-          } else if (typeof message === 'object' && message !== null) {
-            if ('id' in msgObj) {
-              onEvent(msgObj as unknown as NostrEvent);
-            } else if (msgObj.type === 'EVENT' && msgObj.event) {
-              onEvent(msgObj.event as NostrEvent);
-            }
-          }
-          // OPEN / CLOSED / ERROR are intentionally ignored; the old
-          // base-nostr-transport behaviour is preserved.
         },
         complete: () => {
           logger.debug('Subscription complete');
