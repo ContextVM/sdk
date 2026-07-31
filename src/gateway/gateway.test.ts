@@ -222,5 +222,5 @@ describe('NostrMCPGateway End-to-End Test', () => {
   //   if (testGateway.isActive()) {
   //     await testGateway.stop();
   //   }
-  // }, 30000);
+  // }, 15000);
 });

@@ -93,7 +93,7 @@ describe('NostrMCPGateway per-client MCP routing', () => {
     stopRelay = () => relayHub.clear();
 
     logger.info('Relay started', { relayUrl: 'memory://relay' });
-  }, 40000);
+  }, 20000);
 
   afterAll(async () => {
     stopRelay?.();

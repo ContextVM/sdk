@@ -196,7 +196,7 @@ describe.serial('payments fake flow (transport-level)', () => {
 
     await client.close();
     await mcpServer.close();
-  }, 40000);
+  }, 20000);
 
   test('PMI selection: client preference wins when intersection exists', async () => {
     const serverSK = generateSecretKey();
@@ -304,7 +304,7 @@ describe.serial('payments fake flow (transport-level)', () => {
 
     await client.close();
     await mcpServer.close();
-  }, 40000);
+  }, 20000);
 
   test('client publishes PMI tags on non-initialize paid requests (stateless paid call)', async () => {
     const serverSK = generateSecretKey();
@@ -392,7 +392,7 @@ describe.serial('payments fake flow (transport-level)', () => {
 
     await client.close();
     await mcpServer.close();
-  }, 40000);
+  }, 20000);
 
   test('PMI selection: falls back to server order when no intersection', async () => {
     const serverSK = generateSecretKey();
@@ -476,7 +476,7 @@ describe.serial('payments fake flow (transport-level)', () => {
 
     await client.close();
     await mcpServer.close();
-  }, 40000);
+  }, 20000);
 
   test('PMI selection: when client advertises none, uses server order', async () => {
     const serverSK = generateSecretKey();
@@ -557,7 +557,7 @@ describe.serial('payments fake flow (transport-level)', () => {
 
     await client.close();
     await mcpServer.close();
-  }, 40000);
+  }, 20000);
 
   test('idempotency: duplicate request event id does not double-charge', async () => {
     const processor = new FakePaymentProcessor({ verifyDelayMs: 1 });
@@ -621,7 +621,7 @@ describe.serial('payments fake flow (transport-level)', () => {
     expect(verifyCalls).toBe(1);
     expect(forwarded).toBe(1);
     expect(notificationsSent).toBeGreaterThanOrEqual(1);
-  }, 40000);
+  }, 20000);
 
   test('emits payment_accepted correlated to request id after verify and before forward', async () => {
     const events: string[] = [];
@@ -908,7 +908,7 @@ describe.serial('payments fake flow (transport-level)', () => {
     await expect(mw(message, ctx, forward)).rejects.toThrow(
       /verifyPayment timed out/,
     );
-  }, 40000);
+  }, 20000);
 
   test('client respects payment TTL without timing out even when TTL > MCP timeout (immediate-heartbeat regression)', async () => {
     // Scenario (local relay round-trips ≈ 15 ms each):
@@ -1022,7 +1022,7 @@ describe.serial('payments fake flow (transport-level)', () => {
 
     await client.close();
     await mcpServer.close();
-  }, 40000);
+  }, 20000);
 
   test('explicit gating: gates tools/call via -32042 error and auto-retries', async () => {
     const serverSK = generateSecretKey();
@@ -1117,7 +1117,7 @@ describe.serial('payments fake flow (transport-level)', () => {
 
     await client.close();
     await mcpServer.close();
-  }, 40000);
+  }, 20000);
 
   // CEP-8 MUST: server indicates the effective mode on its first direct response.
   test('explicit gating: server discloses payment_interaction=explicit_gating on first direct response', async () => {
@@ -1202,7 +1202,7 @@ describe.serial('payments fake flow (transport-level)', () => {
 
     await client.close();
     await mcpServer.close();
-  }, 40000);
+  }, 20000);
 
   // Locks the pending race: pay → slow verify → -32043 → backoff → grant → success.
   test('explicit gating: -32043 pending race resolves after verify completes', async () => {
@@ -1378,7 +1378,7 @@ describe.serial('payments fake flow (transport-level)', () => {
 
     await client.close();
     await mcpServer.close();
-  }, 40000);
+  }, 20000);
 
   // onPaymentRequired rejects: the wrapper synthesizes -32042 with
   // data.type = 'payment_handler_error' and surfaces it to the caller.
@@ -1460,7 +1460,7 @@ describe.serial('payments fake flow (transport-level)', () => {
 
     await client.close();
     await mcpServer.close();
-  }, 40000);
+  }, 20000);
 
   // Verify-failure window: when verification fails after the client paid, the
   // server clears pending state and the next retry yields a FRESH invoice
@@ -1675,7 +1675,7 @@ describe.serial('payments fake flow (transport-level)', () => {
 
     await client.close();
     await mcpServer.close();
-  }, 40000);
+  }, 20000);
 
   // CEP-8 negotiation: a client requesting explicit_gating against a transparent-
   // only server receives -32602 with the requested + supported modes. Locks the
@@ -1746,7 +1746,7 @@ describe.serial('payments fake flow (transport-level)', () => {
     });
 
     await mcpServer.close();
-  }, 40000);
+  }, 20000);
 
   // resolvePrice rejection: server emits payment_rejected instead of requesting
   // payment; the client synthesizes -32000 so the caller rejects immediately
@@ -1823,7 +1823,7 @@ describe.serial('payments fake flow (transport-level)', () => {
 
     await client.close();
     await mcpServer.close();
-  }, 40000);
+  }, 20000);
 
   // CEP-8 coexistence: a server that offers explicit_gating is opt-in. When the
   // client omits the payment_interaction tag (default transparent), the session
@@ -1908,7 +1908,7 @@ describe.serial('payments fake flow (transport-level)', () => {
 
     await client.close();
     await mcpServer.close();
-  }, 40000);
+  }, 20000);
 
   // CEP-8 renegotiation (bug fix): once a pubkey negotiates explicit_gating
   // the session could not be downgraded — the server latched the mode for the
@@ -2015,7 +2015,7 @@ describe.serial('payments fake flow (transport-level)', () => {
 
     await client2.close();
     await mcpServer.close();
-  }, 40000);
+  }, 20000);
 
   // CEP-8 reset-on-initialize (the bug report's "omit the tag" scenario): a
   // stateful client that reconnects WITHOUT sending a payment_interaction tag
@@ -2123,7 +2123,7 @@ describe.serial('payments fake flow (transport-level)', () => {
 
     await client2.close();
     await mcpServer.close();
-  }, 40000);
+  }, 20000);
 
   // CEP-8 mid-session upsert (stateless-compatible): a `payment_interaction`
   // tag on a NON-initialize message must upsert the session's mode. Unlike the
@@ -2206,7 +2206,7 @@ describe.serial('payments fake flow (transport-level)', () => {
 
     await client.close();
     await mcpServer.close();
-  }, 40000);
+  }, 20000);
 
   // CEP-8 security invariant: a paid explicit-gating authorization (keyed by
   // canonical invocation identity) MUST NOT be consumed by the transparent
@@ -2316,7 +2316,7 @@ describe.serial('payments fake flow (transport-level)', () => {
 
     await client2.close();
     await mcpServer.close();
-  }, 40000);
+  }, 20000);
 
   // CEP-8 optional default: when `paymentInteraction` is omitted the server
   // defaults to the optional policy and mirrors each client's requested
@@ -2442,7 +2442,7 @@ describe.serial('payments fake flow (transport-level)', () => {
 
     await explicitClient.close();
     await mcpServer.close();
-  }, 40000);
+  }, 20000);
 
   // CEP-8 explicit_gating canonical-identity fix: `params._meta` (MCP's
   // reserved per-request extension namespace, which carries `progressToken`)
@@ -2570,5 +2570,5 @@ describe.serial('payments fake flow (transport-level)', () => {
 
     await client.close();
     await mcpServer.close();
-  }, 40000);
+  }, 20000);
 });

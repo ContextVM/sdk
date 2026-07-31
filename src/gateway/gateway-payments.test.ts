@@ -125,5 +125,5 @@ describe.serial('NostrMCPGateway payments wiring', () => {
     await client.close();
     await gateway.stop();
     await mcpServer.close();
-  }, 40000);
+  }, 20000);
 });
