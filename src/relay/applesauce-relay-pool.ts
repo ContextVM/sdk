@@ -362,10 +362,10 @@ export class ApplesauceRelayPool implements RelayHandler {
       })
       .subscribe({
         next: (message) => {
-          if (message === 'EOSE') {
+          if ((message as unknown) === 'EOSE') {
             onEose?.();
           } else {
-            onEvent(message);
+            onEvent(message as NostrEvent);
           }
         },
         complete: () => {
