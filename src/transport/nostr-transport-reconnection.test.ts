@@ -39,6 +39,7 @@ describe.serial('NostrTransport Reconnection', () => {
   beforeAll(async () => {
     // Start primary relay on an OS-assigned port (avoids TOCTOU races under concurrency)
     const primaryRelay = await spawnMockRelay();
+    await sleep(1000);
     primaryRelayInstance = primaryRelay.relay;
     stopPrimaryRelay = primaryRelay.stop;
     relayUrl = primaryRelay.relayUrl;
@@ -205,6 +206,7 @@ describe.serial('NostrTransport Reconnection', () => {
 
       // Restart the relay process
       await restartPrimaryRelay();
+      await sleep(1000);
 
       // Second request after relay restart - should still work
       const toolResult2 = await eventually(() => callAddTool(client, 10, 20), {
@@ -230,6 +232,7 @@ describe.serial('NostrTransport Reconnection', () => {
 
       // First relay restart
       await restartPrimaryRelay();
+      await sleep(1000);
       await sleep(300);
 
       // Request after first restart
@@ -237,6 +240,7 @@ describe.serial('NostrTransport Reconnection', () => {
 
       // Second relay restart
       await restartPrimaryRelay();
+      await sleep(1000);
       await sleep(300);
 
       // Request after second restart
