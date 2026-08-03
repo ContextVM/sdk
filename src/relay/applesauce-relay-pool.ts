@@ -316,7 +316,9 @@ export class ApplesauceRelayPool implements RelayHandler {
           }
         }
 
-        throw new Error(`Failed to publish event. Responses: ${JSON.stringify(responses)}`);
+        throw new Error(
+          `Failed to publish event. Responses: ${JSON.stringify(responses)}`,
+        );
       } catch (error) {
         if (
           error instanceof Error &&
@@ -376,40 +378,40 @@ export class ApplesauceRelayPool implements RelayHandler {
         });
 
     const sub = stream.subscribe({
-        next: (message: unknown) => {
-          logger.debug('Received raw message', { message });
-          if (message === 'EOSE') {
-            onEose?.();
-            return;
-          }
+      next: (message: unknown) => {
+        logger.debug('Received raw message', { message });
+        if (message === 'EOSE') {
+          onEose?.();
+          return;
+        }
 
-          if (Array.isArray(message)) {
-            if (message[0] === 'EOSE') {
-              onEose?.();
-            } else if (message[0] === 'EVENT' && message[2]) {
-              onEvent(message[2] as NostrEvent);
-            }
-            return;
-          }
-
-          const msgObj = message as Record<string, unknown>;
-          if (msgObj?.type === 'EOSE') {
+        if (Array.isArray(message)) {
+          if (message[0] === 'EOSE') {
             onEose?.();
-          } else if (typeof message === 'object' && message !== null) {
-            if ('id' in msgObj) {
-              onEvent(msgObj as unknown as NostrEvent);
-            } else if (msgObj.type === 'EVENT' && msgObj.event) {
-              onEvent(msgObj.event as NostrEvent);
-            }
+          } else if (message[0] === 'EVENT' && message[2]) {
+            onEvent(message[2] as NostrEvent);
           }
-        },
-        error: (error: unknown) => {
-          logger.warn('Subscription error', { filters, error });
-        },
-        complete: () => {
-          logger.debug('Subscription complete');
-        },
-      });
+          return;
+        }
+
+        const msgObj = message as Record<string, unknown>;
+        if (msgObj?.type === 'EOSE') {
+          onEose?.();
+        } else if (typeof message === 'object' && message !== null) {
+          if ('id' in msgObj) {
+            onEvent(msgObj as unknown as NostrEvent);
+          } else if (msgObj.type === 'EVENT' && msgObj.event) {
+            onEvent(msgObj.event as NostrEvent);
+          }
+        }
+      },
+      error: (error: unknown) => {
+        logger.warn('Subscription error', { filters, error });
+      },
+      complete: () => {
+        logger.debug('Subscription complete');
+      },
+    });
 
     return () => sub.unsubscribe();
   }
@@ -542,7 +544,9 @@ export class ApplesauceRelayPool implements RelayHandler {
   /** Starts the liveness ping monitor (called lazily on first subscribe) */
   private startPingMonitor(): void {
     if (this.pingSubscription || this.isDisconnected) {
-      logger.debug('Ping monitor already started or pool disconnected, skipping');
+      logger.debug(
+        'Ping monitor already started or pool disconnected, skipping',
+      );
       return;
     }
 
@@ -707,5 +711,4 @@ export class ApplesauceRelayPool implements RelayHandler {
       this.rebuildInFlight = undefined;
     });
   }
-
 }
