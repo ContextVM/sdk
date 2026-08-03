@@ -720,7 +720,13 @@ describe('ApplesauceRelayPool Integration', () => {
               eventStore: null,
             });
 
-        const sub = stream.subscribe({
+        const sub = (
+          stream as unknown as {
+            subscribe: (observer: Record<string, unknown>) => {
+              unsubscribe: () => void;
+            };
+          }
+        ).subscribe({
           next: (message: unknown) => {
             const msgObj = message as Record<string, unknown>;
             if (message === 'EOSE' || msgObj?.type === 'EOSE') {

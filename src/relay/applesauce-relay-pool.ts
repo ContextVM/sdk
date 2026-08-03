@@ -377,7 +377,7 @@ export class ApplesauceRelayPool implements RelayHandler {
           eventStore: null, // intentionally disable relay-layer dedup
         });
 
-    const sub = stream.subscribe({
+    const sub = (stream as Observable<unknown>).subscribe({
       next: (message: unknown) => {
         logger.debug('Received raw message', { message });
         if (message === 'EOSE') {
