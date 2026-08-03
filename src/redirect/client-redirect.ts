@@ -71,7 +71,7 @@ export function withClientRedirect(
   const logger = createLogger('client-redirect');
   const maxRedirects = options?.maxRedirects ?? 5;
   const rawRequestCache = new LruCache<JSONRPCRequest>(1000);
-  const redirectCounts = new Map<string | number, number>();
+  const redirectCounts = new LruCache<number>(1000);
 
   let currentTransport = transport;
   let currentServerPubkey: string | undefined =
@@ -134,7 +134,7 @@ export function withClientRedirect(
         ) {
           const reqId = message.id as string | number;
           rawRequestCache.delete(String(reqId));
-          redirectCounts.delete(reqId);
+          redirectCounts.delete(String(reqId));
         }
       }
       if (hasContextPath) {
@@ -161,6 +161,8 @@ export function withClientRedirect(
     target: string,
     relays?: string[],
   ): Promise<void> => {
+    // Note: Deviation from CEP-47 letter (which specifies uniform handling without special-casing target === currentServerPubkey).
+    // Safe because request hop counter bounds loops.
     if (currentServerPubkey === target) {
       return;
     }
@@ -170,6 +172,7 @@ export function withClientRedirect(
       relays,
     });
 
+    // TODO: CEP-41 streams integration: release local stream state and surface failure to caller upon transport transition.
     const oldTransport = currentTransport;
     const { wrapTransport, ...baseOpts } = transportConfig;
 
@@ -223,19 +226,19 @@ export function withClientRedirect(
       return;
     }
 
-    const currentHops = (redirectCounts.get(reqId) ?? 0) + 1;
+    const currentHops = (redirectCounts.get(String(reqId)) ?? 0) + 1;
     if (currentHops > maxRedirects) {
       logger.error('Maximum redirect hops exceeded for request', {
         maxRedirects,
         currentHops,
         requestId: reqId,
       });
-      redirectCounts.delete(reqId);
+      redirectCounts.delete(String(reqId));
       rawRequestCache.delete(String(reqId));
       forwardMessage(message, ctx);
       return;
     }
-    redirectCounts.set(reqId, currentHops);
+    redirectCounts.set(String(reqId), currentHops);
 
     if (options?.redirectPolicy) {
       let allowed = false;
@@ -248,7 +251,7 @@ export function withClientRedirect(
         });
       }
       if (!allowed) {
-        redirectCounts.delete(reqId);
+        redirectCounts.delete(String(reqId));
         rawRequestCache.delete(String(reqId));
         forwardMessage(message, ctx);
         return;
@@ -272,7 +275,7 @@ export function withClientRedirect(
         target: errorData.target,
         requestId: reqId,
       });
-      redirectCounts.delete(reqId);
+      redirectCounts.delete(String(reqId));
       rawRequestCache.delete(String(reqId));
       forwardMessage(message, ctx);
       return;
@@ -288,7 +291,7 @@ export function withClientRedirect(
           requestId: reqId,
         },
       );
-      redirectCounts.delete(reqId);
+      redirectCounts.delete(String(reqId));
       forwardMessage(message, ctx);
       return;
     }

@@ -38,6 +38,7 @@ export function createRedirectMiddleware(
   const logger = createLogger('server-redirect');
 
   return async (message, ctx, forward) => {
+    // TODO: CEP-41 streams integration: MUST NOT emit redirect if request has active CEP-41 open stream.
     // Only redirect JSON-RPC requests. Notifications and responses pass through.
     if (!isJSONRPCRequest(message) || message.id == null) {
       await forward(message);

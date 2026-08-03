@@ -34,7 +34,16 @@ export async function resolveOperationalRelays(
   deps: RelayResolutionDeps,
 ): Promise<void> {
   if (config.configuredRelayUrls.length > 0) {
-    return;
+    const reachable = await connectFallbackOperationalRelays(
+      config.configuredRelayUrls,
+    );
+    if (reachable.length > 0) {
+      return;
+    }
+    deps.logger.warn(
+      'Configured operational relays are unreachable; falling back to CEP-17 discovery',
+      { configuredRelays: config.configuredRelayUrls },
+    );
   }
 
   if (config.hintedRelayUrls.length > 0) {

@@ -92,7 +92,7 @@ export class ApplesauceRelayPool implements RelayHandler {
   private pingSubscription?: Subscription;
   private readonly destroy$ = new Subject<void>();
   private rebuildInFlight?: Promise<void>;
-  /** Tracks the last known connected state of each relay */
+  /** Tracks last known connection status per relay URL purely to deduplicate "Relay came online" log lines */
   private relayStates = new Map<string, boolean>();
   private relayObservers: Subscription[] = [];
   private relays: Relay[] = [];
@@ -380,30 +380,31 @@ export class ApplesauceRelayPool implements RelayHandler {
     const sub = (stream as Observable<unknown>).subscribe({
       next: (message: unknown) => {
         logger.debug('Received raw message', { message });
-        if (message === 'EOSE') {
-          onEose?.();
+        if (
+          typeof message === 'object' &&
+          message !== null &&
+          'type' in message
+        ) {
+          const msg = message as { type: string; event?: NostrEvent };
+          if (msg.type === 'EOSE') onEose?.();
+          else if (msg.type === 'EVENT' && msg.event) onEvent(msg.event);
           return;
         }
 
         if (Array.isArray(message)) {
-          if (message[0] === 'EOSE') {
-            onEose?.();
-          } else if (message[0] === 'EVENT' && message[2]) {
+          if (message[0] === 'EOSE') onEose?.();
+          else if (message[0] === 'EVENT' && message[2])
             onEvent(message[2] as NostrEvent);
-          }
           return;
         }
 
-        const msgObj = message as Record<string, unknown>;
-        if (msgObj?.type === 'EOSE') {
-          onEose?.();
-        } else if (typeof message === 'object' && message !== null) {
-          if ('id' in msgObj) {
-            onEvent(msgObj as unknown as NostrEvent);
-          } else if (msgObj.type === 'EVENT' && msgObj.event) {
-            onEvent(msgObj.event as NostrEvent);
-          }
-        }
+        if (message === 'EOSE') onEose?.();
+        else if (
+          typeof message === 'object' &&
+          message !== null &&
+          'id' in message
+        )
+          onEvent(message as NostrEvent);
       },
       error: (error: unknown) => {
         logger.warn('Subscription error', { filters, error });
