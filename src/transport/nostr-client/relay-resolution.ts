@@ -34,16 +34,7 @@ export async function resolveOperationalRelays(
   deps: RelayResolutionDeps,
 ): Promise<void> {
   if (config.configuredRelayUrls.length > 0) {
-    const reachable = await connectFallbackOperationalRelays(
-      config.configuredRelayUrls,
-    );
-    if (reachable.length > 0) {
-      return;
-    }
-    deps.logger.warn(
-      'Configured operational relays are unreachable; falling back to CEP-17 discovery',
-      { configuredRelays: config.configuredRelayUrls },
-    );
+    return;
   }
 
   if (config.hintedRelayUrls.length > 0) {
@@ -115,6 +106,9 @@ async function connectFallbackOperationalRelays(
   const relayPool = new ApplesauceRelayPool([...fallbackOperationalRelayUrls]);
 
   try {
+    // TODO(CEP-17, CEP-47): ApplesauceRelayPool.connect() currently resolves immediately
+    // even for dead ports. We should probe via Relay.connected$/status$ with a timeout
+    // to properly evaluate reachability and avoid falsely succeeding the fallback.
     await withTimeout(
       relayPool.connect(),
       DEFAULT_TIMEOUT_MS,

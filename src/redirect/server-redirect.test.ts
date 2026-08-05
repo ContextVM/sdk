@@ -28,6 +28,7 @@ describe('createRedirectMiddleware', () => {
 
     const middleware = createRedirectMiddleware({
       config,
+      // TODO: Assert `requestEventId` is correctly passed in the 3rd argument
       sendResponse: async (clientPubkey, res) => {
         sentResponse = { clientPubkey, res };
       },
