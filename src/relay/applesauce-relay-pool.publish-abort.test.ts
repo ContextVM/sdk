@@ -99,6 +99,44 @@ describe('ApplesauceRelayPool publish cancellation (regression)', () => {
     expect(publishAttemptCount).toBe(attemptsAtAbort);
   }, 10_000);
 
+  test('disconnect() cancels in-flight publish retries (lifecycle abort)', async () => {
+    const pool = new ApplesauceRelayPool(['ws://example.invalid']);
+
+    let publishAttemptCount = 0;
+
+    (
+      pool as unknown as {
+        relayGroup: {
+          publish: (event: NostrEvent) => Promise<Array<{ ok: boolean }>>;
+        };
+      }
+    ).relayGroup = {
+      publish: async (_event: NostrEvent) => {
+        publishAttemptCount += 1;
+        throw new Error('simulated publish failure');
+      },
+    };
+
+    const event = {
+      id: 'd'.repeat(64),
+      pubkey: 'p'.repeat(64),
+      created_at: Math.floor(Date.now() / 1000),
+      kind: 1,
+      tags: [],
+      content: 'test',
+      sig: 's'.repeat(128),
+    } as unknown as NostrEvent;
+
+    const pending = pool.publish(event);
+    setTimeout(() => void pool.disconnect(), 10);
+
+    await expect(pending).rejects.toThrow(/aborted/i);
+
+    const attemptsAtAbort = publishAttemptCount;
+    await new Promise<void>((resolve) => setTimeout(resolve, 1200));
+    expect(publishAttemptCount).toBe(attemptsAtAbort);
+  }, 10_000);
+
   test('publish() treats zero acknowledgements during rebuild as ambiguous and retries', async () => {
     const pool = new ApplesauceRelayPool(['ws://example.invalid']);
 

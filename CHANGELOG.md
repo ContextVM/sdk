@@ -1,12 +1,26 @@
 # @contextvm/sdk
 
+## 0.13.11
+
+### Patch Changes
+
+- fix(relay): cancel in-flight publish retries on pool disconnect
+
+  - Abort lifecycle controller in disconnect() so infinite publish retry
+    loops die with the pool instead of spinning on dead sockets
+  - Attach no-op catch to orphaned callTool() promise in callToolStream()
+    to prevent unhandled rejection when stream setup fails
+  - Regression test: disconnect() cancels in-flight publish retries
+
+- 5d0034d: Move `typescript` from `peerDependencies` to `devDependencies`. The package ships pre-compiled `dist` (`.js` + `.d.ts`) and consumers never compile its sources, so `typescript` is a build-time concern, not a peer requirement. The peer range was emitting unmet-peer warnings for consumers on TS versions outside `^5.9.3` (e.g. TS 6.x) with no functional effect.
+
 ## 0.13.10
 
 ### Patch Changes
 
 - fix(open-stream): arm keepalive probe before the ping publish and expose session staleness
 
-  The CEP-41 open-stream keepalive armed its probe timer only *after* the ping
+  The CEP-41 open-stream keepalive armed its probe timer only _after_ the ping
   publish resolved, on both `OpenStreamSession` and `OpenStreamWriter`. A slow
   or unhealthy Nostr relay whose publish retries indefinitely parked the probe
   window forever: the probe timer never armed, the idle timer (one-shot) never

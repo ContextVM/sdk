@@ -69,6 +69,9 @@ export class ApplesauceRelayPool implements RelayHandler {
   private relayGroup: RelayGroup;
   private readonly subscriptions = new Map<string, SubscriptionState>();
   private relayGeneration = 0;
+  /** Aborted by {@link disconnect}: the pool's infinite publish retry loop is
+   * cancelled by its own teardown, not left spinning on dead sockets. */
+  private readonly lifecycle = new AbortController();
 
   // Outbound publish policy
   private static readonly DEFAULT_PUBLISH_ATTEMPT_TIMEOUT_MS = 10_000;
@@ -218,7 +221,7 @@ export class ApplesauceRelayPool implements RelayHandler {
     let attempt = 0;
 
     while (true) {
-      if (opts?.abortSignal?.aborted) {
+      if (opts?.abortSignal?.aborted || this.lifecycle.signal.aborted) {
         throw new Error('Publish aborted');
       }
       attempt += 1;
@@ -425,6 +428,10 @@ export class ApplesauceRelayPool implements RelayHandler {
    * Disconnects from all relays and cleans up resources.
    */
   async disconnect(): Promise<void> {
+    // Cancel in-flight publishes first: their infinite retry loop must not
+    // outlive the pool (each iteration fails instantly on closed sockets and
+    // would otherwise spin forever).
+    this.lifecycle.abort();
     this.destroy$.next();
     this.destroy$.complete();
 
