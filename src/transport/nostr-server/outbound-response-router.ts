@@ -296,6 +296,10 @@ export class OutboundResponseRouter {
    * Routes a response back to a specifically targeted client and request event.
    * This bypasses the normal correlation lookup, which is useful when
    * middleware needs to reject a request early (e.g. for explicit gating).
+   *
+   * The gift-wrap kind mirrors the one recorded for the request event, matching
+   * the policy `route()` applies, so a targeted response never downgrades an
+   * ephemeral-wrapped request to a relay-stored wrap.
    */
   public async routeTargeted(
     clientPubkey: string,
@@ -320,6 +324,10 @@ export class OutboundResponseRouter {
 
     const giftWrapKind = this.deps.chooseGiftWrapKind({
       session,
+      // Non-destructive read: the route must stay registered for the normal
+      // response/cleanup lifecycle that runs after this early rejection.
+      fallbackWrapKind:
+        this.deps.correlationStore.getEventRoute(requestEventId)?.wrapKind,
     });
 
     await this.deps.sendMcpMessage(
