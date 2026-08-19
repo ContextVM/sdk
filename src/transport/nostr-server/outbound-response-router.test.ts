@@ -4,6 +4,7 @@ import type {
   JSONRPCMessage,
 } from '@contextvm/mcp-sdk/types.js';
 import type { Logger } from '../../core/utils/logger.js';
+import type { NostrEvent } from 'nostr-tools';
 import { EPHEMERAL_GIFT_WRAP_KIND } from '../../core/constants.js';
 import {
   OutboundResponseRouter,
@@ -48,6 +49,7 @@ interface CapturedDeps {
 function createRouterWithCapturedDeps(
   correlationStore: CorrelationStore,
   session: ClientSession,
+  options: { failSend?: boolean } = {},
 ): CapturedDeps {
   const chooseCalls: CapturedDeps['chooseCalls'] = [];
   const sentGiftWrapKinds: CapturedDeps['sentGiftWrapKinds'] = [];
@@ -82,6 +84,9 @@ function createRouterWithCapturedDeps(
       _onCreateEvent?: (eventId: string) => void,
       giftWrapKind?: number,
     ) => {
+      if (options.failSend) {
+        throw new Error('send failed');
+      }
       sentGiftWrapKinds.push(giftWrapKind);
       return 'inner-event-id';
     },
@@ -159,5 +164,45 @@ describe('OutboundResponseRouter.routeTargeted', () => {
 
     expect(chooseCalls).toHaveLength(0);
     expect(sentGiftWrapKinds).toHaveLength(0);
+  });
+
+  test('re-registers the route with its request event when the send fails', async () => {
+    const requestEvent = {
+      id: 'evt-a3',
+      pubkey: CLIENT_PUBKEY,
+      sig: 'sig',
+      kind: 15,
+      tags: [],
+      content: '{}',
+      created_at: 0,
+    } as NostrEvent;
+    const correlationStore = new CorrelationStore({});
+    correlationStore.registerEventRoute(
+      'evt-a3',
+      CLIENT_PUBKEY,
+      'original-request-id',
+      undefined,
+      EPHEMERAL_GIFT_WRAP_KIND,
+      requestEvent,
+    );
+    const { deps } = createRouterWithCapturedDeps(
+      correlationStore,
+      createSession(),
+      { failSend: true },
+    );
+
+    await expect(
+      new OutboundResponseRouter(deps).route({
+        jsonrpc: '2.0',
+        id: 'evt-a3',
+        result: {},
+      }),
+    ).rejects.toThrow('send failed');
+
+    // The retry path must restore the full route, including the signed
+    // request event exposed via getNostrRequestEvent().
+    const restored = correlationStore.getEventRoute('evt-a3');
+    expect(restored?.wrapKind).toBe(EPHEMERAL_GIFT_WRAP_KIND);
+    expect(correlationStore.getRequestEvent('evt-a3')).toBe(requestEvent);
   });
 });

@@ -287,6 +287,7 @@ export class OutboundResponseRouter {
         route.originalRequestId,
         route.progressToken,
         route.wrapKind,
+        route.requestEvent,
       );
       throw error;
     }
