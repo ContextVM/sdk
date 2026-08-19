@@ -18,11 +18,9 @@ import {
   injectClientPubkey,
   injectRequestEventId,
 } from '../../core/utils/utils.js';
-import { learnPeerCapabilities } from '../capability-negotiator.js';
+import { learnPeerCapabilities, mirrorRequestWrapKind } from '../capability-negotiator.js';
 import {
   CTXVM_MESSAGES_KIND,
-  EPHEMERAL_GIFT_WRAP_KIND,
-  GIFT_WRAP_KIND,
   INITIALIZE_METHOD,
   NOTIFICATIONS_INITIALIZED_METHOD,
 } from '../../core/index.js';
@@ -135,13 +133,11 @@ export class ServerInboundCoordinator {
               tags,
               isEncrypted,
               undefined,
-              isEncrypted
-                ? this.deps.giftWrapMode === GiftWrapMode.EPHEMERAL
-                  ? EPHEMERAL_GIFT_WRAP_KIND
-                  : this.deps.giftWrapMode === GiftWrapMode.PERSISTENT
-                    ? GIFT_WRAP_KIND
-                    : wrapKind
-                : undefined,
+              mirrorRequestWrapKind(
+                isEncrypted,
+                this.deps.giftWrapMode,
+                wrapKind,
+              ),
             )
             .catch((err) => {
               this.deps.logger.error('Failed to send unauthorized response', {
@@ -246,13 +242,11 @@ export class ServerInboundCoordinator {
                   tags,
                   isEncrypted,
                   undefined,
-                  isEncrypted
-                    ? this.deps.giftWrapMode === GiftWrapMode.EPHEMERAL
-                      ? EPHEMERAL_GIFT_WRAP_KIND
-                      : this.deps.giftWrapMode === GiftWrapMode.PERSISTENT
-                        ? GIFT_WRAP_KIND
-                        : wrapKind
-                    : undefined,
+                  mirrorRequestWrapKind(
+                    isEncrypted,
+                    this.deps.giftWrapMode,
+                    wrapKind,
+                  ),
                 )
                 .catch((err) => {
                   this.deps.logger.error(

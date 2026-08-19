@@ -1,7 +1,14 @@
 import { describe, expect, test } from 'bun:test';
-import { ClientCapabilityNegotiator } from './capability-negotiator.js';
+import {
+  ClientCapabilityNegotiator,
+  mirrorRequestWrapKind,
+} from './capability-negotiator.js';
 
 import { EncryptionMode, GiftWrapMode } from '../core/interfaces.js';
+import {
+  EPHEMERAL_GIFT_WRAP_KIND,
+  GIFT_WRAP_KIND,
+} from '../core/constants.js';
 
 describe('ClientCapabilityNegotiator', () => {
   test('should not consume payment_interaction tag during measurement calls', () => {
@@ -127,5 +134,38 @@ describe('ClientCapabilityNegotiator', () => {
         (t) => t[0] === 'payment_interaction' && t[1] === 'transparent',
       ),
     ).toBe(true);
+  });
+});
+
+describe('mirrorRequestWrapKind', () => {
+  test('returns undefined for unencrypted replies regardless of policy', () => {
+    expect(
+      mirrorRequestWrapKind(false, GiftWrapMode.OPTIONAL, GIFT_WRAP_KIND),
+    ).toBeUndefined();
+    expect(
+      mirrorRequestWrapKind(false, GiftWrapMode.EPHEMERAL, GIFT_WRAP_KIND),
+    ).toBeUndefined();
+  });
+
+  test('pins the wrap kind under EPHEMERAL and PERSISTENT policies', () => {
+    expect(
+      mirrorRequestWrapKind(true, GiftWrapMode.EPHEMERAL, GIFT_WRAP_KIND),
+    ).toBe(EPHEMERAL_GIFT_WRAP_KIND);
+    expect(
+      mirrorRequestWrapKind(true, GiftWrapMode.PERSISTENT, EPHEMERAL_GIFT_WRAP_KIND),
+    ).toBe(GIFT_WRAP_KIND);
+  });
+
+  test('mirrors the request wrap kind under OPTIONAL policy', () => {
+    expect(
+      mirrorRequestWrapKind(
+        true,
+        GiftWrapMode.OPTIONAL,
+        EPHEMERAL_GIFT_WRAP_KIND,
+      ),
+    ).toBe(EPHEMERAL_GIFT_WRAP_KIND);
+    expect(
+      mirrorRequestWrapKind(true, GiftWrapMode.OPTIONAL, undefined),
+    ).toBeUndefined();
   });
 });
