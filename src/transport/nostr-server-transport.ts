@@ -755,12 +755,15 @@ export class NostrServerTransport
    * Sends a notification to a specific client by their public key.
    * @param clientPubkey The public key of the target client.
    * @param notification The notification message to send.
+   * @param correlatedEventId Optional request event ID to correlate the reply with; when present, the wrap kind mirrors the one recorded for that request.
+   * @param wrapKindHint Optional explicit wrap-kind fallback, used when no correlated route exists yet (e.g. CEP-22 accept frames, sent before the reassembled request registers a route).
    * @returns Promise that resolves when the notification is sent.
    */
   public async sendNotification(
     clientPubkey: string,
     notification: JSONRPCMessage,
     correlatedEventId?: string,
+    wrapKindHint?: number,
   ): Promise<void> {
     if (this.openStreamFactory.isClientEvicted(clientPubkey)) {
       throw new Error(`No active session found for client: ${clientPubkey}`);
@@ -783,6 +786,13 @@ export class NostrServerTransport
 
     const giftWrapKind = this.capabilityNegotiator.chooseOutboundGiftWrapKind({
       session,
+      // Mirror the request's wrap kind: an explicit hint wins (accept frames
+      // have no route yet); otherwise consult the correlated request's route.
+      fallbackWrapKind:
+        wrapKindHint ??
+        (correlatedEventId
+          ? this.correlationStore.getEventRoute(correlatedEventId)?.wrapKind
+          : undefined),
     });
 
     await this.sendMcpMessage(

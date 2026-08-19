@@ -56,6 +56,40 @@ describe('oversized server handler', () => {
     });
   });
 
+  test('mirrors the oversized request wrap kind onto the accept frame', async () => {
+    const calls: Array<{
+      clientPubkey: string;
+      correlatedEventId?: string;
+      wrapKindHint?: number;
+    }> = [];
+
+    await sendAcceptFrame(
+      {
+        clientPubkey: 'c'.repeat(64),
+        progressToken: 'accept-token',
+        wrapKind: 21059,
+      },
+      {
+        sendNotification: async (
+          clientPubkey: string,
+          _notification: JSONRPCMessage,
+          correlatedEventId?: string,
+          wrapKindHint?: number,
+        ): Promise<void> => {
+          calls.push({ clientPubkey, correlatedEventId, wrapKindHint });
+        },
+      },
+    );
+
+    expect(calls).toEqual([
+      {
+        clientPubkey: 'c'.repeat(64),
+        correlatedEventId: undefined,
+        wrapKindHint: 21059,
+      },
+    ]);
+  });
+
   test('publishes start, chunk, and end frames using the correct tag sets', async () => {
     const publishedFrames: Array<{
       frameType: string;

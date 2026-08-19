@@ -103,15 +103,6 @@ export function withTimeout<T>(
 }
 
 /**
- * Validates a string as a 64-character hex string.
- * @param value - The string to validate
- * @returns Whether the string is a valid hex string
- */
-export function isHex64(value: string | undefined): value is string {
-  return typeof value === 'string' && /^[0-9a-f]{64}$/i.test(value);
-}
-
-/**
  * Transforms Date.now() to seconds.
  * @returns The current time in seconds
  */

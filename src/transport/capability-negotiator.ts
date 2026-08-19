@@ -106,6 +106,28 @@ export function learnPeerCapabilities(
 }
 
 /**
+ * Resolves the wrap kind for a direct reply by mirroring the request's wrap.
+ *
+ * Unlike the capability-aware ladders in the negotiator classes, this is a
+ * pure mirror: server policy pins (EPHEMERAL/PERSISTENT) win, otherwise the
+ * kind the request arrived in is echoed. Used on pre-session early-rejection
+ * paths (unauthorized, unsupported payment_interaction) where no session
+ * capability state exists yet.
+ */
+export function mirrorRequestWrapKind(
+  isEncrypted: boolean,
+  giftWrapMode: GiftWrapMode,
+  wrapKind?: number,
+): number | undefined {
+  if (!isEncrypted) return undefined;
+  if (giftWrapMode === GiftWrapMode.EPHEMERAL) {
+    return EPHEMERAL_GIFT_WRAP_KIND;
+  }
+  if (giftWrapMode === GiftWrapMode.PERSISTENT) return GIFT_WRAP_KIND;
+  return wrapKind;
+}
+
+/**
  * Manages capability discovery and negotiation for the server transport.
  */
 export class ServerCapabilityNegotiator {

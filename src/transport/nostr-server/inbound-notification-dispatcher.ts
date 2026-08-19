@@ -34,6 +34,8 @@ export interface InboundNotificationDispatcherDeps {
   sendNotification: (
     clientPubkey: string,
     notification: JSONRPCMessage,
+    correlatedEventId?: string,
+    wrapKindHint?: number,
   ) => Promise<void>;
   handleIncomingRequest: (
     event: NostrEvent,
@@ -206,6 +208,9 @@ export class InboundNotificationDispatcher {
                   progressToken: String(
                     inboundMessage.params?.progressToken ?? '',
                   ),
+                  // Mirror the oversized request's wrap kind onto the accept
+                  // frame — no correlated route exists yet at start-frame time.
+                  wrapKind,
                 },
                 {
                   sendNotification: this.deps.sendNotification,
