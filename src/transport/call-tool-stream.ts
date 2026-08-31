@@ -45,6 +45,12 @@ export async function callToolStream<TResult = unknown>(
     },
   ) as Promise<TResult>;
 
+  // If stream setup fails (transport closed, probe timeout), `result` never
+  // reaches the caller. Attach a no-op catch so its eventual rejection is not
+  // an unhandled promise rejection. Handlers are additive: when setup succeeds,
+  // the caller's own handlers on `result` still fire.
+  void result.catch(() => undefined);
+
   const { progressToken, stream } = await pendingStream;
 
   return {

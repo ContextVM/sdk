@@ -31,6 +31,7 @@ export interface OversizedAcceptFrameDeps {
     clientPubkey: string,
     notification: JSONRPCMessage,
     correlatedEventId?: string,
+    wrapKindHint?: number,
   ) => Promise<void>;
 }
 
@@ -107,6 +108,8 @@ export async function sendOversizedServerResponse(
 export interface SendAcceptFrameOptions {
   clientPubkey: string;
   progressToken: string;
+  /** Wrap kind of the inbound oversized request, mirrored onto the accept frame. */
+  wrapKind?: number;
 }
 
 /**
@@ -133,5 +136,10 @@ export async function sendAcceptFrame(
     params: acceptParams,
   };
 
-  await deps.sendNotification(options.clientPubkey, notification);
+  await deps.sendNotification(
+    options.clientPubkey,
+    notification,
+    undefined,
+    options.wrapKind,
+  );
 }

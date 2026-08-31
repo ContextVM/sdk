@@ -29,7 +29,7 @@ export class LruCache<T> {
       this.cache.delete(key);
     } else if (this.cache.size >= this.capacity) {
       const firstKey = this.cache.keys().next().value;
-      if (firstKey) {
+      if (firstKey !== undefined) {
         const evictedValue = this.cache.get(firstKey);
         this.cache.delete(firstKey);
         if (evictedValue !== undefined && this.onEvict) {

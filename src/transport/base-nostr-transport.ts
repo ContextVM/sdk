@@ -483,6 +483,19 @@ export abstract class BaseNostrTransport {
       if (shouldEncrypt) {
         // Optional transports may decide gift wrap kind upstream.
         // Default remains persistent kind (1059) for backwards compatibility.
+        if (
+          giftWrapKind === undefined &&
+          this.giftWrapMode === GiftWrapMode.OPTIONAL
+        ) {
+          // Drift tripwire: every OPTIONAL-mode send path should pass a
+          // wrap-kind hint (or accept the session/route-based default
+          // deliberately). An unexpected miss here silently persists an
+          // ephemeral exchange — grep for this message in debug logs.
+          this.logger.debug(
+            'Encrypted send without wrap-kind hint in OPTIONAL mode; defaulting to persistent gift wrap',
+            { kind, recipient: recipientPublicKey },
+          );
+        }
         const encryptedEvent = this.buildPublishedEventFromSignedEvent(
           event,
           recipientPublicKey,
