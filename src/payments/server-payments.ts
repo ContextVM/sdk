@@ -23,6 +23,7 @@ import {
   buildProcessorsByPmi,
   matchPricedCapability,
   resolveAndInitiatePayment,
+  resolvePaymentProcessor,
 } from './server-payments-utils.js';
 
 export interface ServerPaymentsOptions {
@@ -45,7 +46,12 @@ export interface ServerPaymentsOptions {
   /**
    * Maximum number of concurrent pending-payment request ids to track.
    *
-   * This is a DoS/memory-safety guardrail.
+   * This is a DoS/memory-safety guardrail. Once reached, new priced requests
+   * are refused (best-effort `payment_rejected`, no invoice minted) rather than
+   * evicting a live entry — an evicted live payment loses its dedup and a
+   * redelivery would mint a second invoice (CEP-8: MUST NOT charge twice).
+   * `0` refuses all priced requests.
+   *
    * @default 1000
    */
   maxPendingPayments?: number;
@@ -80,6 +86,12 @@ type PendingPaymentState = {
   expiresAtMs: number;
   inFlight: Promise<void>;
 };
+
+/**
+ * Extra lifetime granted to a transport route snapshot beyond the payment TTL,
+ * so a settled response can still be routed after a slow handler finishes.
+ */
+const ROUTE_SNAPSHOT_GRACE_MS = 60_000;
 
 function createPaymentRequiredNotification(params: {
   amount: number;
@@ -128,6 +140,16 @@ export function createServerPaymentsMiddleware(params: {
   options: ServerPaymentsOptions;
   /** Pre-built PMI → processor map. Built locally when omitted (standalone use). */
   processorsByPmi?: Map<string, PaymentProcessor>;
+  /**
+   * Fired once an invoice has been issued for a request, before verification
+   * begins. Lets the transport snapshot the correlation route/session a paid
+   * response may need after its route is popped (duplicate-delivery cleanup)
+   * or its idle session is LRU-evicted mid-payment (CEP-8).
+   */
+  onInvoiceIssued?: (params: {
+    requestEventId: string;
+    snapshotTtlMs: number;
+  }) => void;
 }): ServerMiddlewareFn {
   const { sender, options } = params;
   const logger = createLogger('server-payments');
@@ -135,8 +157,9 @@ export function createServerPaymentsMiddleware(params: {
     params.processorsByPmi ?? buildProcessorsByPmi(options.processors, logger);
 
   const paymentTtlMs = options.paymentTtlMs ?? DEFAULT_PAYMENT_TTL_MS;
+  const maxPendingPayments = options.maxPendingPayments ?? 1000;
   const pending = new LruCache<PendingPaymentState>(
-    options.maxPendingPayments ?? 1000,
+    Math.max(1, maxPendingPayments),
   );
 
   return async (message, ctx, forward) => {
@@ -184,7 +207,50 @@ export function createServerPaymentsMiddleware(params: {
       return;
     }
 
+    // Capacity guard, before any invoice is minted: silently evicting a live
+    // entry here would disarm its dedup, and a redelivery of the evicted
+    // request would be charged twice (CEP-8: MUST NOT charge twice).
+    if (pending.size >= maxPendingPayments) {
+      purgeExpiredPending({
+        pending,
+        nowMs: now,
+        maxToCheck: Number.POSITIVE_INFINITY,
+      });
+    }
+    if (pending.size >= maxPendingPayments) {
+      logger.warn('pending payment capacity reached, refusing priced request', {
+        requestEventId,
+        method: message.method,
+        maxPendingPayments,
+      });
+      // Refuse without charging: best-effort payment_rejected so the client
+      // stops waiting instead of hanging until its own TTL.
+      try {
+        const processor = resolvePaymentProcessor(
+          ctx.clientPmis,
+          processorsByPmi,
+          options.processors,
+        );
+        await sender.sendNotification(
+          ctx.clientPubkey,
+          createPaymentRejectedNotification({
+            pmi: processor.pmi,
+            amount: priced.amount,
+            message: 'payment capacity reached, retry later',
+          }),
+          requestEventId,
+        );
+      } catch (err) {
+        logger.warn('failed to send payment capacity rejection', {
+          requestEventId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      return;
+    }
+
     // IMPORTANT: set pending state synchronously before any await to make idempotency atomic.
+    let invoiceIssued = false;
     const inFlight = (async (): Promise<void> => {
       const initResult = await resolveAndInitiatePayment({
         message,
@@ -231,6 +297,15 @@ export function createServerPaymentsMiddleware(params: {
 
       const { paymentRequired, mergedMeta, processor, verifyTimeoutMs } =
         initResult;
+
+      // An invoice now exists on the payment rail — from here on, every
+      // outcome keeps the pending entry until TTL: the client's money may
+      // already be gone, and a redelivery MUST NOT mint a second invoice.
+      invoiceIssued = true;
+      params.onInvoiceIssued?.({
+        requestEventId,
+        snapshotTtlMs: paymentTtlMs + ROUTE_SNAPSHOT_GRACE_MS,
+      });
 
       const requiredNotification = createPaymentRequiredNotification({
         amount: paymentRequired.amount,
@@ -287,11 +362,23 @@ export function createServerPaymentsMiddleware(params: {
         _meta: verified._meta,
       });
 
-      await sender.sendNotification(
-        ctx.clientPubkey,
-        acceptedNotification,
-        requestEventId,
-      );
+      // payment_accepted is a SHOULD (CEP-8); the capability result is the
+      // point. A publish failure here (relay error, or the idle paying
+      // client's session LRU-evicted mid-payment) MUST NOT abort the forward —
+      // that would be paid-but-undelivered. Do not turn this back into an
+      // early return.
+      try {
+        await sender.sendNotification(
+          ctx.clientPubkey,
+          acceptedNotification,
+          requestEventId,
+        );
+      } catch (err) {
+        logger.warn('failed to publish payment_accepted, forwarding anyway', {
+          requestEventId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
 
       logger.debug('forwarding priced request after payment', {
         requestEventId,
@@ -313,8 +400,13 @@ export function createServerPaymentsMiddleware(params: {
       // This guards against relay redelivery triggering a second charge.
       // purgeExpiredPending handles eventual cleanup.
     } catch (err) {
-      // On failure, remove immediately so the client can retry.
-      pending.delete(requestEventId);
+      // Pre-invoice failures never billed anyone — delete so the retry is free.
+      // Post-invoice failures keep the entry until TTL for the same reason as
+      // success: the client may already have paid, and a redelivery of the
+      // same request event MUST NOT mint a second invoice (CEP-8).
+      if (!invoiceIssued) {
+        pending.delete(requestEventId);
+      }
       throw err;
     }
   };

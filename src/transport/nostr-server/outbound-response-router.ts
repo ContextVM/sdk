@@ -112,7 +112,21 @@ export class OutboundResponseRouter {
       return;
     }
 
-    const route = this.deps.correlationStore.popEventRoute(nostrEventId);
+    const poppedRoute = this.deps.correlationStore.popEventRoute(nostrEventId);
+    if (poppedRoute) {
+      // The live route was used: drop any snapshot so a later duplicate
+      // response for this id cannot be delivered from it.
+      this.deps.correlationStore.dropRouteSnapshot(nostrEventId);
+    }
+    // Route miss fallback: a paid request's route may have been popped by
+    // duplicate-delivery cleanup or removed with its evicted session while
+    // payment settled. The snapshot captured at invoice issuance (CEP-8)
+    // carries the routing fields — and the session — needed to deliver the
+    // settled result anyway.
+    const snapshot = poppedRoute
+      ? undefined
+      : this.deps.correlationStore.takeRouteSnapshot(nostrEventId);
+    const route = poppedRoute ?? snapshot?.route;
 
     if (!route) {
       this.deps.onerror?.(
@@ -121,10 +135,18 @@ export class OutboundResponseRouter {
       return;
     }
 
+    if (snapshot) {
+      this.deps.logger.info('Delivering response from payment route snapshot', {
+        eventId: nostrEventId,
+        clientPubkey: route.clientPubkey,
+      });
+    }
+
     const pendingEviction =
       this.deps.openStreamFactory.takePendingEviction(nostrEventId);
     const session =
       this.deps.sessionStore.getSession(route.clientPubkey) ??
+      snapshot?.session ??
       pendingEviction?.session;
 
     if (!session) {

@@ -56,6 +56,10 @@ export function withServerPayments(
       sender: transport,
       options,
       processorsByPmi,
+      // Snapshot the correlation route when an invoice goes out so the paid
+      // response survives route-pop (duplicate cleanup) and session eviction.
+      onInvoiceIssued: ({ requestEventId, snapshotTtlMs }) =>
+        transport.capturePaymentRouteSnapshot(requestEventId, snapshotTtlMs),
     }),
   );
 

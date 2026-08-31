@@ -1,0 +1,10 @@
+---
+'@contextvm/sdk': patch
+---
+
+Transparent payment robustness (CEP-8): prevent double charges and lost paid results.
+
+- **No double charge on redelivery:** the pending-payment entry is now retained until TTL once an invoice has been issued, instead of being deleted on every failure. Previously a `verifyPayment` timeout (or any post-invoice failure) disarmed the dedup, so a spec-blessed client retry of the same request event minted a second invoice that the client auto-paid — violating CEP-8's "MUST NOT charge more than once for the same transparent request event". Pre-invoice failures still delete the entry so retries are free.
+- **No paid-but-undelivered:** a failed `payment_accepted` publish (relay error, or the idle paying client's session LRU-evicted mid-payment) no longer aborts the forward. The acceptance notification is a SHOULD; the capability result is the point.
+- **Pending capacity fails closed:** at `maxPendingPayments` capacity the middleware purges expired entries and then refuses new priced requests (best-effort `payment_rejected`, no invoice minted) instead of silently evicting a live payment's dedup entry. `maxPendingPayments: 0` now refuses all priced requests.
+- **Route survival for paid requests:** the correlation route (and session) is snapshotted when an invoice is issued; the response router falls back to that snapshot on route miss, so paid results still reach the client after duplicate-delivery cleanup popped the route or the paying client's session was evicted. The dead "recreate session if active routes" guard in the eviction handler was removed (snapshots make it unnecessary, and re-inserting into the session LRU from inside its own eviction callback would corrupt capacity accounting).
