@@ -679,7 +679,9 @@ describe('ApplesauceRelayPool Integration', () => {
       relayPool.unsubscribe();
       await relayPool.disconnect();
     },
-    DEFAULT_TIMEOUT_MS,
+    // Recovery is normally fast; the generous budget keeps shared CI runners
+    // (concurrent test files starving the reconnect loop) from flaking this.
+    60_000,
   );
 
   test.serial(
