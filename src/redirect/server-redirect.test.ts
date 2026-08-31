@@ -11,6 +11,7 @@ import type { ServerRedirectConfig } from './types.js';
 describe('createRedirectMiddleware', () => {
   const dummyCtx = {
     clientPubkey: 'a'.repeat(64),
+    requestEventId: 'evt-1',
   };
 
   test('emits -32044 and halts when resolveRedirect returns a target', async () => {
@@ -28,9 +29,8 @@ describe('createRedirectMiddleware', () => {
 
     const middleware = createRedirectMiddleware({
       config,
-      // TODO: Assert `requestEventId` is correctly passed in the 3rd argument
-      sendResponse: async (clientPubkey, res) => {
-        sentResponse = { clientPubkey, res };
+      sendResponse: async (clientPubkey, res, requestEventId) => {
+        sentResponse = { clientPubkey, res, requestEventId };
       },
     });
 
@@ -48,6 +48,7 @@ describe('createRedirectMiddleware', () => {
     expect(forwarded).toBe(false);
     expect(sentResponse).toEqual({
       clientPubkey: dummyCtx.clientPubkey,
+      requestEventId: 'evt-1',
       res: {
         jsonrpc: '2.0',
         id: 'req-1',

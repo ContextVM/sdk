@@ -64,7 +64,7 @@ describe.serial('Redirect and Payments Composition', () => {
     await sleep(100);
   });
 
-  test('redirect short-circuits payment gating on initial server, and payment succeeds on target server', async () => {
+  test('redirect short-circuits payment gating on initial server, and target payment gating is surfaced to the client', async () => {
     // 1. Target Server — prices `echo` at 1 'test' currency via `withServerPayments`.
     const targetSK = generateSecretKey();
     const targetServer = new McpServer({
