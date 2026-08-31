@@ -45,6 +45,7 @@ type ConnectionInstance = {
   cleanup: () => void;
   cleanupWithoutClosingSocket: () => void;
   closeSocket: (code: number, reason: string) => void;
+  terminateSocket: () => void;
   handle: (message: string) => void;
   send: (message: NostrRelayMessage) => void;
 };
@@ -99,6 +100,19 @@ export function startMockRelay(
         this.socket.close(code, reason);
       } catch {
         // ignore
+      }
+    }
+
+    terminateSocket(): void {
+      // Simulate the relay process dying: hard reset with no close frame, so
+      // clients observe an abnormal closure (1006 / wasClean=false) — the
+      // signal reconnect logic keys on. A frame-based close(1011) reads as
+      // wasClean=true on bun >= 1.4.0, which stopped clients from
+      // reconnecting after a simulated relay outage.
+      try {
+        this.socket.terminate();
+      } catch {
+        this.closeSocket(1011, 'Relay paused');
       }
     }
 
@@ -298,9 +312,13 @@ export function startMockRelay(
     relayUrl: `ws://127.0.0.1:${port}`,
     httpUrl: `http://127.0.0.1:${port}`,
     stop: () => {
-      // Close any existing WebSocket connections before stopping the server.
+      // Drop connections *uncleanly* (hard reset) before stopping the server:
+      // tests use stop()+restart-on-same-port to simulate outages/partitions,
+      // and clients only reconnect on abnormal closures. A graceful 1001 reads
+      // as a clean close on bun >= 1.4.0 (no remap), which stopped pools from
+      // reconnecting after recovery.
       for (const instance of state.connections.values()) {
-        instance.closeSocket(1001, 'Relay stopping');
+        instance.terminateSocket();
         instance.cleanupWithoutClosingSocket();
       }
       state.connections.clear();
@@ -310,8 +328,9 @@ export function startMockRelay(
     pause: () => {
       runtime.acceptingWs = false;
       for (const instance of state.connections.values()) {
-        // Close *uncleanly* so clients reconnect (applesauce-relay only retries on !wasClean).
-        instance.closeSocket(1011, 'Relay paused');
+        // Drop *uncleanly* so clients reconnect (applesauce-relay only retries
+        // on !wasClean).
+        instance.terminateSocket();
         instance.cleanupWithoutClosingSocket();
       }
       state.connections.clear();
