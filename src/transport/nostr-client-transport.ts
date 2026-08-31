@@ -138,7 +138,7 @@ export class NostrClientTransport
   public onerror?: (error: Error) => void;
 
   /** The server's public key for message targeting */
-  private readonly serverPubkey: string;
+  public readonly serverPubkey: string;
   /** Manages request/response correlation for pending requests */
   private readonly correlationStore: ClientCorrelationStore;
   /** Handles stateless mode emulation for public servers */

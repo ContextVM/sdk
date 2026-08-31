@@ -9,6 +9,10 @@ import {
 } from '../transport/nostr-server-transport.js';
 import { withServerPayments } from '../payments/index.js';
 import type { ServerPaymentsOptions } from '../payments/server-payments.js';
+import {
+  withServerRedirect,
+  type ServerRedirectConfig,
+} from '../redirect/index.js';
 import { NOTIFICATIONS_INITIALIZED_METHOD } from '../core/index.js';
 import { createLogger } from '../core/utils/logger.js';
 import { LruCache } from '../core/utils/lru-cache.js';
@@ -80,6 +84,12 @@ export interface NostrMCPGatewayOptions {
    * receive an invoice notification.
    */
   paymentOptions?: ServerPaymentsOptions;
+
+  /**
+   * CEP-47 server redirect configuration.
+   * When provided, evaluates inbound requests and redirects clients before payment gating.
+   */
+  redirectConfig?: ServerRedirectConfig;
 }
 
 /**
@@ -130,13 +140,20 @@ export class NostrMCPGateway {
         this.closeClientTransport(clientPubkey),
     });
 
+    // Wrap with `withServerRedirect` first so redirected requests halt before payment gating.
+    let transport = nostrServerTransport;
+    if (options.redirectConfig) {
+      transport = withServerRedirect(transport, options.redirectConfig);
+    }
+
     // Wrap with `withServerPayments` so CEP-8 gating, PMI/cap advertisement and
     // payment_interaction negotiation are attached when a processor + priced
     // capabilities are provided. Mirrors the client-side `withClientPayments`
     // wiring in NostrMCPProxy. No-op when paymentOptions is omitted.
-    this.nostrServerTransport = options.paymentOptions
-      ? withServerPayments(nostrServerTransport, options.paymentOptions)
-      : nostrServerTransport;
+    if (options.paymentOptions) {
+      transport = withServerPayments(transport, options.paymentOptions);
+    }
+    this.nostrServerTransport = transport;
 
     if (this.createMcpClientTransport) {
       this.clientTransportPromises = new Map();

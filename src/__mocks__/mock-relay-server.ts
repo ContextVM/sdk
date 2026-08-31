@@ -44,7 +44,8 @@ export type MockRelayInstance = {
 type ConnectionInstance = {
   cleanup: () => void;
   cleanupWithoutClosingSocket: () => void;
-  closeSocket: (code: number, reason: string) => void;
+  /** Terminates the socket without a close handshake (see {@link Instance.killSocket}). */
+  killSocket: () => void;
   handle: (message: string) => void;
   send: (message: NostrRelayMessage) => void;
 };
@@ -94,9 +95,19 @@ export function startMockRelay(
       this.connectionId = Math.random().toString(36).substring(2, 15);
     }
 
-    closeSocket(code: number, reason: string): void {
+    /**
+     * Simulates abrupt relay death by terminating the socket without a close
+     * handshake, so clients observe CloseEvent 1006 / wasClean=false — the
+     * signal reconnect heuristics (applesauce-relay) key on.
+     *
+     * A graceful close() reads as wasClean=true since bun 1.4.0 (#31518 fixed
+     * CloseEvent semantics), which silently disabled reconnect in outage
+     * simulations. Verified: terminate() reports 1006/wasClean=false on both
+     * bun 1.3.x and 1.4.x.
+     */
+    killSocket(): void {
       try {
-        this.socket.close(code, reason);
+        this.socket.terminate();
       } catch {
         // ignore
       }
@@ -104,8 +115,8 @@ export function startMockRelay(
 
     cleanup(): void {
       // Used by stop()/pause() to actively take the relay offline.
-      // Close the socket first, then drop all subscriptions.
-      this.closeSocket(1011, 'Relay offline');
+      // Kill the socket first, then drop all subscriptions.
+      this.killSocket();
       this.cleanupWithoutClosingSocket();
     }
 
@@ -200,7 +211,8 @@ export function startMockRelay(
       this.send(['OK', event.id, true, '']);
 
       for (const [uniqueSubId, { instance, filters }] of state.subs.entries()) {
-        if (matchFilters(filters, event)) {
+        const isMatch = matchFilters(filters, event);
+        if (isMatch) {
           const originalSubId = uniqueSubId.includes(':')
             ? uniqueSubId.split(':').slice(1).join(':')
             : uniqueSubId;
@@ -298,9 +310,9 @@ export function startMockRelay(
     relayUrl: `ws://127.0.0.1:${port}`,
     httpUrl: `http://127.0.0.1:${port}`,
     stop: () => {
-      // Close any existing WebSocket connections before stopping the server.
+      // Terminate any existing WebSocket connections before stopping the server.
       for (const instance of state.connections.values()) {
-        instance.closeSocket(1001, 'Relay stopping');
+        instance.killSocket();
         instance.cleanupWithoutClosingSocket();
       }
       state.connections.clear();
@@ -310,8 +322,9 @@ export function startMockRelay(
     pause: () => {
       runtime.acceptingWs = false;
       for (const instance of state.connections.values()) {
-        // Close *uncleanly* so clients reconnect (applesauce-relay only retries on !wasClean).
-        instance.closeSocket(1011, 'Relay paused');
+        // Terminate *uncleanly* so clients reconnect (applesauce-relay only
+        // retries on wasClean=false; see Instance.killSocket).
+        instance.killSocket();
         instance.cleanupWithoutClosingSocket();
       }
       state.connections.clear();

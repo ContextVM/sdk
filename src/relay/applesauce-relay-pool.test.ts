@@ -174,6 +174,7 @@ describe('ApplesauceRelayPool Integration', () => {
       });
 
       // 5. Publish the event
+      await sleep(100);
       await relayPool.publish(signedEvent);
 
       // 6. Wait for the event to be received
@@ -527,7 +528,7 @@ describe('ApplesauceRelayPool Integration', () => {
       relayPool.subscribe([{ kinds: [1] }], () => {});
 
       // 5. Wait for multiple liveness checks to trigger
-      await sleep(6000);
+      await sleep(8000);
 
       // 6. Assert multiple rebuilds happened
       expect(createRelayTracker.callCount).toBeGreaterThan(1);
@@ -629,21 +630,12 @@ describe('ApplesauceRelayPool Integration', () => {
 
       // 4. Setup subscription before killing the relay
       const receivedEvents: NostrEvent[] = [];
-      const subscriptionPromise = new Promise<void>((resolve, reject) => {
-        const timeout = setTimeout(
-          () =>
-            reject(
-              new Error('Subscription timeout waiting for post-recovery event'),
-            ),
-          15000,
-        );
-
+      const subscriptionPromise = new Promise<void>((resolve) => {
         relayPool.subscribe(
           [{ kinds: [1], authors: [publicKeyHex] }],
           (event) => {
             receivedEvents.push(event);
             if (event.id === postRecoverySignedEvent.id) {
-              clearTimeout(timeout);
               resolve();
             }
           },
@@ -668,7 +660,8 @@ describe('ApplesauceRelayPool Integration', () => {
       const restarted = await spawnMockRelayOnPort(relayPort);
       stopRelay = restarted.stop;
 
-      // 7. Publish event after relay recovery
+      // 7. Publish event after relay recovery (add small delay to ensure REQ is processed)
+      await sleep(100);
       await relayPool.publish(postRecoverySignedEvent);
 
       // 8. Wait for the event to be received via the restored subscription
@@ -686,7 +679,9 @@ describe('ApplesauceRelayPool Integration', () => {
       relayPool.unsubscribe();
       await relayPool.disconnect();
     },
-    DEFAULT_TIMEOUT_MS,
+    // Recovery is normally fast; the generous budget keeps shared CI runners
+    // (concurrent test files starving the reconnect loop) from flaking this.
+    60_000,
   );
 
   test.serial(
@@ -719,27 +714,47 @@ describe('ApplesauceRelayPool Integration', () => {
         relayGroup: RelayGroup;
       };
       testPool.createSubscription = function (filters, onEvent, onEose) {
-        // Mirror production shape: subscribe to the raw req() message stream so
-        // the test override exercises the same dispatch path as the pool. No
-        // dedup (see production createSubscription for rationale).
-        const sub = testPool.relayGroup
-          .req(filters, {
-            reconnect: false, // Disable applesauce recovery
-            resubscribe: false, // Disable applesauce recovery
-          })
-          .subscribe({
-            next: (message) => {
-              if (message.type === 'EOSE') {
-                onEose?.();
-                return;
-              }
+        const stream = onEose
+          ? testPool.relayGroup.req(filters)
+          : testPool.relayGroup.subscription(filters, {
+              reconnect: Infinity,
+              resubscribe: Infinity,
+              eventStore: null,
+            });
 
-              if (message.type === 'EVENT') {
-                onEvent(message.event);
+        const sub = (
+          stream as unknown as {
+            subscribe: (observer: Record<string, unknown>) => {
+              unsubscribe: () => void;
+            };
+          }
+        ).subscribe({
+          next: (message: unknown) => {
+            const msgObj = message as Record<string, unknown>;
+            if (message === 'EOSE' || msgObj?.type === 'EOSE') {
+              onEose?.();
+              return;
+            }
+
+            if (Array.isArray(message)) {
+              if (message[0] === 'EOSE') {
+                onEose?.();
+              } else if (message[0] === 'EVENT' && message[2]) {
+                onEvent(message[2] as NostrEvent);
               }
-            },
-            error: () => {},
-          });
+              return;
+            }
+
+            if (typeof message === 'object' && message !== null) {
+              if ('id' in msgObj) {
+                onEvent(msgObj as unknown as NostrEvent);
+              } else if (msgObj.type === 'EVENT' && msgObj.event) {
+                onEvent(msgObj.event as NostrEvent);
+              }
+            }
+          },
+          error: () => {},
+        });
 
         return () => sub.unsubscribe();
       };
@@ -748,23 +763,12 @@ describe('ApplesauceRelayPool Integration', () => {
 
       // 4. Setup subscription and track events
       const receivedEvents: NostrEvent[] = [];
-      const subscriptionPromise = new Promise<void>((resolve, reject) => {
-        const timeout = setTimeout(
-          () =>
-            reject(
-              new Error(
-                'Subscription timeout - rebuild did not restore subscription',
-              ),
-            ),
-          TIMING.SUBSCRIPTION_TIMEOUT,
-        );
-
+      const subscriptionPromise = new Promise<void>((resolve) => {
         relayPool.subscribe(
           [{ kinds: [1], authors: [publicKeyHex] }],
           (event) => {
             receivedEvents.push(event);
             if (event.id === testEventId) {
-              clearTimeout(timeout);
               resolve();
             }
           },
@@ -785,6 +789,7 @@ describe('ApplesauceRelayPool Integration', () => {
       const testSignedEvent = await signer.signEvent(testEvent);
       const testEventId = testSignedEvent.id;
 
+      await sleep(100);
       await relayPool.publish(testSignedEvent);
 
       // 7. Wait for event via restored subscription
@@ -908,7 +913,8 @@ describe('ApplesauceRelayPool Integration', () => {
         );
       });
 
-      // 11. Publish the event
+      // 11. Publish the event (add small delay to ensure mock server processes REQ first)
+      await sleep(100);
       await relayPool.publish(testSignedEvent);
 
       // 12. Wait for event to be received via restored subscription

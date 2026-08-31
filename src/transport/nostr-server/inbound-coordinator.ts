@@ -276,6 +276,7 @@ export class ServerInboundCoordinator {
         clientPmis: clientPmis.length > 0 ? clientPmis : undefined,
         paymentInteraction:
           session.effectivePaymentInteraction ?? 'transparent',
+        requestEventId: event.id,
       };
       const middlewares = this.deps.inboundMiddlewares;
 

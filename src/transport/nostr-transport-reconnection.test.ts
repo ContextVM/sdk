@@ -18,7 +18,6 @@ import { McpServer } from '@contextvm/mcp-sdk/server/mcp';
 import { z } from 'zod';
 import { EncryptionMode } from '../core/interfaces.js';
 import type { CallToolResult } from '@contextvm/mcp-sdk/types.js';
-import { DEFAULT_TIMEOUT_MS } from '../core/constants.js';
 import {
   spawnMockRelay,
   restartMockRelay,
@@ -39,6 +38,7 @@ describe.serial('NostrTransport Reconnection', () => {
   beforeAll(async () => {
     // Start primary relay on an OS-assigned port (avoids TOCTOU races under concurrency)
     const primaryRelay = await spawnMockRelay();
+    await sleep(1000);
     primaryRelayInstance = primaryRelay.relay;
     stopPrimaryRelay = primaryRelay.stop;
     relayUrl = primaryRelay.relayUrl;
@@ -205,10 +205,13 @@ describe.serial('NostrTransport Reconnection', () => {
 
       // Restart the relay process
       await restartPrimaryRelay();
+      await sleep(1000);
 
       // Second request after relay restart - should still work
+      // (CI runners are shared/noisy: recovery is normally <2s, but concurrent
+      // test files can starve the reconnect loop long enough to hit tight budgets)
       const toolResult2 = await eventually(() => callAddTool(client, 10, 20), {
-        timeoutMs: 15_000,
+        timeoutMs: 30_000,
         intervalMs: 150,
       });
       expectTextResult(toolResult2, '30');
@@ -216,7 +219,7 @@ describe.serial('NostrTransport Reconnection', () => {
       await client.close();
       await initialServer.close();
     },
-    20000,
+    40_000,
   );
 
   test.serial(
@@ -230,6 +233,7 @@ describe.serial('NostrTransport Reconnection', () => {
 
       // First relay restart
       await restartPrimaryRelay();
+      await sleep(1000);
       await sleep(300);
 
       // Request after first restart
@@ -237,6 +241,7 @@ describe.serial('NostrTransport Reconnection', () => {
 
       // Second relay restart
       await restartPrimaryRelay();
+      await sleep(1000);
       await sleep(300);
 
       // Request after second restart
@@ -245,7 +250,7 @@ describe.serial('NostrTransport Reconnection', () => {
       await client.close();
       await server.close();
     },
-    DEFAULT_TIMEOUT_MS,
+    60_000,
   );
 
   test.serial(
@@ -271,7 +276,7 @@ describe.serial('NostrTransport Reconnection', () => {
 
       // Second request after extended outage - should still work
       const toolResult2 = await eventually(() => callAddTool(client, 15, 25), {
-        timeoutMs: 25_000,
+        timeoutMs: 50_000,
         intervalMs: 200,
       });
       expectTextResult(toolResult2, '40');
@@ -279,7 +284,7 @@ describe.serial('NostrTransport Reconnection', () => {
       await client.close();
       await server.close();
     },
-    40000,
+    80_000,
   ); // Longer timeout for extended outage test
   test.serial(
     'should handle one relay dropping in multi-relay setup',

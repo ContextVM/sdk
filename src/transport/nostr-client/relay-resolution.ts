@@ -106,6 +106,9 @@ async function connectFallbackOperationalRelays(
   const relayPool = new ApplesauceRelayPool([...fallbackOperationalRelayUrls]);
 
   try {
+    // TODO(CEP-17, CEP-47): ApplesauceRelayPool.connect() currently resolves immediately
+    // even for dead ports. We should probe via Relay.connected$/status$ with a timeout
+    // to properly evaluate reachability and avoid falsely succeeding the fallback.
     await withTimeout(
       relayPool.connect(),
       DEFAULT_TIMEOUT_MS,

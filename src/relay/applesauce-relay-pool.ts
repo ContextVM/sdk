@@ -95,6 +95,8 @@ export class ApplesauceRelayPool implements RelayHandler {
   private pingSubscription?: Subscription;
   private readonly destroy$ = new Subject<void>();
   private rebuildInFlight?: Promise<void>;
+  /** Tracks last known connection status per relay URL purely to deduplicate "Relay came online" log lines */
+  private relayStates = new Map<string, boolean>();
   private relayObservers: Subscription[] = [];
   private relays: Relay[] = [];
 
@@ -146,6 +148,16 @@ export class ApplesauceRelayPool implements RelayHandler {
         relayUrl: relay.url,
         connected,
       });
+
+      if (connected) {
+        const wasConnected = this.relayStates.get(relay.url) ?? false;
+        if (!wasConnected) {
+          logger.info('Relay came online', { relayUrl: relay.url });
+          this.relayStates.set(relay.url, true);
+        }
+      } else {
+        this.relayStates.set(relay.url, false);
+      }
     });
 
     const errorSub = relay.error$.subscribe((error) => {
@@ -243,8 +255,11 @@ export class ApplesauceRelayPool implements RelayHandler {
           if (response.ok) {
             acceptedCount += 1;
           } else if (
-            response.from === undefined ||
-            connectedRelayUrls.has(response.from)
+            response.from !== undefined &&
+            connectedRelayUrls.has(response.from) &&
+            !response.message?.includes('object unsubscribed') &&
+            !response.message?.toLowerCase().includes('timeout') &&
+            !response.message?.includes('Connection error')
           ) {
             connectedFailureCount += 1;
           }
@@ -304,7 +319,9 @@ export class ApplesauceRelayPool implements RelayHandler {
           }
         }
 
-        throw new Error('Failed to publish event');
+        throw new Error(
+          `Failed to publish event. Responses: ${JSON.stringify(responses)}`,
+        );
       } catch (error) {
         if (
           error instanceof Error &&
@@ -346,41 +363,59 @@ export class ApplesauceRelayPool implements RelayHandler {
   ): () => void {
     logger.debug('Creating subscription', { filters });
 
-    // NOTE: applesauce-relay 6.0.3 changed `RelayGroup.subscription()` to emit
-    // only deduplicated NostrEvents and no longer surfaces EOSE markers.
-    //
-    // We deliberately subscribe to the raw `RelayGroup.req()` message stream
-    // and forward EVERY event without deduplication. Dedup is intentionally NOT
-    // performed at the relay layer:
+    // Dedup is intentionally NOT performed at the relay layer:
     //   - The transport layer already deduplicates gift-wrap envelopes and
     //     decrypted inner events via its own `seenEventIds` cache, with
     //     protocol-aware semantics.
     //   - The explicit-gating payment flow republishes the SAME request event
     //     id after payment and relies on the server re-observing it. Relay-
-    //     layer dedup by event id (whether applesauce 6.0.3's `distinct()` or a
-    //     local `Set`) silently swallows that retry and deadlocks the flow.
-    const sub = this.relayGroup
-      .req(filters, { reconnect: Infinity, resubscribe: Infinity })
-      .subscribe({
-        next: (message) => {
-          if (message.type === 'EOSE') {
-            onEose?.();
-          } else if (message.type === 'EVENT') {
-            onEvent(message.event);
-          }
-          // OPEN / CLOSED / ERROR are intentionally ignored; the old
-          // `subscription()` filtered them out as well.
-        },
-        complete: () => {
-          logger.debug('Subscription complete');
-        },
-        error: (error) => {
-          logger.error('Subscription error', {
-            error,
-            relayUrls: this.relayUrls,
-          });
-        },
-      });
+    //     layer dedup by event id silently swallows that retry and deadlocks
+    //     the flow.
+    //
+    const stream = onEose
+      ? this.relayGroup.req(filters)
+      : this.relayGroup.subscription(filters, {
+          reconnect: Infinity,
+          resubscribe: Infinity,
+          eventStore: null, // intentionally disable relay-layer dedup
+        });
+
+    const sub = (stream as Observable<unknown>).subscribe({
+      next: (message: unknown) => {
+        logger.debug('Received raw message', { message });
+        if (
+          typeof message === 'object' &&
+          message !== null &&
+          'type' in message
+        ) {
+          const msg = message as { type: string; event?: NostrEvent };
+          if (msg.type === 'EOSE') onEose?.();
+          else if (msg.type === 'EVENT' && msg.event) onEvent(msg.event);
+          return;
+        }
+
+        if (Array.isArray(message)) {
+          if (message[0] === 'EOSE') onEose?.();
+          else if (message[0] === 'EVENT' && message[2])
+            onEvent(message[2] as NostrEvent);
+          return;
+        }
+
+        if (message === 'EOSE') onEose?.();
+        else if (
+          typeof message === 'object' &&
+          message !== null &&
+          'id' in message
+        )
+          onEvent(message as NostrEvent);
+      },
+      error: (error: unknown) => {
+        logger.warn('Subscription error', { filters, error });
+      },
+      complete: () => {
+        logger.debug('Subscription complete');
+      },
+    });
 
     return () => sub.unsubscribe();
   }
@@ -424,10 +459,13 @@ export class ApplesauceRelayPool implements RelayHandler {
     };
   }
 
+  private isDisconnected = false;
+
   /**
    * Disconnects from all relays and cleans up resources.
    */
   async disconnect(): Promise<void> {
+    this.isDisconnected = true;
     // Cancel in-flight publishes first: their infinite retry loop must not
     // outlive the pool (each iteration fails instantly on closed sockets and
     // would otherwise spin forever).
@@ -513,8 +551,10 @@ export class ApplesauceRelayPool implements RelayHandler {
 
   /** Starts the liveness ping monitor (called lazily on first subscribe) */
   private startPingMonitor(): void {
-    if (this.pingSubscription) {
-      logger.debug('Ping monitor already started, skipping');
+    if (this.pingSubscription || this.isDisconnected) {
+      logger.debug(
+        'Ping monitor already started or pool disconnected, skipping',
+      );
       return;
     }
 
@@ -578,6 +618,8 @@ export class ApplesauceRelayPool implements RelayHandler {
       return;
     }
 
+    const currentGeneration = this.relayGeneration;
+
     try {
       await Promise.all(
         connectedRelays.map(async (relay, index) => {
@@ -608,6 +650,14 @@ export class ApplesauceRelayPool implements RelayHandler {
         }),
       );
     } catch (error) {
+      if (this.relayGeneration !== currentGeneration) {
+        logger.debug('Ignoring liveness timeout because pool was rebuilt', {
+          generation: this.relayGeneration,
+          pingGeneration: currentGeneration,
+        });
+        return;
+      }
+
       if (error instanceof Error && error.name === 'TimeoutError') {
         logger.warn('Liveness check timed out - no response from relays', {
           pingTimeoutMs: this.pingTimeoutMs,
@@ -643,7 +693,11 @@ export class ApplesauceRelayPool implements RelayHandler {
       // Stop current subscriptions (preserve descriptors for replay)
       this.stopActiveSubscriptions();
 
-      // Create new relays and group
+      // Create new relays and group (if not disconnected during teardown)
+      if (this.isDisconnected) {
+        logger.debug('Rebuild aborted: pool disconnected');
+        return;
+      }
       this.relays = this.relayUrls.map((url) => this.createRelay(url));
       this.relayGroup = new RelayGroup(this.relays);
 
