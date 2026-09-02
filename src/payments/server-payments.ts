@@ -156,7 +156,13 @@ export function createServerPaymentsMiddleware(params: {
   const processorsByPmi =
     params.processorsByPmi ?? buildProcessorsByPmi(options.processors, logger);
 
-  const paymentTtlMs = options.paymentTtlMs ?? DEFAULT_PAYMENT_TTL_MS;
+  // Non-positive TTLs would birth-expire every pending entry (disarming the
+  // redelivery dedup while invoices stay payable); fall back to the default,
+  // mirroring getVerificationTimeoutMs's guard.
+  const paymentTtlMs =
+    options.paymentTtlMs && options.paymentTtlMs > 0
+      ? options.paymentTtlMs
+      : DEFAULT_PAYMENT_TTL_MS;
   const maxPendingPayments = options.maxPendingPayments ?? 1000;
   const pending = new LruCache<PendingPaymentState>(
     Math.max(1, maxPendingPayments),

@@ -735,4 +735,49 @@ describe('Explicit Gating Middleware', () => {
     expect(forwarded).toBe(true);
     expect(sentResponses).toHaveLength(0);
   });
+
+  test('falls back to the default grant TTL when the invoice carries ttl 0', async () => {
+    const store = new AuthorizationStore();
+    const sentResponses: JSONRPCErrorResponse[] = [];
+
+    // ttl: 0 must not birth-expire the pending grant while the invoice stays
+    // payable. Verification hangs so the pending entry keeps the TTL the
+    // middleware applied via updatePendingTtl.
+    const ttlZeroProcessor = {
+      ...processor,
+      async createPaymentRequired(params: { amount: number }) {
+        return {
+          amount: params.amount,
+          pay_req: 'pay_req',
+          pmi: 'fake',
+          ttl: 0,
+        };
+      },
+      async verifyPayment(): Promise<{ _meta?: Record<string, unknown> }> {
+        return new Promise(() => {});
+      },
+    };
+
+    const mw = createExplicitGatingMiddleware({
+      options: {
+        processors: [ttlZeroProcessor],
+        pricedCapabilities: [...pricedCapabilities],
+      },
+      authorizationStore: store,
+      sendResponse: async (_pubkey, response) => {
+        sentResponses.push(response);
+      },
+    });
+
+    await mw(message, ctx, async () => {});
+
+    expect(sentResponses[0]?.error.code).toBe(PAYMENT_REQUIRED_ERROR_CODE);
+    const identity = computeCanonicalInvocationIdentity(
+      ctx.clientPubkey,
+      message.method,
+      message.params,
+    );
+    // Falls back to the 5-minute default window, not 0.
+    expect(store.getPendingRemainingMs(identity)).toBeGreaterThan(60_000);
+  });
 });

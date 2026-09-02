@@ -257,6 +257,26 @@ describe('createServerPaymentsMiddleware pending capacity', () => {
     expect(harness.invoiceCount('evt1')).toBe(0);
     expect(harness.forwards()).toBe(0);
   });
+
+  test('paymentTtlMs 0 falls back to the default so redelivery dedup survives', async () => {
+    // A zero TTL would birth-expire the pending entry while the invoice stays
+    // payable — disarming the duplicate-request dedup (CEP-8). It must fall
+    // back to the default window instead.
+    const spy = makeProcessor({ verify: 'throw' });
+    const { sender } = makeSender();
+    const harness = buildHarness(spy, sender, { paymentTtlMs: 0 });
+
+    await expect(harness.run('evt-ttl0')).rejects.toThrow(
+      'payment rail unreachable',
+    );
+
+    // Redelivery while the (paid) invoice is still outstanding: deduped by
+    // the surviving pending entry, not re-invoiced.
+    await expect(harness.run('evt-ttl0')).rejects.toThrow(
+      'payment rail unreachable',
+    );
+    expect(harness.invoiceCount('evt-ttl0')).toBe(1);
+  });
 });
 
 describe('createServerPaymentsMiddleware onInvoiceIssued', () => {

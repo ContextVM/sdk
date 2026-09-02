@@ -17,6 +17,11 @@ interface PaidAuthorization {
  * meaning it is strictly single-process. For multi-process horizontal scaling,
  * implementers should use a distributed lock (e.g. Redis Redlock) keyed by
  * the canonical invocation identity to prevent duplicate payments.
+ *
+ * NOTE: Atomic reserve-then-dispatch (`claim()` here, `trySetPending()` in the
+ * gating middlewares) relies on JavaScript run-to-completion: there is no
+ * interleaving point between the two calls. Porters to await-capable runtimes
+ * must compose them into a single critical section.
  */
 export class AuthorizationStore {
   private readonly authorizations: LruCache<PaidAuthorization>;
