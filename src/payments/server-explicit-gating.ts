@@ -247,6 +247,10 @@ export function createExplicitGatingMiddleware(
           controller.abort();
         }
       })().catch((err) => {
+        // Belt-and-suspenders: if clearPending/grant itself threw inside the
+        // inner catch, pending would otherwise stick until TTL answering every
+        // retry with -32043. Idempotent on the normal path.
+        authorizationStore.clearPending(identity);
         logger.error('unhandled exception in async payment verification', {
           requestEventId,
           pmi: paymentRequired.pmi,

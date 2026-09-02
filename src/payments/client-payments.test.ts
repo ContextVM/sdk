@@ -267,6 +267,74 @@ describe('withClientPayments()', () => {
     expect(handleCalls).toBe(0);
   });
 
+  test('synthesizes JSON-RPC error when the payment handler throws, instead of hanging the request', async () => {
+    const transport = createMockNostrTransport();
+
+    const observed: JSONRPCMessage[] = [];
+    const errors: Error[] = [];
+
+    const paid = withClientPayments(transport, {
+      handlers: [
+        {
+          pmi: 'fake',
+          async handle(): Promise<void> {
+            throw new Error('wallet exploded');
+          },
+        },
+      ],
+    });
+
+    paid.onmessage = (msg) => observed.push(msg);
+    paid.onerror = (err) => errors.push(err);
+
+    await paid.start();
+
+    (
+      transport as unknown as {
+        correlationStore: {
+          registerRequest: (eventId: string, req: unknown) => void;
+        };
+      }
+    ).correlationStore.registerRequest('req-event-id', {
+      originalRequestId: 42,
+      isInitialize: false,
+      progressToken: undefined,
+      originalRequestContext: { method: 'tools/call', capability: 'tool:add' },
+    });
+
+    const paymentRequired: JSONRPCMessage = {
+      jsonrpc: '2.0',
+      method: 'notifications/payment_required',
+      params: { amount: 1, pay_req: 'x', pmi: 'fake' },
+    };
+
+    (transport as unknown as TransportWithContext).onmessageWithContext?.(
+      paymentRequired,
+      {
+        eventId: 'evt',
+        correlatedEventId: 'req-event-id',
+      },
+    );
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    const errResp = observed.find(
+      (
+        m,
+      ): m is {
+        jsonrpc: '2.0';
+        id: number;
+        error: { code: number; message: string; data?: unknown };
+      } => 'id' in m && m.id === 42 && 'error' in m,
+    );
+    expect(errResp?.error?.code).toBe(-32000);
+    expect(errResp?.error?.message).toBe(
+      'Payment handler failed: wallet exploded',
+    );
+    // The crash still surfaces on onerror.
+    expect(errors[0]?.message).toMatch(/wallet exploded/);
+  });
+
   test('synthesizes JSON-RPC error when canHandle declines and correlation exists', async () => {
     const transport = createMockNostrTransport();
 

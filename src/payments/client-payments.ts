@@ -618,26 +618,27 @@ export function withClientPayments(
     }
 
     inFlightPayReqs.add(message.params.pay_req);
+
+    const req: PaymentHandlerRequest = {
+      amount: message.params.amount,
+      pay_req: message.params.pay_req,
+      pmi: message.params.pmi,
+      description: message.params.description,
+      ttl: message.params.ttl,
+      _meta: message.params._meta,
+      requestEventId,
+    };
+
+    const synthesizeClientDeclineError = (params: {
+      message: string;
+    }): void => {
+      if (pending?.progressToken) {
+        stopSyntheticProgress(pending.progressToken);
+      }
+      synthesizePaymentDecline(pending, params.message, req.pmi, req.amount);
+    };
+
     try {
-      const req: PaymentHandlerRequest = {
-        amount: message.params.amount,
-        pay_req: message.params.pay_req,
-        pmi: message.params.pmi,
-        description: message.params.description,
-        ttl: message.params.ttl,
-        _meta: message.params._meta,
-        requestEventId,
-      };
-
-      const synthesizeClientDeclineError = (params: {
-        message: string;
-      }): void => {
-        if (pending?.progressToken) {
-          stopSyntheticProgress(pending.progressToken);
-        }
-        synthesizePaymentDecline(pending, params.message, req.pmi, req.amount);
-      };
-
       logger.info('processing payment_required', {
         requestEventId,
         pmi: message.params.pmi,
@@ -691,6 +692,14 @@ export function withClientPayments(
         requestEventId,
         pmi: message.params.pmi,
         error: error instanceof Error ? error.message : String(error),
+      });
+      // Same-severity outcomes must behave the same: policy and canHandle
+      // declines resolve the pending request with a synthesized error. A
+      // handler crash must too, or the MCP request hangs until the server TTL.
+      synthesizeClientDeclineError({
+        message: `Payment handler failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
       });
       throw error;
     } finally {
