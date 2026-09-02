@@ -42,6 +42,7 @@ interface CapturedDeps {
   deps: OutboundResponseRouterDeps;
   chooseCalls: Array<{ fallbackWrapKind?: number }>;
   sentGiftWrapKinds: Array<number | undefined>;
+  sentMessages: JSONRPCMessage[];
 }
 
 function createRouterWithCapturedDeps(
@@ -51,6 +52,7 @@ function createRouterWithCapturedDeps(
 ): CapturedDeps {
   const chooseCalls: CapturedDeps['chooseCalls'] = [];
   const sentGiftWrapKinds: CapturedDeps['sentGiftWrapKinds'] = [];
+  const sentMessages: CapturedDeps['sentMessages'] = [];
 
   const deps = {
     correlationStore,
@@ -85,6 +87,7 @@ function createRouterWithCapturedDeps(
       if (options.failSend) {
         throw new Error('send failed');
       }
+      sentMessages.push(_message);
       sentGiftWrapKinds.push(giftWrapKind);
       return 'inner-event-id';
     },
@@ -93,7 +96,7 @@ function createRouterWithCapturedDeps(
     logger: testLogger,
   } as unknown as OutboundResponseRouterDeps;
 
-  return { deps, chooseCalls, sentGiftWrapKinds };
+  return { deps, chooseCalls, sentGiftWrapKinds, sentMessages };
 }
 
 const gatingErrorResponse: JSONRPCErrorResponse = {
@@ -142,6 +145,52 @@ describe('OutboundResponseRouter.routeTargeted', () => {
 
     expect(chooseCalls).toEqual([{ fallbackWrapKind: undefined }]);
     expect(sentGiftWrapKinds).toEqual([undefined]);
+  });
+
+  test('restores the client request id the coordinator rewrote to the event id', async () => {
+    const correlationStore = new CorrelationStore({});
+    correlationStore.registerEventRoute(
+      'evt-rewritten',
+      CLIENT_PUBKEY,
+      42,
+      undefined,
+      EPHEMERAL_GIFT_WRAP_KIND,
+    );
+    const { deps, sentMessages } = createRouterWithCapturedDeps(
+      correlationStore,
+      createSession(),
+    );
+
+    // The gating middleware echoes the id it saw: the event id, post-rewrite.
+    const errorWithEventId: JSONRPCErrorResponse = {
+      ...gatingErrorResponse,
+      id: 'evt-rewritten',
+    };
+    await new OutboundResponseRouter(deps).routeTargeted(
+      CLIENT_PUBKEY,
+      errorWithEventId,
+      'evt-rewritten',
+    );
+
+    // On the wire: the caller's original JSON-RPC id, not the routing key.
+    expect((sentMessages[0] as JSONRPCErrorResponse).id).toBe(42);
+    // Non-mutating: the caller's response object is untouched.
+    expect(errorWithEventId.id).toBe('evt-rewritten');
+  });
+
+  test('keeps the response id as-is when no route is recorded', async () => {
+    const { deps, sentMessages } = createRouterWithCapturedDeps(
+      new CorrelationStore({}),
+      createSession(),
+    );
+
+    await new OutboundResponseRouter(deps).routeTargeted(
+      CLIENT_PUBKEY,
+      { ...gatingErrorResponse, id: 'evt-unknown' },
+      'evt-unknown',
+    );
+
+    expect((sentMessages[0] as JSONRPCErrorResponse).id).toBe('evt-unknown');
   });
 
   test('does not send when the client has no active session', async () => {

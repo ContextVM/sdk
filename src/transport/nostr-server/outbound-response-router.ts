@@ -345,16 +345,26 @@ export class OutboundResponseRouter {
 
     this.maybeAppendPaymentInteractionDisclosure(tags, session);
 
+    const route = this.deps.correlationStore.getEventRoute(requestEventId);
+
     const giftWrapKind = this.deps.chooseGiftWrapKind({
       session,
       // Non-destructive read: the route must stay registered for the normal
       // response/cleanup lifecycle that runs after this early rejection.
-      fallbackWrapKind:
-        this.deps.correlationStore.getEventRoute(requestEventId)?.wrapKind,
+      fallbackWrapKind: route?.wrapKind,
     });
 
+    // Restore the client's original request id before publishing: the inbound
+    // coordinator rewrites request ids to the event id for routing, and this
+    // early-rejection exit path must not leak that rewrite onto the wire
+    // (mirrors route()'s restore; JSON-RPC responses MUST echo the caller's
+    // id, and both SDK clients ignore the wire id anyway).
+    const responseToSend = route
+      ? { ...response, id: route.originalRequestId }
+      : response;
+
     await this.deps.sendMcpMessage(
-      response,
+      responseToSend,
       clientPubkey,
       CTXVM_MESSAGES_KIND,
       tags,
