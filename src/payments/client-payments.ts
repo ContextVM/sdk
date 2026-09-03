@@ -9,6 +9,7 @@ import {
   type JSONRPCErrorResponse,
 } from '@contextvm/mcp-sdk/types.js';
 import { NostrClientTransport } from '../transport/nostr-client-transport.js';
+import type { TransportWithContext } from '../transport/nostr-client-transport.js';
 import type {
   PaymentHandler,
   PaymentRejectedNotification,
@@ -139,13 +140,6 @@ type ProgressToken = string;
 type SyntheticProgressEntry = {
   stopAtMs: number;
   wireProgressToken: string | number;
-};
-
-type TransportWithContext = Transport & {
-  onmessageWithContext?: (
-    message: JSONRPCMessage,
-    ctx: { eventId: string; correlatedEventId?: string },
-  ) => void;
 };
 
 function supportsOnmessageWithContext(

@@ -1,20 +1,12 @@
 import { describe, expect, test } from 'bun:test';
-import type { Transport } from '@contextvm/mcp-sdk/shared/transport';
 import type { JSONRPCMessage } from '@contextvm/mcp-sdk/types.js';
 import { withClientPayments } from './client-payments.js';
 import type { PaymentHandlerRequest } from './types.js';
 import { NostrClientTransport } from '../transport/nostr-client-transport.js';
+import type { TransportWithContext } from '../transport/nostr-client-transport.js';
 import { PrivateKeySigner } from '../signer/private-key-signer.js';
 import { EncryptionMode } from '../core/interfaces.js';
 import { MockRelayHub } from '../__mocks__/mock-relay-handler.js';
-
-/** Minimal fake transport that exposes onmessageWithContext for unit tests. */
-type TransportWithContext = Transport & {
-  onmessageWithContext?: (
-    message: JSONRPCMessage,
-    ctx: { eventId: string; correlatedEventId?: string },
-  ) => void;
-};
 
 const createMockNostrTransport = (): NostrClientTransport => {
   const hub = new MockRelayHub();
