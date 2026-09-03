@@ -991,6 +991,7 @@ describe('withClientPayments()', () => {
     const paid = withClientPayments(transport, {
       handlers: [{ pmi: 'fake', async handle(): Promise<void> {} }],
       paymentInteraction: 'explicit_gating',
+      minRetryDelayMs: 1,
     });
     paid.onmessage = (msg) => observed.push(msg);
     await paid.start();
@@ -1126,6 +1127,7 @@ describe('withClientPayments()', () => {
       handlers: [{ pmi: 'fake', async handle(): Promise<void> {} }],
       paymentInteraction: 'explicit_gating',
       maxPendingRetries: 2,
+      minRetryDelayMs: 1,
     });
     paid.onmessage = (msg) => observed.push(msg);
     await paid.start();
@@ -1174,5 +1176,131 @@ describe('withClientPayments()', () => {
     expect(errResp.error?.code).toBe(-32043);
 
     await paid.close();
+  });
+
+  test('refuses wrapping a transport that already has client payments', () => {
+    const transport = createMockNostrTransport();
+    const paid = withClientPayments(transport, { handlers: [] });
+
+    // A chained second wrap double-pays every offer; a sibling wrap silently
+    // kills the first wrapper's trampolines. Both must fail fast.
+    expect(() => withClientPayments(paid, { handlers: [] })).toThrow(
+      /already called on this transport/,
+    );
+    expect(() => withClientPayments(transport, { handlers: [] })).toThrow(
+      /already called on this transport/,
+    );
+  });
+
+  test('floors -32043 retry delay so retry_after: 0 cannot re-send within the same second', async () => {
+    const transport = createMockNostrTransport();
+    transport
+      .getInternalStateForTesting()
+      .correlationStore.registerRequest('req-event-id-floor', {
+        originalRequestId: 77,
+        isInitialize: false,
+        originalRequestContext: { method: 'tools/call' },
+      });
+
+    let sentMessage: JSONRPCMessage | undefined;
+    transport.send = async (msg) => {
+      sentMessage = msg;
+    };
+
+    const paid = withClientPayments(transport, {
+      handlers: [{ pmi: 'fake', async handle(): Promise<void> {} }],
+      minRetryDelayMs: 50,
+    });
+    paid.onmessage = (): void => {};
+    await paid.start();
+
+    await paid.send({
+      jsonrpc: '2.0',
+      id: 77,
+      method: 'tools/call',
+      params: { name: 'floored' },
+    });
+    sentMessage = undefined; // Reset so only the retry is observed
+    (transport as unknown as TransportWithContext).onmessageWithContext?.(
+      {
+        jsonrpc: '2.0',
+        id: 77,
+        error: {
+          code: -32043,
+          message: 'Payment Pending',
+          data: { retry_after: 0 },
+        },
+      },
+      { eventId: 'evt-floor', correlatedEventId: 'req-event-id-floor' },
+    );
+
+    // Before the floor elapses: no retry.
+    await new Promise((r) => setTimeout(r, 10));
+    expect(sentMessage).toBeUndefined();
+
+    // After the floor: the original request is retried.
+    await new Promise((r) => setTimeout(r, 120));
+    expect(sentMessage as unknown).toEqual({
+      jsonrpc: '2.0',
+      id: 77,
+      method: 'tools/call',
+      params: { name: 'floored' },
+    });
+
+    await paid.close();
+  });
+
+  test('keeps numeric and string request ids with the same text form distinct', async () => {
+    const sent: JSONRPCMessage[] = [];
+    const baseTransport: TransportWithContext = {
+      onmessage: undefined,
+      onmessageWithContext: undefined,
+      onerror: undefined,
+      onclose: undefined,
+      async start(): Promise<void> {},
+      async send(message: JSONRPCMessage): Promise<void> {
+        sent.push(message);
+      },
+      async close(): Promise<void> {},
+    };
+
+    const paid = withClientPayments(baseTransport, { minRetryDelayMs: 1 });
+    await paid.start();
+
+    await paid.send({
+      jsonrpc: '2.0',
+      id: 5,
+      method: 'tools/call',
+      params: { name: 'numeric' },
+    });
+    await paid.send({
+      jsonrpc: '2.0',
+      id: '5',
+      method: 'tools/call',
+      params: { name: 'string' },
+    });
+    sent.length = 0;
+
+    // -32043 answering the NUMERIC id 5 must retry the numeric request —
+    // with String(id) keys the later string write overwrote it.
+    baseTransport.onmessageWithContext?.(
+      {
+        jsonrpc: '2.0',
+        id: 5,
+        error: {
+          code: -32043,
+          message: 'Payment Pending',
+          data: { retry_after: 0 },
+        },
+      },
+      { eventId: 'evt', correlatedEventId: 'req' },
+    );
+
+    await new Promise((r) => setTimeout(r, 30));
+
+    expect(sent).toHaveLength(1);
+    expect((sent[0] as { params?: { name?: string } }).params?.name).toBe(
+      'numeric',
+    );
   });
 });
