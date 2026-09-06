@@ -337,6 +337,56 @@ describe('OutboundResponseRouter.route payment route snapshot fallback', () => {
     expect((sent[0] as { id?: string }).id).toBe('original-request-id');
   });
 
+  test('restores the snapshot when snapshot delivery fails, so a retry still delivers after eviction', async () => {
+    const correlationStore = new CorrelationStore({});
+    correlationStore.registerEventRoute(
+      'evt-paid',
+      CLIENT_PUBKEY,
+      'original-request-id',
+    );
+    correlationStore.captureRouteSnapshot(
+      'evt-paid',
+      createSession({ isEncrypted: false }),
+      60_000,
+    );
+    // Session eviction removed the route entirely.
+    correlationStore.removeRoutesForClient(CLIENT_PUBKEY);
+
+    const { deps } = createRouterWithCapturedDeps(
+      correlationStore,
+      createSession(),
+    );
+    (deps.sessionStore as { getSession: (p: string) => unknown }).getSession =
+      () => undefined;
+
+    const sent: JSONRPCMessage[] = [];
+    let attempts = 0;
+    (
+      deps as { sendMcpMessage: OutboundResponseRouterDeps['sendMcpMessage'] }
+    ).sendMcpMessage = async (message) => {
+      attempts++;
+      if (attempts === 1) {
+        throw new Error('relay down');
+      }
+      sent.push(message);
+      return 'inner-event-id';
+    };
+
+    const router = new OutboundResponseRouter(deps);
+    // First attempt: delivers from the snapshot session, publish fails.
+    await expect(router.route(paidResult())).rejects.toThrow('relay down');
+
+    // Retry (e.g. a deferred-response flush): must deliver, not hit the
+    // no-session branch. A route-only restore would strand it there.
+    await router.route(paidResult());
+
+    expect(attempts).toBe(2);
+    expect(sent).toHaveLength(1);
+    expect((sent[0] as { id?: string }).id).toBe('original-request-id');
+    // The snapshot was consumed by the successful retry.
+    expect(correlationStore.takeRouteSnapshot('evt-paid')).toBeUndefined();
+  });
+
   test('still errors when neither route nor snapshot exists', async () => {
     const { deps } = createRouterWithCapturedDeps(
       new CorrelationStore({}),

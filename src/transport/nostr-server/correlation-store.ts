@@ -193,6 +193,16 @@ export class CorrelationStore {
   }
 
   /**
+   * Puts a consumed snapshot back after a failed delivery attempt, so a retry
+   * can still deliver through it (route + session copy + remaining TTL).
+   * Restoring only the live route is not enough when the session was evicted:
+   * a retry would find the route but no session anywhere and drop the result.
+   */
+  restoreRouteSnapshot(eventId: string, snapshot: RouteSnapshot): void {
+    this.routeSnapshots.set(eventId, snapshot);
+  }
+
+  /**
    * Registers a new event route for an incoming request.
    *
    * @param eventId The Nostr event ID (used as the request ID)

@@ -303,14 +303,23 @@ export class OutboundResponseRouter {
         giftWrapKind,
       );
     } catch (error) {
-      this.deps.correlationStore.registerEventRoute(
-        nostrEventId,
-        route.clientPubkey,
-        route.originalRequestId,
-        route.progressToken,
-        route.wrapKind,
-        route.requestEvent,
-      );
+      // Restore what the attempt consumed so a retry can deliver. A
+      // snapshot-based attempt must get its snapshot back (route + session
+      // copy): re-registering only the live route would strand the retry in
+      // the no-session branch once the client's session was evicted, dropping
+      // the already-paid result.
+      if (snapshot) {
+        this.deps.correlationStore.restoreRouteSnapshot(nostrEventId, snapshot);
+      } else {
+        this.deps.correlationStore.registerEventRoute(
+          nostrEventId,
+          route.clientPubkey,
+          route.originalRequestId,
+          route.progressToken,
+          route.wrapKind,
+          route.requestEvent,
+        );
+      }
       throw error;
     }
   }
