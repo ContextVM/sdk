@@ -248,25 +248,16 @@ export class NostrServerTransport
     this.sessionStore = new SessionStore({
       maxSessions: options.maxSessions ?? 1000,
       onSessionEvicted: (clientPubkey, session) => {
-        // Clean up all correlation data for evicted session
+        // Eviction is final for the session's routes. In-flight paid requests
+        // survive via route snapshots captured at invoice issuance
+        // (capturePaymentRouteSnapshot), so no veto/recreate is needed here.
+        // (Re-inserting into the session LRU from inside its own eviction
+        // callback would also corrupt the cache's capacity accounting.)
         const removedCount =
           this.correlationStore.removeRoutesForClient(clientPubkey);
         this.logger.info(
           `Evicted session for ${clientPubkey} (removed ${removedCount} routes)`,
         );
-
-        // If there are still active routes (evicted early), recreate the session
-        // to prevent losing track of in-flight requests
-        if (this.correlationStore.hasActiveRoutesForClient(clientPubkey)) {
-          this.logger.debug(
-            `Recreating session ${clientPubkey} due to active routes`,
-          );
-          this.sessionStore.getOrCreateSession(
-            clientPubkey,
-            session.isEncrypted,
-          );
-          return; // Don't call onClientSessionEvicted for vetoed eviction
-        }
 
         if (this.onClientSessionEvicted) {
           Promise.resolve(
@@ -749,6 +740,24 @@ export class NostrServerTransport
     notification: JSONRPCMessage,
   ): Promise<void> {
     await this.outboundNotificationBroadcaster.broadcast(notification);
+  }
+
+  /**
+   * Snapshots the correlation route (and current session) for a priced
+   * request so the settled response can be delivered even if the route was
+   * popped by duplicate-delivery cleanup or the idle paying client's session
+   * was LRU-evicted while payment settled (CEP-8).
+   */
+  public capturePaymentRouteSnapshot(
+    requestEventId: string,
+    ttlMs: number,
+  ): void {
+    const route = this.correlationStore.getEventRoute(requestEventId);
+    if (!route) {
+      return;
+    }
+    const session = this.sessionStore.getSession(route.clientPubkey);
+    this.correlationStore.captureRouteSnapshot(requestEventId, session, ttlMs);
   }
 
   /**

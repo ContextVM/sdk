@@ -222,11 +222,24 @@ export class ServerOpenStreamFactory {
     // the tool never streamed to it. Drop the unused writer so the response is
     // sent normally instead of being deferred indefinitely, and so it does not
     // leak. See docs/ISSUE-open-stream-progress-token-conflict.md (Part A).
-    if (existingWriter) {
-      this.writers.delete(eventId);
-      this.writerMeta.delete(eventId);
-    }
+    this.releaseUnusedWriter(eventId);
     return false;
+  }
+
+  /**
+   * Releases the writer reserved for a request that will never produce a
+   * normal-path response (middleware drop or chain failure). This is the only
+   * reaper besides a routed response and full transport teardown, so every
+   * drop path must call it or the entry leaks until close().
+   */
+  public releaseUnusedWriter(eventId: string): void {
+    const writer = this.writers.get(eventId);
+    if (!writer) {
+      return;
+    }
+    this.writers.delete(eventId);
+    this.writerMeta.delete(eventId);
+    writer.dispose();
   }
 
   /**

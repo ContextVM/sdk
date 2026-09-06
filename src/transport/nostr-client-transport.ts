@@ -108,6 +108,22 @@ export interface NostrTransportOptions extends Omit<
  * Implements the Transport interface from the @contextvm/mcp-sdk.
  * Handles request/response correlation and optional stateless mode emulation.
  */
+/**
+ * Correlation context delivered alongside inbound messages by
+ * `NostrClientTransport.onmessageWithContext`. `eventId` identifies the Nostr
+ * event that carried the message; `correlatedEventId` references the request
+ * event for responses and payment notifications.
+ */
+export type MessageContext = {
+  eventId: string;
+  correlatedEventId?: string;
+};
+
+/** A {@link Transport} extended with the context-aware inbound path. */
+export type TransportWithContext = Transport & {
+  onmessageWithContext?: (message: JSONRPCMessage, ctx: MessageContext) => void;
+};
+
 export class NostrClientTransport
   extends BaseNostrTransport
   implements Transport
@@ -129,10 +145,7 @@ export class NostrClientTransport
    */
   public onmessage?: (message: JSONRPCMessage) => void;
   public onmessageWithContext:
-    | ((
-        message: JSONRPCMessage,
-        ctx: { eventId: string; correlatedEventId?: string },
-      ) => void)
+    | ((message: JSONRPCMessage, ctx: MessageContext) => void)
     | undefined = undefined;
   public onclose?: () => void;
   public onerror?: (error: Error) => void;

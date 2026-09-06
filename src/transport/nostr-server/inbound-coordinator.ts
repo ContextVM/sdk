@@ -18,7 +18,10 @@ import {
   injectClientPubkey,
   injectRequestEventId,
 } from '../../core/utils/utils.js';
-import { learnPeerCapabilities, mirrorRequestWrapKind } from '../capability-negotiator.js';
+import {
+  learnPeerCapabilities,
+  mirrorRequestWrapKind,
+} from '../capability-negotiator.js';
 import {
   CTXVM_MESSAGES_KIND,
   INITIALIZE_METHOD,
@@ -336,6 +339,9 @@ export class ServerInboundCoordinator {
           this.deps.onerror?.(
             err instanceof Error ? err : new Error('inboundMiddleware failed'),
           );
+          // A failed chain never forwards and (normally) never responds: the
+          // request's reserved state must be released here too, or it leaks.
+          this.cleanupDroppedRequest(inboundMessage);
         });
     } catch (error) {
       this.deps.logger.error('Error in authorizeAndProcessEvent', {
@@ -395,13 +401,18 @@ export class ServerInboundCoordinator {
   }
 
   /**
-   * Cleans up request correlation for a request that was dropped by middleware.
+   * Cleans up per-request state reserved for a request that was dropped by
+   * middleware or failed the chain. Single owner: releases the correlation
+   * route and the open-stream writer reservation together, since a dropped
+   * request never produces the normal-path response that would reap them.
    */
   public cleanupDroppedRequest(message: JSONRPCMessage): void {
     if (!isJSONRPCRequest(message)) {
       return;
     }
-    this.deps.correlationStore.popEventRoute(String(message.id));
+    const eventId = String(message.id);
+    this.deps.correlationStore.popEventRoute(eventId);
+    this.deps.openStreamFactory.releaseUnusedWriter(eventId);
   }
 
   /**

@@ -19,10 +19,24 @@ import { NOSTR_TAGS } from '../core/constants.js';
  * the notification-based flow. Pass `paymentInteraction: 'transparent'` for a
  * transparent-only server.
  */
+// Transports that already have the payments lifecycle registered. The dedup
+// closures live in per-call middleware instances, so a second registration
+// silently double-charges every priced request (two invoices, two forwards).
+// ponytail: WeakSet keyed by transport; promote to an instance flag if a
+// legitimate multi-registration use case appears.
+const paymentsRegistered = new WeakSet<object>();
+
 export function withServerPayments(
   transport: NostrServerTransport,
   options: ServerPaymentsOptions,
 ): NostrServerTransport {
+  if (paymentsRegistered.has(transport)) {
+    throw new Error(
+      'withServerPayments already called on this transport; registering the payments lifecycle twice double-charges priced requests',
+    );
+  }
+  paymentsRegistered.add(transport);
+
   // Build the PMI → processor map once and share it across both middlewares.
   const processorsByPmi = buildProcessorsByPmi(
     options.processors,
@@ -56,6 +70,10 @@ export function withServerPayments(
       sender: transport,
       options,
       processorsByPmi,
+      // Snapshot the correlation route when an invoice goes out so the paid
+      // response survives route-pop (duplicate cleanup) and session eviction.
+      onInvoiceIssued: ({ requestEventId, snapshotTtlMs }) =>
+        transport.capturePaymentRouteSnapshot(requestEventId, snapshotTtlMs),
     }),
   );
 

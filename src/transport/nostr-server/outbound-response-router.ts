@@ -112,7 +112,21 @@ export class OutboundResponseRouter {
       return;
     }
 
-    const route = this.deps.correlationStore.popEventRoute(nostrEventId);
+    const poppedRoute = this.deps.correlationStore.popEventRoute(nostrEventId);
+    if (poppedRoute) {
+      // The live route was used: drop any snapshot so a later duplicate
+      // response for this id cannot be delivered from it.
+      this.deps.correlationStore.dropRouteSnapshot(nostrEventId);
+    }
+    // Route miss fallback: a paid request's route may have been popped by
+    // duplicate-delivery cleanup or removed with its evicted session while
+    // payment settled. The snapshot captured at invoice issuance (CEP-8)
+    // carries the routing fields — and the session — needed to deliver the
+    // settled result anyway.
+    const snapshot = poppedRoute
+      ? undefined
+      : this.deps.correlationStore.takeRouteSnapshot(nostrEventId);
+    const route = poppedRoute ?? snapshot?.route;
 
     if (!route) {
       this.deps.onerror?.(
@@ -121,10 +135,18 @@ export class OutboundResponseRouter {
       return;
     }
 
+    if (snapshot) {
+      this.deps.logger.info('Delivering response from payment route snapshot', {
+        eventId: nostrEventId,
+        clientPubkey: route.clientPubkey,
+      });
+    }
+
     const pendingEviction =
       this.deps.openStreamFactory.takePendingEviction(nostrEventId);
     const session =
       this.deps.sessionStore.getSession(route.clientPubkey) ??
+      snapshot?.session ??
       pendingEviction?.session;
 
     if (!session) {
@@ -281,14 +303,23 @@ export class OutboundResponseRouter {
         giftWrapKind,
       );
     } catch (error) {
-      this.deps.correlationStore.registerEventRoute(
-        nostrEventId,
-        route.clientPubkey,
-        route.originalRequestId,
-        route.progressToken,
-        route.wrapKind,
-        route.requestEvent,
-      );
+      // Restore what the attempt consumed so a retry can deliver. A
+      // snapshot-based attempt must get its snapshot back (route + session
+      // copy): re-registering only the live route would strand the retry in
+      // the no-session branch once the client's session was evicted, dropping
+      // the already-paid result.
+      if (snapshot) {
+        this.deps.correlationStore.restoreRouteSnapshot(nostrEventId, snapshot);
+      } else {
+        this.deps.correlationStore.registerEventRoute(
+          nostrEventId,
+          route.clientPubkey,
+          route.originalRequestId,
+          route.progressToken,
+          route.wrapKind,
+          route.requestEvent,
+        );
+      }
       throw error;
     }
   }
@@ -323,16 +354,26 @@ export class OutboundResponseRouter {
 
     this.maybeAppendPaymentInteractionDisclosure(tags, session);
 
+    const route = this.deps.correlationStore.getEventRoute(requestEventId);
+
     const giftWrapKind = this.deps.chooseGiftWrapKind({
       session,
       // Non-destructive read: the route must stay registered for the normal
       // response/cleanup lifecycle that runs after this early rejection.
-      fallbackWrapKind:
-        this.deps.correlationStore.getEventRoute(requestEventId)?.wrapKind,
+      fallbackWrapKind: route?.wrapKind,
     });
 
+    // Restore the client's original request id before publishing: the inbound
+    // coordinator rewrites request ids to the event id for routing, and this
+    // early-rejection exit path must not leak that rewrite onto the wire
+    // (mirrors route()'s restore; JSON-RPC responses MUST echo the caller's
+    // id, and both SDK clients ignore the wire id anyway).
+    const responseToSend = route
+      ? { ...response, id: route.originalRequestId }
+      : response;
+
     await this.deps.sendMcpMessage(
-      response,
+      responseToSend,
       clientPubkey,
       CTXVM_MESSAGES_KIND,
       tags,

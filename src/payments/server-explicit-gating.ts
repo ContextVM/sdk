@@ -71,7 +71,12 @@ export function createExplicitGatingMiddleware(
       return;
     }
 
-    const paymentTtlMs = options.paymentTtlMs ?? 300_000;
+    // Non-positive TTLs would birth-expire the pending grant while the
+    // invoice stays payable; fall back to the configured/default TTL.
+    const paymentTtlMs =
+      options.paymentTtlMs && options.paymentTtlMs > 0
+        ? options.paymentTtlMs
+        : 300_000;
 
     // 2. Try to set pending state atomically
     // We use a safe default TTL here, but will override it below if the payment option has a specific TTL
@@ -162,7 +167,9 @@ export function createExplicitGatingMiddleware(
       // verifyTimeoutMs includes standard bounds, but for grants we want to honor the
       // payment option's TTL explicitly if it is smaller, or the fallback paymentTtlMs.
       const grantTtlMs =
-        paymentRequired.ttl !== undefined
+        paymentRequired.ttl !== undefined &&
+        Number.isFinite(paymentRequired.ttl) &&
+        paymentRequired.ttl > 0
           ? paymentRequired.ttl * 1000
           : paymentTtlMs;
 
@@ -240,6 +247,10 @@ export function createExplicitGatingMiddleware(
           controller.abort();
         }
       })().catch((err) => {
+        // Belt-and-suspenders: if clearPending/grant itself threw inside the
+        // inner catch, pending would otherwise stick until TTL answering every
+        // retry with -32043. Idempotent on the normal path.
+        authorizationStore.clearPending(identity);
         logger.error('unhandled exception in async payment verification', {
           requestEventId,
           pmi: paymentRequired.pmi,

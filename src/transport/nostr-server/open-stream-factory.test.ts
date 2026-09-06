@@ -144,6 +144,40 @@ describe('ServerOpenStreamFactory.deferIfStreamActive', () => {
   });
 });
 
+describe('ServerOpenStreamFactory.releaseUnusedWriter', () => {
+  test('releases a never-started writer and its metadata, idempotently', () => {
+    const { factory } = createFactory();
+
+    factory.createWriterIfEnabled('evt-rel', 'a'.repeat(64), 'token-rel');
+    expect(factory.getWriter('evt-rel')).toBeDefined();
+
+    factory.releaseUnusedWriter('evt-rel');
+    factory.releaseUnusedWriter('evt-rel'); // second call is a no-op
+
+    expect(factory.getWriter('evt-rel')).toBeUndefined();
+    expect(factory.getWritersMap().has('evt-rel')).toBe(false);
+    expect(factory.getOpenStreams().length).toBe(0);
+  });
+
+  test('disposes a started writer, clearing keepalive state', async () => {
+    const { factory } = createFactory();
+
+    const writer = factory.createWriterIfEnabled(
+      'evt-started',
+      'a'.repeat(64),
+      'token-started',
+    );
+    expect(writer).toBeDefined();
+    await writer!.start();
+    expect(writer!.hasStarted).toBe(true);
+
+    factory.releaseUnusedWriter('evt-started');
+
+    expect(writer!.isActive).toBe(false);
+    expect(factory.getWriter('evt-started')).toBeUndefined();
+  });
+});
+
 describe('ServerOpenStreamFactory.getOpenStreams', () => {
   test('lists active writers with resolved client context and metadata', async () => {
     const { factory } = createFactory();

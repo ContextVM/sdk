@@ -9,6 +9,7 @@ import {
   type JSONRPCErrorResponse,
 } from '@contextvm/mcp-sdk/types.js';
 import { NostrClientTransport } from '../transport/nostr-client-transport.js';
+import type { TransportWithContext } from '../transport/nostr-client-transport.js';
 import type {
   PaymentHandler,
   PaymentRejectedNotification,
@@ -66,6 +67,17 @@ export interface ClientPaymentsOptions {
    * @default DEFAULT_PAYMENT_TTL_MS (300_000 ms)
    */
   defaultPaymentTtlMs?: number;
+  /**
+   * Minimum delay before a `-32043` Payment Pending retry is re-sent
+   * (milliseconds), applied after the server-provided `retry_after` backoff.
+   *
+   * Guards against `retry_after: 0`: an immediate retry within the same second
+   * can produce a byte-identical Nostr event (same content, same tags, same
+   * `created_at` at second resolution), which relays and servers swallow as a
+   * duplicate — silently losing the retry.
+   * @default 1000
+   */
+  minRetryDelayMs?: number;
 
   /**
    * Optional policy hook invoked when a `payment_required` notification is received.
@@ -130,13 +142,6 @@ type SyntheticProgressEntry = {
   wireProgressToken: string | number;
 };
 
-type TransportWithContext = Transport & {
-  onmessageWithContext?: (
-    message: JSONRPCMessage,
-    ctx: { eventId: string; correlatedEventId?: string },
-  ) => void;
-};
-
 function supportsOnmessageWithContext(
   transport: Transport,
 ): transport is TransportWithContext {
@@ -182,6 +187,9 @@ function isPaymentRequiredNotification(
   return isJSONRPCNotification(msg) && msg.method === PAYMENT_REQUIRED_METHOD;
 }
 
+/** Transports already wrapped by {@link withClientPayments}. */
+const clientPaymentsWrapped = new WeakSet<object>();
+
 /**
  * Wraps a transport to automatically handle CEP-8 payment requests.
  *
@@ -197,6 +205,12 @@ export function withClientPayments(
   transport: Transport,
   options: ClientPaymentsOptions,
 ): Transport {
+  // A second wrap silently double-pays every offer (each wrapper runs its own
+  // pipeline with its own dedup on separate closures) or, for sibling wraps,
+  // silently kills the first wrapper's trampolines. Refuse outright.
+  if (clientPaymentsWrapped.has(transport)) {
+    throw new Error('withClientPayments already called on this transport');
+  }
   const logger = createLogger('client-payments');
 
   const syntheticProgressIntervalMs =
@@ -205,6 +219,8 @@ export function withClientPayments(
 
   const defaultPaymentTtlMs =
     options.defaultPaymentTtlMs ?? DEFAULT_PAYMENT_TTL_MS;
+
+  const minRetryDelayMs = options.minRetryDelayMs ?? 1000;
 
   const syntheticProgress = new Map<ProgressToken, SyntheticProgressEntry>();
 
@@ -257,7 +273,10 @@ export function withClientPayments(
   };
 
   const pendingTimers = new Set<ReturnType<typeof setTimeout>>();
-  const retryCounts = new Map<string | number, number>();
+  // Bounded together with rawRequestCache: an abandoned request's counter must
+  // not accumulate forever (terminal responses and close() clear these, but a
+  // request that never terminates otherwise would leak).
+  const retryCounts = new LruCache<number>(1000);
   const rawRequestCache = new LruCache<JSONRPCRequest>(1000);
   const MAX_RETRIES = options.maxPendingRetries ?? 10;
 
@@ -379,7 +398,9 @@ export function withClientPayments(
 
       const requestId = errorMsg.id;
       const rawRequest =
-        requestId != null ? rawRequestCache.get(String(requestId)) : undefined;
+        requestId != null
+          ? rawRequestCache.get(JSON.stringify(requestId))
+          : undefined;
       if (!rawRequest) {
         logger.warn(
           'missing raw original request, cannot retry explicit payment',
@@ -446,7 +467,9 @@ export function withClientPayments(
 
       const requestId = errorMsg.id;
       const rawRequest =
-        requestId != null ? rawRequestCache.get(String(requestId)) : undefined;
+        requestId != null
+          ? rawRequestCache.get(JSON.stringify(requestId))
+          : undefined;
       if (!rawRequest) {
         logger.warn(
           'missing raw original request, cannot retry explicit payment pending',
@@ -456,7 +479,9 @@ export function withClientPayments(
         return;
       }
 
-      const requestIdKey = errorMsg.id as string | number;
+      // Type-aware key: JSON.stringify keeps numeric 5 and string "5"
+      // distinct, and must be used consistently for both maps below.
+      const requestIdKey = JSON.stringify(errorMsg.id);
       const retries = retryCounts.get(requestIdKey) ?? 0;
       if (retries >= MAX_RETRIES) {
         logger.error('max explicit payment retries exceeded', {
@@ -478,7 +503,13 @@ export function withClientPayments(
 
       const baseDelayMs = (retryAfterSeconds ?? 1) * 1000;
       const exponentialMultiplier = Math.pow(1.5, retries);
-      const delayMs = Math.min(baseDelayMs * exponentialMultiplier, 10000);
+      // Floor at minRetryDelayMs: a sub-second retry can produce a
+      // byte-identical Nostr event (created_at has second resolution), which
+      // relays and servers swallow as a duplicate.
+      const delayMs = Math.min(
+        Math.max(baseDelayMs * exponentialMultiplier, minRetryDelayMs),
+        10000,
+      );
 
       const timer = setTimeout(() => {
         pendingTimers.delete(timer);
@@ -618,26 +649,27 @@ export function withClientPayments(
     }
 
     inFlightPayReqs.add(message.params.pay_req);
+
+    const req: PaymentHandlerRequest = {
+      amount: message.params.amount,
+      pay_req: message.params.pay_req,
+      pmi: message.params.pmi,
+      description: message.params.description,
+      ttl: message.params.ttl,
+      _meta: message.params._meta,
+      requestEventId,
+    };
+
+    const synthesizeClientDeclineError = (params: {
+      message: string;
+    }): void => {
+      if (pending?.progressToken) {
+        stopSyntheticProgress(pending.progressToken);
+      }
+      synthesizePaymentDecline(pending, params.message, req.pmi, req.amount);
+    };
+
     try {
-      const req: PaymentHandlerRequest = {
-        amount: message.params.amount,
-        pay_req: message.params.pay_req,
-        pmi: message.params.pmi,
-        description: message.params.description,
-        ttl: message.params.ttl,
-        _meta: message.params._meta,
-        requestEventId,
-      };
-
-      const synthesizeClientDeclineError = (params: {
-        message: string;
-      }): void => {
-        if (pending?.progressToken) {
-          stopSyntheticProgress(pending.progressToken);
-        }
-        synthesizePaymentDecline(pending, params.message, req.pmi, req.amount);
-      };
-
       logger.info('processing payment_required', {
         requestEventId,
         pmi: message.params.pmi,
@@ -691,6 +723,14 @@ export function withClientPayments(
         requestEventId,
         pmi: message.params.pmi,
         error: error instanceof Error ? error.message : String(error),
+      });
+      // Same-severity outcomes must behave the same: policy and canHandle
+      // declines resolve the pending request with a synthesized error. A
+      // handler crash must too, or the MCP request hangs until the server TTL.
+      synthesizeClientDeclineError({
+        message: `Payment handler failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
       });
       throw error;
     } finally {
@@ -786,8 +826,8 @@ export function withClientPayments(
             !isExplicitPaymentPendingError(message)
           ) {
             const reqId = message.id as string | number;
-            rawRequestCache.delete(String(reqId));
-            retryCounts.delete(reqId);
+            rawRequestCache.delete(JSON.stringify(reqId));
+            retryCounts.delete(JSON.stringify(reqId));
           }
         }
 
@@ -855,7 +895,10 @@ export function withClientPayments(
 
     async send(message: JSONRPCMessage): Promise<void> {
       if ('method' in message && 'id' in message && message.id != null) {
-        rawRequestCache.set(String(message.id), message as JSONRPCRequest);
+        rawRequestCache.set(
+          JSON.stringify(message.id),
+          message as JSONRPCRequest,
+        );
       }
       await transport.send(message);
     },
@@ -866,5 +909,7 @@ export function withClientPayments(
     },
   };
 
+  clientPaymentsWrapped.add(transport);
+  clientPaymentsWrapped.add(wrapped);
   return wrapped;
 }

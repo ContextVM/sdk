@@ -7,6 +7,7 @@
 import { DEFAULT_LRU_SIZE } from '../../core/constants.js';
 import { LruCache } from '../../core/utils/lru-cache.js';
 import type { NostrEvent } from 'nostr-tools';
+import type { ClientSession } from './session-store.js';
 
 /**
  * Represents a route for an in-flight request.
@@ -27,6 +28,22 @@ export interface EventRoute {
    * Used to mirror wrap kind for server responses in GiftWrapMode.OPTIONAL.
    */
   wrapKind?: number;
+}
+
+/**
+ * A bounded snapshot of an event route plus the client session at capture time.
+ *
+ * Used for priced requests (CEP-8): a paid response can outlive both its route
+ * (duplicate-delivery cleanup pops it) and its session (LRU eviction of an
+ * idle paying client), so the snapshot carries everything needed to deliver
+ * the eventual result.
+ */
+export interface RouteSnapshot {
+  /** Copy of the route at capture time. */
+  route: EventRoute;
+  /** Shallow copy of the session at capture time, if one existed. */
+  session?: ClientSession;
+  expiresAtMs: number;
 }
 
 /**
@@ -54,6 +71,7 @@ export interface CorrelationStoreOptions {
  */
 export class CorrelationStore {
   private readonly eventRoutes: LruCache<EventRoute>;
+  private readonly routeSnapshots: LruCache<RouteSnapshot>;
   private readonly progressTokenToEventId: Map<string, string>;
   private readonly clientEventIds: Map<string, Set<string>>;
   private readonly onEventRouteRemoved?: (
@@ -71,6 +89,7 @@ export class CorrelationStore {
     this.progressTokenToEventId = new Map<string, string>();
     this.clientEventIds = new Map<string, Set<string>>();
     this.onEventRouteRemoved = onEventRouteRemoved;
+    this.routeSnapshots = new LruCache<RouteSnapshot>(maxEventRoutes);
 
     this.eventRoutes = new LruCache<EventRoute>(
       maxEventRoutes,
@@ -118,7 +137,69 @@ export class CorrelationStore {
     }
 
     this.eventRoutes.delete(eventId);
+    // Note: route snapshots deliberately survive route removal here — the
+    // snapshot IS the fallback for routes removed by duplicate-delivery
+    // cleanup or session eviction. It is consumed only via takeRouteSnapshot()
+    // or dropped by the response router once the live route has been used.
     this.onEventRouteRemoved?.(eventId, route);
+  }
+
+  /**
+   * Snapshots the current route for an event, plus the session at capture
+   * time, so the response can still be delivered after the route or session
+   * is gone (priced requests, CEP-8). No-op when no route exists.
+   */
+  captureRouteSnapshot(
+    eventId: string,
+    session: ClientSession | undefined,
+    ttlMs: number,
+  ): void {
+    const route = this.eventRoutes.get(eventId);
+    if (!route) {
+      return;
+    }
+    this.routeSnapshots.set(eventId, {
+      route: { ...route },
+      session: session ? { ...session } : undefined,
+      expiresAtMs: Date.now() + ttlMs,
+    });
+  }
+
+  /**
+   * Drops a route snapshot without returning it. Called by the response
+   * router once a response was routed through the live route, so a later
+   * duplicate response cannot be delivered from the leftover snapshot.
+   */
+  dropRouteSnapshot(eventId: string): void {
+    this.routeSnapshots.delete(eventId);
+  }
+
+  /**
+   * Atomically consumes an unexpired route snapshot, if any.
+   *
+   * @param eventId The Nostr event ID
+   * @returns The snapshot, or undefined when absent or expired
+   */
+  takeRouteSnapshot(eventId: string): RouteSnapshot | undefined {
+    const snapshot = this.routeSnapshots.get(eventId);
+    if (!snapshot) {
+      return undefined;
+    }
+    this.routeSnapshots.delete(eventId);
+    if (snapshot.expiresAtMs <= Date.now()) {
+      return undefined;
+    }
+    return snapshot;
+  }
+
+  /**
+   * Puts a consumed snapshot back after a failed delivery attempt, so a retry
+   * can still deliver through it (route + session copy + remaining TTL).
+   * Restoring only the live route is not enough when the session was evicted:
+   * a retry would find the route but no session anywhere and drop the result.
+   */
+  restoreRouteSnapshot(eventId: string, snapshot: RouteSnapshot): void {
+    this.routeSnapshots.set(eventId, snapshot);
   }
 
   /**
@@ -308,6 +389,7 @@ export class CorrelationStore {
    */
   clear(): void {
     this.eventRoutes.clear();
+    this.routeSnapshots.clear();
     this.progressTokenToEventId.clear();
     this.clientEventIds.clear();
   }

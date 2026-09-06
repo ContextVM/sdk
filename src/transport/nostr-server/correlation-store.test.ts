@@ -473,4 +473,82 @@ describe('CorrelationStore', () => {
       expect(store.hasActiveRoutesForClient('c2')).toBe(true);
     });
   });
+
+  describe('route snapshots', () => {
+    const session = {
+      isInitialized: true,
+      isEncrypted: true,
+      hasSentCommonTags: true,
+      supportsEncryption: true,
+      supportsEphemeralEncryption: false,
+      supportsOversizedTransfer: false,
+      supportsOpenStream: false,
+    };
+
+    it('captures and consumes a snapshot with a copy of route and session', () => {
+      const store = new CorrelationStore();
+      store.registerEventRoute('e1', 'client1', 'req1');
+
+      store.captureRouteSnapshot('e1', session, 60_000);
+      const snapshot = store.takeRouteSnapshot('e1');
+
+      expect(snapshot).toBeDefined();
+      expect(snapshot!.route.clientPubkey).toBe('client1');
+      expect(snapshot!.route.originalRequestId).toBe('req1');
+      expect(snapshot!.session).toEqual(session);
+      // Copy, not the same reference: later session mutation cannot rewrite history.
+      expect(snapshot!.session).not.toBe(session);
+
+      // Take is consuming: a second take finds nothing.
+      expect(store.takeRouteSnapshot('e1')).toBeUndefined();
+    });
+
+    it('is a no-op when no route exists at capture time', () => {
+      const store = new CorrelationStore();
+
+      store.captureRouteSnapshot('unknown', session, 60_000);
+
+      expect(store.takeRouteSnapshot('unknown')).toBeUndefined();
+    });
+
+    it('returns undefined for an expired snapshot', async () => {
+      const store = new CorrelationStore();
+      store.registerEventRoute('e1', 'client1', 'req1');
+
+      store.captureRouteSnapshot('e1', undefined, 1);
+      await new Promise((r) => setTimeout(r, 5));
+
+      expect(store.takeRouteSnapshot('e1')).toBeUndefined();
+    });
+
+    it('snapshot survives removeRoutesForClient (session eviction path)', () => {
+      const store = new CorrelationStore();
+      store.registerEventRoute('e1', 'client1', 'req1');
+      store.captureRouteSnapshot('e1', session, 60_000);
+
+      store.removeRoutesForClient('client1');
+
+      expect(store.getEventRoute('e1')).toBeUndefined();
+      expect(store.takeRouteSnapshot('e1')).toBeDefined();
+    });
+
+    it('snapshot survives popEventRoute from cleanup paths; the router drops it via dropRouteSnapshot', () => {
+      const store = new CorrelationStore();
+      store.registerEventRoute('e1', 'client1', 'req1');
+      store.captureRouteSnapshot('e1', session, 60_000);
+
+      // cleanupDroppedRequest / removeRoutesForClient go through popEventRoute
+      // and must leave the fallback snapshot intact.
+      const popped = store.popEventRoute('e1');
+      expect(popped).toBeDefined();
+      expect(store.takeRouteSnapshot('e1')).toBeDefined();
+
+      // After the response router uses the live route it drops the snapshot.
+      store.registerEventRoute('e1', 'client1', 'req1');
+      store.captureRouteSnapshot('e1', session, 60_000);
+      store.popEventRoute('e1');
+      store.dropRouteSnapshot('e1');
+      expect(store.takeRouteSnapshot('e1')).toBeUndefined();
+    });
+  });
 });

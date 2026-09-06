@@ -86,7 +86,7 @@ function isResolvePriceWaiver(
   return 'waive' in quote && quote.waive;
 }
 
-function resolvePaymentProcessor(
+export function resolvePaymentProcessor(
   clientPmis: readonly string[] | undefined,
   processorsByPmi: Map<string, PaymentProcessor>,
   processors: readonly PaymentProcessor[],

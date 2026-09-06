@@ -23,9 +23,7 @@ const testLogger: Logger = {
 
 const CLIENT_PUBKEY = 'a'.repeat(64);
 
-function createSession(
-  overrides: Partial<ClientSession> = {},
-): ClientSession {
+function createSession(overrides: Partial<ClientSession> = {}): ClientSession {
   return {
     isInitialized: true,
     isEncrypted: true,
@@ -44,6 +42,7 @@ interface CapturedDeps {
   deps: OutboundResponseRouterDeps;
   chooseCalls: Array<{ fallbackWrapKind?: number }>;
   sentGiftWrapKinds: Array<number | undefined>;
+  sentMessages: JSONRPCMessage[];
 }
 
 function createRouterWithCapturedDeps(
@@ -53,6 +52,7 @@ function createRouterWithCapturedDeps(
 ): CapturedDeps {
   const chooseCalls: CapturedDeps['chooseCalls'] = [];
   const sentGiftWrapKinds: CapturedDeps['sentGiftWrapKinds'] = [];
+  const sentMessages: CapturedDeps['sentMessages'] = [];
 
   const deps = {
     correlationStore,
@@ -87,6 +87,7 @@ function createRouterWithCapturedDeps(
       if (options.failSend) {
         throw new Error('send failed');
       }
+      sentMessages.push(_message);
       sentGiftWrapKinds.push(giftWrapKind);
       return 'inner-event-id';
     },
@@ -95,7 +96,7 @@ function createRouterWithCapturedDeps(
     logger: testLogger,
   } as unknown as OutboundResponseRouterDeps;
 
-  return { deps, chooseCalls, sentGiftWrapKinds };
+  return { deps, chooseCalls, sentGiftWrapKinds, sentMessages };
 }
 
 const gatingErrorResponse: JSONRPCErrorResponse = {
@@ -114,10 +115,8 @@ describe('OutboundResponseRouter.routeTargeted', () => {
       undefined,
       EPHEMERAL_GIFT_WRAP_KIND,
     );
-    const { deps, chooseCalls, sentGiftWrapKinds } = createRouterWithCapturedDeps(
-      correlationStore,
-      createSession(),
-    );
+    const { deps, chooseCalls, sentGiftWrapKinds } =
+      createRouterWithCapturedDeps(correlationStore, createSession());
 
     await new OutboundResponseRouter(deps).routeTargeted(
       CLIENT_PUBKEY,
@@ -135,10 +134,8 @@ describe('OutboundResponseRouter.routeTargeted', () => {
   });
 
   test('sends without a wrap-kind hint when no route is recorded', async () => {
-    const { deps, chooseCalls, sentGiftWrapKinds } = createRouterWithCapturedDeps(
-      new CorrelationStore({}),
-      createSession(),
-    );
+    const { deps, chooseCalls, sentGiftWrapKinds } =
+      createRouterWithCapturedDeps(new CorrelationStore({}), createSession());
 
     await new OutboundResponseRouter(deps).routeTargeted(
       CLIENT_PUBKEY,
@@ -150,11 +147,55 @@ describe('OutboundResponseRouter.routeTargeted', () => {
     expect(sentGiftWrapKinds).toEqual([undefined]);
   });
 
-  test('does not send when the client has no active session', async () => {
-    const { deps, chooseCalls, sentGiftWrapKinds } = createRouterWithCapturedDeps(
+  test('restores the client request id the coordinator rewrote to the event id', async () => {
+    const correlationStore = new CorrelationStore({});
+    correlationStore.registerEventRoute(
+      'evt-rewritten',
+      CLIENT_PUBKEY,
+      42,
+      undefined,
+      EPHEMERAL_GIFT_WRAP_KIND,
+    );
+    const { deps, sentMessages } = createRouterWithCapturedDeps(
+      correlationStore,
+      createSession(),
+    );
+
+    // The gating middleware echoes the id it saw: the event id, post-rewrite.
+    const errorWithEventId: JSONRPCErrorResponse = {
+      ...gatingErrorResponse,
+      id: 'evt-rewritten',
+    };
+    await new OutboundResponseRouter(deps).routeTargeted(
+      CLIENT_PUBKEY,
+      errorWithEventId,
+      'evt-rewritten',
+    );
+
+    // On the wire: the caller's original JSON-RPC id, not the routing key.
+    expect((sentMessages[0] as JSONRPCErrorResponse).id).toBe(42);
+    // Non-mutating: the caller's response object is untouched.
+    expect(errorWithEventId.id).toBe('evt-rewritten');
+  });
+
+  test('keeps the response id as-is when no route is recorded', async () => {
+    const { deps, sentMessages } = createRouterWithCapturedDeps(
       new CorrelationStore({}),
       createSession(),
     );
+
+    await new OutboundResponseRouter(deps).routeTargeted(
+      CLIENT_PUBKEY,
+      { ...gatingErrorResponse, id: 'evt-unknown' },
+      'evt-unknown',
+    );
+
+    expect((sentMessages[0] as JSONRPCErrorResponse).id).toBe('evt-unknown');
+  });
+
+  test('does not send when the client has no active session', async () => {
+    const { deps, chooseCalls, sentGiftWrapKinds } =
+      createRouterWithCapturedDeps(new CorrelationStore({}), createSession());
 
     await new OutboundResponseRouter(deps).routeTargeted(
       'b'.repeat(64),
@@ -204,5 +245,159 @@ describe('OutboundResponseRouter.routeTargeted', () => {
     const restored = correlationStore.getEventRoute('evt-a3');
     expect(restored?.wrapKind).toBe(EPHEMERAL_GIFT_WRAP_KIND);
     expect(correlationStore.getRequestEvent('evt-a3')).toBe(requestEvent);
+  });
+});
+
+describe('OutboundResponseRouter.route payment route snapshot fallback', () => {
+  // Fresh object per test: route() restores the original request id by
+  // mutating the response in place, so a shared literal would leak state.
+  const paidResult = () => ({
+    jsonrpc: '2.0' as const,
+    id: 'evt-paid',
+    result: { content: [] },
+  });
+
+  test('delivers from the snapshot when the live route was popped by duplicate-delivery cleanup', async () => {
+    const correlationStore = new CorrelationStore({});
+    correlationStore.registerEventRoute(
+      'evt-paid',
+      CLIENT_PUBKEY,
+      'original-request-id',
+      undefined,
+      EPHEMERAL_GIFT_WRAP_KIND,
+    );
+    const session = createSession();
+    correlationStore.captureRouteSnapshot('evt-paid', session, 60_000);
+    // Duplicate delivery popped the route while payment settled.
+    correlationStore.popEventRoute('evt-paid');
+
+    const { deps, sentGiftWrapKinds } = createRouterWithCapturedDeps(
+      correlationStore,
+      session,
+    );
+    const sent: JSONRPCMessage[] = [];
+    (
+      deps as { sendMcpMessage: OutboundResponseRouterDeps['sendMcpMessage'] }
+    ).sendMcpMessage = async (
+      message,
+      _target,
+      _kind,
+      _tags,
+      _encrypt,
+      _onCreate,
+      giftWrapKind,
+    ) => {
+      sent.push(message);
+      sentGiftWrapKinds.push(giftWrapKind);
+      return 'inner-event-id';
+    };
+
+    await new OutboundResponseRouter(deps).route(paidResult());
+
+    expect(sent).toHaveLength(1);
+    // The client sees the result under its original request id.
+    expect((sent[0] as { id?: string }).id).toBe('original-request-id');
+    expect(sentGiftWrapKinds).toEqual([EPHEMERAL_GIFT_WRAP_KIND]);
+  });
+
+  test('delivers from the snapshot session when the paying client was evicted', async () => {
+    const correlationStore = new CorrelationStore({});
+    correlationStore.registerEventRoute(
+      'evt-paid',
+      CLIENT_PUBKEY,
+      'original-request-id',
+    );
+    correlationStore.captureRouteSnapshot(
+      'evt-paid',
+      createSession({ isEncrypted: false }),
+      60_000,
+    );
+    // Session eviction removed the route entirely.
+    correlationStore.removeRoutesForClient(CLIENT_PUBKEY);
+
+    const { deps } = createRouterWithCapturedDeps(
+      correlationStore,
+      createSession(),
+    );
+    // The live session store no longer knows the client.
+    (deps.sessionStore as { getSession: (p: string) => unknown }).getSession =
+      () => undefined;
+
+    const sent: JSONRPCMessage[] = [];
+    (
+      deps as { sendMcpMessage: OutboundResponseRouterDeps['sendMcpMessage'] }
+    ).sendMcpMessage = async (message) => {
+      sent.push(message);
+      return 'inner-event-id';
+    };
+
+    await new OutboundResponseRouter(deps).route(paidResult());
+
+    expect(sent).toHaveLength(1);
+    expect((sent[0] as { id?: string }).id).toBe('original-request-id');
+  });
+
+  test('restores the snapshot when snapshot delivery fails, so a retry still delivers after eviction', async () => {
+    const correlationStore = new CorrelationStore({});
+    correlationStore.registerEventRoute(
+      'evt-paid',
+      CLIENT_PUBKEY,
+      'original-request-id',
+    );
+    correlationStore.captureRouteSnapshot(
+      'evt-paid',
+      createSession({ isEncrypted: false }),
+      60_000,
+    );
+    // Session eviction removed the route entirely.
+    correlationStore.removeRoutesForClient(CLIENT_PUBKEY);
+
+    const { deps } = createRouterWithCapturedDeps(
+      correlationStore,
+      createSession(),
+    );
+    (deps.sessionStore as { getSession: (p: string) => unknown }).getSession =
+      () => undefined;
+
+    const sent: JSONRPCMessage[] = [];
+    let attempts = 0;
+    (
+      deps as { sendMcpMessage: OutboundResponseRouterDeps['sendMcpMessage'] }
+    ).sendMcpMessage = async (message) => {
+      attempts++;
+      if (attempts === 1) {
+        throw new Error('relay down');
+      }
+      sent.push(message);
+      return 'inner-event-id';
+    };
+
+    const router = new OutboundResponseRouter(deps);
+    // First attempt: delivers from the snapshot session, publish fails.
+    await expect(router.route(paidResult())).rejects.toThrow('relay down');
+
+    // Retry (e.g. a deferred-response flush): must deliver, not hit the
+    // no-session branch. A route-only restore would strand it there.
+    await router.route(paidResult());
+
+    expect(attempts).toBe(2);
+    expect(sent).toHaveLength(1);
+    expect((sent[0] as { id?: string }).id).toBe('original-request-id');
+    // The snapshot was consumed by the successful retry.
+    expect(correlationStore.takeRouteSnapshot('evt-paid')).toBeUndefined();
+  });
+
+  test('still errors when neither route nor snapshot exists', async () => {
+    const { deps } = createRouterWithCapturedDeps(
+      new CorrelationStore({}),
+      createSession(),
+    );
+    const errors: Error[] = [];
+    deps.onerror = (e) => errors.push(e);
+
+    await new OutboundResponseRouter(deps).route(paidResult());
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0].message).toContain('No pending request found');
   });
 });
