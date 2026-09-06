@@ -78,6 +78,26 @@ export function createExplicitGatingMiddleware(
         ? options.paymentTtlMs
         : 300_000;
 
+    // Capacity guard, before any invoice is minted: silently evicting a live
+    // pending entry would disarm its dedup and a retry would be charged twice
+    // (mirrors the transparent middleware's maxPendingPayments guard).
+    if (!authorizationStore.hasPendingCapacity()) {
+      logger.warn('pending payment capacity reached, refusing priced request', {
+        requestEventId,
+        method: message.method,
+      });
+      const capacityResponse: JSONRPCErrorResponse = {
+        jsonrpc: '2.0',
+        id: message.id,
+        error: {
+          code: -32000,
+          message: 'Payment capacity reached, retry later',
+        },
+      };
+      await sendResponse(ctx.clientPubkey, capacityResponse, requestEventId);
+      return;
+    }
+
     // 2. Try to set pending state atomically
     // We use a safe default TTL here, but will override it below if the payment option has a specific TTL
     if (!authorizationStore.trySetPending(identity, paymentTtlMs)) {

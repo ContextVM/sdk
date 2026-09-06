@@ -91,6 +91,7 @@ export class LnBolt11NwcPaymentProcessor implements PaymentProcessor {
 
   private notificationVerificationEnabled: boolean;
   private initNotificationsPromise: Promise<void> | undefined;
+  private notificationsSubscribePromise: Promise<void> | undefined;
 
   private notificationsUnsubscribe: (() => void) | undefined;
   private readonly notificationWaiters = new Map<
@@ -160,19 +161,37 @@ export class LnBolt11NwcPaymentProcessor implements PaymentProcessor {
   private async ensureNotificationsSubscribed(): Promise<void> {
     if (!this.notificationVerificationEnabled) return;
     if (this.notificationsUnsubscribe) return;
-    this.notificationsUnsubscribe = await this.nwc.subscribeNotifications({
-      onNotification: (payload) => {
-        if (payload.notification_type !== 'payment_received') return;
-        const paymentHash = (payload.notification as { payment_hash?: unknown })
-          ?.payment_hash;
-        if (typeof paymentHash !== 'string' || paymentHash.length === 0) return;
+    // Memoize the in-flight subscribe: concurrent verifications racing here
+    // would each subscribe, and only the last unsubscribe handle is kept —
+    // the first subscription would leak for the process lifetime.
+    if (!this.notificationsSubscribePromise) {
+      this.notificationsSubscribePromise = this.nwc
+        .subscribeNotifications({
+          onNotification: (payload) => {
+            if (payload.notification_type !== 'payment_received') return;
+            const paymentHash = (
+              payload.notification as { payment_hash?: unknown }
+            )?.payment_hash;
+            if (typeof paymentHash !== 'string' || paymentHash.length === 0)
+              return;
 
-        const waiters = this.notificationWaiters.get(paymentHash);
-        if (!waiters || waiters.length === 0) return;
-        this.notificationWaiters.delete(paymentHash);
-        for (const w of waiters) w(paymentHash);
-      },
-    });
+            const waiters = this.notificationWaiters.get(paymentHash);
+            if (!waiters || waiters.length === 0) return;
+            this.notificationWaiters.delete(paymentHash);
+            for (const w of waiters) w(paymentHash);
+          },
+        })
+        .then((unsubscribe) => {
+          this.notificationsUnsubscribe = unsubscribe;
+        })
+        .finally(() => {
+          // Clear only when not retained, so a failed subscribe can be retried.
+          if (!this.notificationsUnsubscribe) {
+            this.notificationsSubscribePromise = undefined;
+          }
+        });
+    }
+    await this.notificationsSubscribePromise;
   }
 
   private computeNextDelayMs(params: { attempt: number }): number {

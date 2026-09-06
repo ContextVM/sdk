@@ -780,4 +780,61 @@ describe('Explicit Gating Middleware', () => {
     // Falls back to the 5-minute default window, not 0.
     expect(store.getPendingRemainingMs(identity)).toBeGreaterThan(60_000);
   });
+
+  test('refuses with -32000 without minting an invoice at pending capacity', async () => {
+    // Capacity 1, already occupied by a live pending entry for another identity.
+    const store = new AuthorizationStore({ maxEntries: 1 });
+    store.trySetPending(
+      { clientPubkey: 'other-client', invocationHash: 'other' },
+      10000,
+    );
+
+    const sentResponses: JSONRPCErrorResponse[] = [];
+    let invoicesMinted = 0;
+    const countingProcessor = {
+      ...processor,
+      async createPaymentRequired(
+        params: {
+          amount: number;
+          description?: string;
+          requestEventId: string;
+          clientPubkey: string;
+        },
+      ) {
+        invoicesMinted += 1;
+        return processor.createPaymentRequired(params);
+      },
+    };
+
+    const mw = createExplicitGatingMiddleware({
+      options: {
+        processors: [countingProcessor],
+        pricedCapabilities: [...pricedCapabilities],
+      },
+      authorizationStore: store,
+      sendResponse: async (_pubkey, response) => {
+        sentResponses.push(response);
+      },
+    });
+
+    let forwarded = false;
+    await mw(message, ctx, async () => {
+      forwarded = true;
+    });
+
+    expect(forwarded).toBe(false);
+    expect(invoicesMinted).toBe(0);
+    expect(sentResponses.length).toBe(1);
+    expect(sentResponses[0].error.code).toBe(-32000);
+    expect(sentResponses[0].error.message).toBe(
+      'Payment capacity reached, retry later',
+    );
+    // The other client's live pending entry must not have been evicted.
+    expect(
+      store.getPendingRemainingMs({
+        clientPubkey: 'other-client',
+        invocationHash: 'other',
+      }),
+    ).toBeGreaterThan(0);
+  });
 });

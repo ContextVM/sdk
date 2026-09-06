@@ -260,4 +260,20 @@ describe('ServerOpenStreamFactory.getOpenStreams', () => {
     expect(factory.getWriter('evt-pt')).toBeUndefined();
     expect(factory.getOpenStreams()).toHaveLength(0);
   });
+
+  test('createWriterIfEnabled reuses the existing writer for the same event id', () => {
+    const { factory } = createFactory();
+
+    const first = factory.createWriterIfEnabled('evt-dup', 'pk-1', 'token-dup');
+    const second = factory.createWriterIfEnabled('evt-dup', 'pk-1', 'token-dup');
+
+    // A duplicate delivery re-enters the inbound path for the same event id;
+    // overwriting the reservation would orphan the writer already bound to
+    // the forwarded request's _meta.stream.
+    expect(second).toBe(first);
+    expect(factory.getOpenStreams()).toHaveLength(1);
+
+    factory.releaseUnusedWriter('evt-dup');
+    expect(factory.getOpenStreams()).toHaveLength(0);
+  });
 });

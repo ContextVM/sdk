@@ -775,7 +775,15 @@ export class NostrServerTransport
     wrapKindHint?: number,
   ): Promise<void> {
     if (this.openStreamFactory.isClientEvicted(clientPubkey)) {
-      throw new Error(`No active session found for client: ${clientPubkey}`);
+      // A probe-timeout eviction blacklists the pubkey until its pending
+      // response routes (takePendingEviction). If the client has since
+      // re-established a session, lift the blacklist instead of refusing —
+      // otherwise a probe timeout whose response never routes permanently
+      // breaks notification delivery (incl. payment_required) for that client.
+      if (!this.sessionStore.getSession(clientPubkey)) {
+        throw new Error(`No active session found for client: ${clientPubkey}`);
+      }
+      this.openStreamFactory.clearClientEviction(clientPubkey);
     }
 
     const session = this.sessionStore.getSession(clientPubkey);

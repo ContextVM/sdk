@@ -205,6 +205,14 @@ export class NwcClient {
 
       let settled = false;
       let unsubscribeResponse: (() => void) | undefined;
+      // Marks the attempt finished and releases the response subscription.
+      // Covers every exit path — including a response timeout or a publish
+      // failure that fires BEFORE relayHandler.subscribe() resolves — so a
+      // late-resolving subscription is always unsubscribed instead of leaking.
+      const settle = (): void => {
+        settled = true;
+        unsubscribeResponse?.();
+      };
 
       const responsePromise = new Promise<NostrEvent>((resolve, reject) => {
         const filters: Filter[] = [
@@ -234,7 +242,8 @@ export class NwcClient {
             resolve(event);
           })
           .then((unsubscribe) => {
-            // Ensure the subscription is cleaned up when the promise settles.
+            // Ensure the subscription is cleaned up when the promise settles,
+            // including the timeout/publish-failure paths handled by settle().
             unsubscribeResponse = unsubscribe;
             if (settled) {
               unsubscribeResponse();
@@ -260,51 +269,56 @@ export class NwcClient {
         await this.relayHandler.publish(signedRequest, {
           abortSignal: publishController.signal,
         });
+        if (publishController.signal.aborted) {
+          throw new Error(`NWC publish timed out for ${params.method}`);
+        }
+
+        const responseEvent = await withTimeout(
+          responsePromise,
+          this.responseTimeoutMs,
+          `NWC response timed out for ${params.method}`,
+        ).finally(() => unsubscribeResponse?.());
+
+        // Validate correlation.
+        const eTag = queryTags(responseEvent.tags, 'e').firstValue;
+        if (eTag !== signedRequest.id) {
+          throw new Error('NWC response did not correlate to request');
+        }
+
+        const decrypted = nip04.decrypt(
+          this.connection.clientSecretKeyHex,
+          responseEvent.pubkey,
+          responseEvent.content,
+        );
+
+        const parsed = JSON.parse(decrypted) as NwcResponse<M, unknown>;
+
+        if (parsed.result_type !== params.resultType) {
+          throw new Error(
+            `Unexpected NWC result_type: ${String(parsed.result_type)} (expected ${params.resultType})`,
+          );
+        }
+
+        if (parsed.error) {
+          return parsed as NwcResponse<M, R>;
+        }
+
+        if (params.responseResultGuard && parsed.result !== null) {
+          if (!params.responseResultGuard(parsed.result)) {
+            throw new Error('Unexpected NWC result shape');
+          }
+        }
+
+        return parsed as NwcResponse<M, R>;
+      } catch (error) {
+        // Release the response subscription on every failure path — including
+        // timeouts and publish failures that fire before subscribe() resolves,
+        // so a late-resolving subscription is unsubscribed instead of leaking.
+        settle();
+        throw error;
       } finally {
         clearTimeout(publishTimeout);
       }
-
-      if (publishController.signal.aborted) {
-        throw new Error(`NWC publish timed out for ${params.method}`);
-      }
-
-      const responseEvent = await withTimeout(
-        responsePromise,
-        this.responseTimeoutMs,
-        `NWC response timed out for ${params.method}`,
-      ).finally(() => unsubscribeResponse?.());
-
-      // Validate correlation.
-      const eTag = queryTags(responseEvent.tags, 'e').firstValue;
-      if (eTag !== signedRequest.id) {
-        throw new Error('NWC response did not correlate to request');
-      }
-
-      const decrypted = nip04.decrypt(
-        this.connection.clientSecretKeyHex,
-        responseEvent.pubkey,
-        responseEvent.content,
-      );
-
-      const parsed = JSON.parse(decrypted) as NwcResponse<M, unknown>;
-
-      if (parsed.result_type !== params.resultType) {
-        throw new Error(
-          `Unexpected NWC result_type: ${String(parsed.result_type)} (expected ${params.resultType})`,
-        );
-      }
-
-      if (parsed.error) {
-        return parsed as NwcResponse<M, R>;
-      }
-
-      if (params.responseResultGuard && parsed.result !== null) {
-        if (!params.responseResultGuard(parsed.result)) {
-          throw new Error('Unexpected NWC result shape');
-        }
-      }
-
-      return parsed as NwcResponse<M, R>;
     };
 
     const prev = this.requestQueue;
