@@ -13,6 +13,13 @@ interface PaidAuthorization {
  * It manages both the pending state (waiting for payment verification)
  * and the granted state (paid and ready to consume).
  *
+ * Capacity safety: at capacity, expired entries are purged first and live
+ * pending entries are NEVER silently evicted — an evicted live pending entry
+ * disarms the payment dedup and a retry would mint a second invoice
+ * (CEP-8: MUST NOT charge twice). `trySetPending` refuses instead.
+ * Verified grants cannot be refused (the money is already taken), so `grant()`
+ * purges expired grants first and only then falls back to LRU eviction.
+ *
  * NOTE: The atomicity provided by `trySetPending` relies on in-memory maps,
  * meaning it is strictly single-process. For multi-process horizontal scaling,
  * implementers should use a distributed lock (e.g. Redis Redlock) keyed by
@@ -26,12 +33,13 @@ interface PaidAuthorization {
 export class AuthorizationStore {
   private readonly authorizations: LruCache<PaidAuthorization>;
   private readonly pending: LruCache<number>; // Map of key -> expiresAtMs
+  private readonly maxEntries: number;
   private readonly logger = createLogger('authorization-store');
 
   constructor(opts?: { maxEntries?: number }) {
-    const maxEntries = opts?.maxEntries ?? 5000;
-    this.authorizations = new LruCache<PaidAuthorization>(maxEntries);
-    this.pending = new LruCache<number>(maxEntries);
+    this.maxEntries = opts?.maxEntries ?? 5000;
+    this.authorizations = new LruCache<PaidAuthorization>(this.maxEntries);
+    this.pending = new LruCache<number>(this.maxEntries);
   }
 
   private getKey(identity: CanonicalInvocationIdentity): string {
@@ -46,6 +54,13 @@ export class AuthorizationStore {
   public grant(identity: CanonicalInvocationIdentity, ttlMs: number): void {
     const key = this.getKey(identity);
     const expiresAtMs = Date.now() + ttlMs;
+
+    // Purge expired grants before any capacity-driven eviction: an evicted
+    // unconsumed grant is paid-but-unusable and the client would be charged
+    // again on retry.
+    if (this.authorizations.size >= this.maxEntries) {
+      this.purgeExpiredAuthorizations();
+    }
 
     this.authorizations.set(key, { key, expiresAtMs });
 
@@ -78,14 +93,38 @@ export class AuthorizationStore {
     return true;
   }
 
+  /** Removes expired pending entries (capacity-pressure cleanup). */
+  private purgeExpiredPending(): void {
+    const now = Date.now();
+    for (const [key, expiry] of this.pending.entries()) {
+      if (expiry <= now) {
+        this.pending.delete(key);
+      }
+    }
+  }
+
+  /** Removes expired grants (capacity-pressure cleanup). */
+  private purgeExpiredAuthorizations(): void {
+    const now = Date.now();
+    for (const [key, auth] of this.authorizations.entries()) {
+      if (auth.expiresAtMs <= now) {
+        this.authorizations.delete(key);
+      }
+    }
+  }
+
   /**
    * Atomically checks whether a payment is already pending for this identity
    * and, if not, marks it as pending. Returns `true` if this call transitioned
    * the identity to pending (caller should emit -32042). Returns `false` if
-   * already pending (caller should emit -32043).
+   * already pending (caller should emit -32043) or the store is at capacity
+   * with only live entries (caller should emit a capacity refusal) — the two
+   * are distinguished via {@link getPendingRemainingMs}.
    *
    * This atomic check-and-set prevents concurrent requests from both receiving
-   * -32042 and triggering duplicate payment flows.
+   * -32042 and triggering duplicate payment flows. Live entries are never
+   * evicted to make room: an evicted pending entry disarms the dedup and a
+   * retry would be charged twice.
    * NOTE: This is single-process only. Distributed setups must use an external lock.
    */
   public trySetPending(
@@ -102,6 +141,18 @@ export class AuthorizationStore {
         this.pending.delete(key);
       } else {
         // Already pending and active
+        return false;
+      }
+    }
+
+    if (this.pending.size >= this.maxEntries) {
+      this.purgeExpiredPending();
+      if (this.pending.size >= this.maxEntries) {
+        // Refuse rather than evict a live payment's dedup entry.
+        this.logger.warn('pending authorization capacity reached, refusing', {
+          key,
+          maxEntries: this.maxEntries,
+        });
         return false;
       }
     }

@@ -159,8 +159,26 @@ describe('ServerOpenStreamFactory.releaseUnusedWriter', () => {
     expect(factory.getOpenStreams().length).toBe(0);
   });
 
-  test('disposes a started writer, clearing keepalive state', async () => {
-    const { factory } = createFactory();
+  test('preserves a started writer; its own keepalive reaps it instead', async () => {
+    const notifications: Array<{
+      clientPubkey: string;
+      notification: JSONRPCMessage;
+    }> = [];
+    const sessions = new Map<string, ClientSession>();
+    const factory = new ServerOpenStreamFactory({
+      openStreamEnabled: true,
+      sessionStore: {
+        getSession: (pk: string) => sessions.get(pk),
+        removeSession: (pk: string) => sessions.delete(pk),
+      } as unknown as SessionStore,
+      correlationStore,
+      sendNotification: async (clientPubkey, notification) => {
+        notifications.push({ clientPubkey, notification });
+      },
+      handleResponse: async () => undefined,
+      policy: { idleTimeoutMs: 10, probeTimeoutMs: 10 },
+      logger: testLogger,
+    });
 
     const writer = factory.createWriterIfEnabled(
       'evt-started',
@@ -171,9 +189,15 @@ describe('ServerOpenStreamFactory.releaseUnusedWriter', () => {
     await writer!.start();
     expect(writer!.hasStarted).toBe(true);
 
+    // A drop path (e.g. suppressed duplicate delivery) must not dispose the
+    // running invocation's stream; the writer's keepalive eventually
+    // terminates and removes it.
     factory.releaseUnusedWriter('evt-started');
 
-    expect(writer!.isActive).toBe(false);
+    expect(writer!.isActive).toBe(true);
+    expect(factory.getWriter('evt-started')).toBeDefined();
+
+    await waitFor(() => !writer!.isActive);
     expect(factory.getWriter('evt-started')).toBeUndefined();
   });
 });
@@ -259,5 +283,39 @@ describe('ServerOpenStreamFactory.getOpenStreams', () => {
     expect(evicted).toEqual(['pk-1']);
     expect(factory.getWriter('evt-pt')).toBeUndefined();
     expect(factory.getOpenStreams()).toHaveLength(0);
+  });
+
+  test('createWriterIfEnabled reuses the existing writer for the same event id', () => {
+    const { factory } = createFactory();
+
+    const first = factory.createWriterIfEnabled('evt-dup', 'pk-1', 'token-dup');
+    const second = factory.createWriterIfEnabled('evt-dup', 'pk-1', 'token-dup');
+
+    // A duplicate delivery re-enters the inbound path for the same event id;
+    // overwriting the reservation would orphan the writer already bound to
+    // the forwarded request's _meta.stream.
+    expect(second).toBe(first);
+    expect(factory.getOpenStreams()).toHaveLength(1);
+
+    factory.releaseUnusedWriter('evt-dup');
+    expect(factory.getOpenStreams()).toHaveLength(0);
+  });
+
+  test('releaseUnusedWriter never disposes a started writer (dropped duplicate)', async () => {
+    const { factory } = createFactory();
+
+    const writer = factory.createWriterIfEnabled('evt-live', 'pk-1', 'tok');
+    await writer!.start();
+
+    // A redelivered request that the payment middleware suppresses runs
+    // cleanupDroppedRequest → releaseUnusedWriter. The running invocation
+    // owns the stream: the drop must not kill it.
+    factory.releaseUnusedWriter('evt-live');
+
+    expect(writer!.isActive).toBe(true);
+    expect(factory.getWriter('evt-live')).toBeDefined();
+
+    await writer!.close();
+    expect(factory.getWriter('evt-live')).toBeUndefined();
   });
 });

@@ -25,6 +25,10 @@ class MockNwcClient implements NwcClientLike {
     | ((payload: { notification_type: string; notification: unknown }) => void)
     | undefined;
 
+  public subscribeCalls = 0;
+  /** When set, subscribeNotifications() resolves only after this delay (ms). */
+  public subscribeDelayMs = 0;
+
   public async request<M extends string, P, R>(params: {
     method: M;
     request: { method: M; params: P };
@@ -52,6 +56,10 @@ class MockNwcClient implements NwcClientLike {
       notification: unknown;
     }) => void;
   }): Promise<() => void> {
+    this.subscribeCalls += 1;
+    if (this.subscribeDelayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, this.subscribeDelayMs));
+    }
     this.onNotification = params.onNotification;
     return () => {
       this.onNotification = undefined;
@@ -99,10 +107,14 @@ function makeVerifyParams(params: {
 
 describe('LnBolt11NwcPaymentProcessor', () => {
   test('dedupes concurrent verifyPayment for the same invoice', async () => {
+    // Captured per test: under bun --concurrent, beforeEach swaps the module
+    // binding while other tests are in flight — reads after an await must use
+    // this snapshot, not the live `mockClient`.
+    const client = mockClient;
     const processor = createProcessor();
 
     // One lookup that is immediately settled.
-    mockClient!.responses.push({
+    client.responses.push({
       result_type: 'lookup_invoice',
       error: null,
       result: {
@@ -123,14 +135,15 @@ describe('LnBolt11NwcPaymentProcessor', () => {
 
     expect(a).toEqual({ _meta: { payment_hash: 'a'.repeat(64) } });
     expect(b).toEqual({ _meta: { payment_hash: 'a'.repeat(64) } });
-    expect(mockClient!.calls).toHaveLength(1);
-    expect(mockClient!.calls[0]!.method).toBe('lookup_invoice');
+    expect(client.calls).toHaveLength(1);
+    expect(client.calls[0]!.method).toBe('lookup_invoice');
   });
 
   test('prefers lookup by payment_hash when wallet provided it on make_invoice', async () => {
+    const client = mockClient;
     const processor = createProcessor();
 
-    mockClient!.responses.push({
+    client.responses.push({
       result_type: 'make_invoice',
       error: null,
       result: {
@@ -146,7 +159,7 @@ describe('LnBolt11NwcPaymentProcessor', () => {
       description: 'x',
     });
 
-    mockClient!.responses.push({
+    client.responses.push({
       result_type: 'lookup_invoice',
       error: null,
       result: {
@@ -160,20 +173,21 @@ describe('LnBolt11NwcPaymentProcessor', () => {
     );
 
     // Calls: make_invoice, lookup_invoice
-    expect(mockClient!.calls).toHaveLength(2);
-    const lookup = mockClient!.calls[1]!;
+    expect(client.calls).toHaveLength(2);
+    const lookup = client.calls[1]!;
     expect(lookup.method).toBe('lookup_invoice');
     expect(lookup.request.params).toEqual({ payment_hash: 'b'.repeat(64) });
   });
 
   test('auto mode fetches info once and uses polling when notifications not supported', async () => {
+    const client = mockClient;
     const processor = createProcessor({
       enableNotificationVerification: undefined,
     });
 
-    mockClient!.infoNotificationTypes = new Set();
+    client.infoNotificationTypes = new Set();
 
-    mockClient!.responses.push({
+    client.responses.push({
       result_type: 'lookup_invoice',
       error: null,
       result: { state: 'settled', payment_hash: 'c'.repeat(64) },
@@ -183,17 +197,18 @@ describe('LnBolt11NwcPaymentProcessor', () => {
       makeVerifyParams({ payReq: 'lnbc1invoice', requestEventId: 'req_auto' }),
     );
 
-    expect(mockClient!.infoFetchCalls).toBe(1);
-    expect(mockClient!.calls).toHaveLength(1);
-    expect(mockClient!.calls[0]!.method).toBe('lookup_invoice');
+    expect(client.infoFetchCalls).toBe(1);
+    expect(client.calls).toHaveLength(1);
+    expect(client.calls[0]!.method).toBe('lookup_invoice');
   });
 
   test('notification mode resolves verifyPayment from payment_received notification', async () => {
+    const client = mockClient;
     const processor = createProcessor({
       enableNotificationVerification: true,
     });
 
-    mockClient!.responses.push({
+    client.responses.push({
       result_type: 'make_invoice',
       error: null,
       result: {
@@ -217,9 +232,9 @@ describe('LnBolt11NwcPaymentProcessor', () => {
     );
 
     await new Promise<void>((r) => setTimeout(r, 0));
-    expect(mockClient!.calls).toHaveLength(1); // only make_invoice
+    expect(client.calls).toHaveLength(1); // only make_invoice
 
-    mockClient!.onNotification?.({
+    client.onNotification?.({
       notification_type: 'payment_received',
       notification: { payment_hash: 'd'.repeat(64) },
     });
@@ -227,5 +242,56 @@ describe('LnBolt11NwcPaymentProcessor', () => {
     await expect(verifyPromise).resolves.toEqual({
       _meta: { payment_hash: 'd'.repeat(64) },
     });
+  });
+
+  test('concurrent verifies subscribe for notifications exactly once', async () => {
+    const client = mockClient;
+    const processor = createProcessor({
+      enableNotificationVerification: true,
+    });
+    client.subscribeDelayMs = 30;
+
+    // Two distinct invoices, both with cached payment hashes.
+    for (const invoice of ['lnbc1race1', 'lnbc1race2']) {
+      client.responses.push({
+        result_type: 'make_invoice',
+        error: null,
+        result: { invoice, payment_hash: invoice.padEnd(64, '0').slice(0, 64) },
+      });
+      await processor.createPaymentRequired({
+        amount: 1,
+        requestEventId: 'req_' + invoice,
+        clientPubkey: 'c'.repeat(64),
+        description: 'x',
+      });
+    }
+
+    const controller = new AbortController();
+    const mkVerify = (
+      payReq: string,
+      requestEventId: string,
+    ): PaymentProcessorVerifyParams => ({
+      pay_req: payReq,
+      requestEventId,
+      clientPubkey: 'c'.repeat(64),
+      abortSignal: controller.signal,
+    });
+
+    const verifies = Promise.allSettled([
+      processor.verifyPayment(mkVerify('lnbc1race1', 'v1')),
+      processor.verifyPayment(mkVerify('lnbc1race2', 'v2')),
+    ]);
+
+    // Abort while both verifies still await the (delayed) subscription, so
+    // both reject instead of waiting for notifications that never come.
+    setTimeout(() => controller.abort(), 10);
+    const results = await verifies;
+
+    expect(
+      results.every((r) => r.status === 'rejected'),
+    ).toBe(true);
+    // The concurrent subscribe window must produce exactly one subscription;
+    // a second would leak its unsubscribe handle forever.
+    expect(client.subscribeCalls).toBe(1);
   });
 });

@@ -18,6 +18,9 @@ import {
 class MockRelayHandler implements RelayHandler {
   public published: NostrEvent[] = [];
   public subscribedFilters: Filter[] | undefined;
+  public unsubscribeCount = 0;
+  /** When set, subscribe() resolves only after this delay (ms). */
+  public subscribeDelayMs = 0;
   private onEvent: ((event: NostrEvent) => void) | undefined;
 
   getRelayUrls(): string[] {
@@ -36,10 +39,17 @@ class MockRelayHandler implements RelayHandler {
     this.published.push(_event);
   }
 
-  async subscribe(filters: Filter[], onEvent: (event: NostrEvent) => void) {
+  async subscribe(
+    filters: Filter[],
+    onEvent: (event: NostrEvent) => void,
+  ): Promise<() => void> {
     this.subscribedFilters = filters;
+    if (this.subscribeDelayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, this.subscribeDelayMs));
+    }
     this.onEvent = onEvent;
     return () => {
+      this.unsubscribeCount += 1;
       this.onEvent = undefined;
     };
   }
@@ -183,5 +193,37 @@ describe('NwcClient', () => {
 
     await new Promise<void>((r) => setTimeout(r, 0));
     expect(received).toEqual([payload]);
+  });
+
+  test('unsubscribes the response subscription when the wallet never responds', async () => {
+    const clientSecretKey = generateSecretKey();
+    const walletPubkey = getPublicKey(generateSecretKey());
+
+    const relayHandler = new MockRelayHandler();
+    // subscribe() resolves only AFTER the response timeout fires — the exact
+    // interleaving that used to leak the subscription forever.
+    relayHandler.subscribeDelayMs = 80;
+
+    const client = new NwcClient({
+      relayHandler,
+      connection: {
+        walletPubkey,
+        relays: ['wss://relay.example'],
+        clientSecretKeyHex: bytesToHex(clientSecretKey),
+      },
+      responseTimeoutMs: 20,
+    });
+
+    await expect(
+      client.request({
+        method: 'pay_invoice',
+        resultType: 'pay_invoice',
+        request: { method: 'pay_invoice', params: { invoice: 'lnbc1...' } },
+      }),
+    ).rejects.toThrow(/NWC response timed out/);
+
+    // Give the late-resolving subscribe().then() a chance to run.
+    await new Promise<void>((r) => setTimeout(r, 150));
+    expect(relayHandler.unsubscribeCount).toBe(1);
   });
 });

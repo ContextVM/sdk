@@ -124,4 +124,40 @@ describe.serial('NostrServerTransport dropped-request state release', () => {
     expect(transport.getOpenStreams()).toEqual([]);
     await transport.close();
   });
+
+  it('lifts the probe-eviction blacklist once the client re-establishes a session', async () => {
+    const transport = makeTransport();
+    transport.onmessage = () => {};
+    const state = transport.getInternalStateForTesting();
+    const clientPubkey = 'ab'.repeat(32);
+
+    // Simulate a probe-timeout eviction whose pending response never routed.
+    (
+      state.openStreamFactory as unknown as {
+        evictedClientPubkeys: Set<string>;
+      }
+    ).evictedClientPubkeys.add(clientPubkey);
+
+    // No session: the evicted (zombie) client is still refused.
+    await expect(
+      transport.sendNotification(clientPubkey, {
+        jsonrpc: '2.0',
+        method: 'notifications/message',
+        params: {},
+      }),
+    ).rejects.toThrow('No active session found for client');
+
+    // The client reconnects (a fresh session exists): the blacklist must lift
+    // so notification delivery — including payment_required — works again,
+    // instead of throwing forever while responses still deliver.
+    state.sessionStore.getOrCreateSession(clientPubkey, false);
+    await transport.sendNotification(clientPubkey, {
+      jsonrpc: '2.0',
+      method: 'notifications/message',
+      params: {},
+    });
+    expect(state.openStreamFactory.isClientEvicted(clientPubkey)).toBe(false);
+
+    await transport.close();
+  });
 });

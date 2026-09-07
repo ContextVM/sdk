@@ -12,6 +12,7 @@ import {
 import { createLogger } from '../core/utils/logger.js';
 import { withTimeout } from '../core/utils/utils.js';
 import {
+  PAYMENT_CAPACITY_ERROR_CODE,
   PAYMENT_PENDING_ERROR_CODE,
   PAYMENT_REQUIRED_ERROR_CODE,
 } from './constants.js';
@@ -78,9 +79,35 @@ export function createExplicitGatingMiddleware(
         ? options.paymentTtlMs
         : 300_000;
 
-    // 2. Try to set pending state atomically
-    // We use a safe default TTL here, but will override it below if the payment option has a specific TTL
+    // 2. Try to set pending state atomically.
+    // Refusal means either "already pending" (-32043, keep retrying — the
+    // payment is still verifying) or "store at capacity" (-32000, terminal):
+    // live entries are never evicted, so a same-identity retry must never
+    // observe the capacity answer even when the store is full.
     if (!authorizationStore.trySetPending(identity, paymentTtlMs)) {
+      const pendingRemainingMs =
+        authorizationStore.getPendingRemainingMs(identity);
+
+      if (pendingRemainingMs <= 0) {
+        logger.warn(
+          'pending payment capacity reached, refusing priced request',
+          {
+            requestEventId,
+            method: message.method,
+          },
+        );
+        const capacityResponse: JSONRPCErrorResponse = {
+          jsonrpc: '2.0',
+          id: message.id,
+          error: {
+            code: PAYMENT_CAPACITY_ERROR_CODE,
+            message: 'Payment capacity reached, retry later',
+          },
+        };
+        await sendResponse(ctx.clientPubkey, capacityResponse, requestEventId);
+        return;
+      }
+
       logger.debug('payment already pending, returning -32043', {
         requestEventId,
       });
@@ -96,12 +123,7 @@ export function createExplicitGatingMiddleware(
             // Suggest a short polling interval (e.g. 2 seconds) rather than the full TTL
             retry_after: Math.min(
               2,
-              Math.max(
-                1,
-                Math.ceil(
-                  authorizationStore.getPendingRemainingMs(identity) / 1000,
-                ),
-              ),
+              Math.max(1, Math.ceil(pendingRemainingMs / 1000)),
             ),
           },
         },

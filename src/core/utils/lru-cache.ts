@@ -56,7 +56,8 @@ export class LruCache<T> {
   }
 
   /**
-   * Gets all entries in the cache (from most to least recently used).
+   * Gets all entries in the cache (from least to most recently used —
+   * capacity-pressure scans that target the oldest entries rely on this).
    */
   entries(): IterableIterator<[string, T]> {
     return this.cache.entries();

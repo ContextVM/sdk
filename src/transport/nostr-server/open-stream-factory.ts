@@ -190,6 +190,17 @@ export class ServerOpenStreamFactory {
   }
 
   /**
+   * Lifts the probe-eviction blacklist for a client that has re-established
+   * a session. Without this, a probe-timeout whose pending response never
+   * routes leaves the pubkey blacklisted forever: sendNotification keeps
+   * throwing (breaking payment_required delivery) while responses still
+   * deliver via the recreated session.
+   */
+  public clearClientEviction(clientPubkey: string): void {
+    this.evictedClientPubkeys.delete(clientPubkey);
+  }
+
+  /**
    * Takes and clears a pending eviction entry keyed by the request event id.
    */
   public takePendingEviction(
@@ -237,6 +248,16 @@ export class ServerOpenStreamFactory {
     if (!writer) {
       return;
     }
+    // A started writer is owned by a running invocation: a dropped duplicate
+    // of the same request event must not dispose the live stream. The
+    // writer's own lifecycle reaps it (close/abort → flushPendingResponse,
+    // probe timeout, or teardown clear()).
+    // ponytail: a duplicate dropped before the handler's first frame still
+    // disposes the reservation the forwarded handler holds — the request then
+    // completes stream-less; refcount reservations if that window matters.
+    if (writer.hasStarted) {
+      return;
+    }
     this.writers.delete(eventId);
     this.writerMeta.delete(eventId);
     writer.dispose();
@@ -254,6 +275,16 @@ export class ServerOpenStreamFactory {
   ): OpenStreamWriter | undefined {
     if (!this.deps.openStreamEnabled || !progressToken) {
       return undefined;
+    }
+
+    // Reuse the existing reservation: a duplicate delivery of the same request
+    // event re-enters the inbound path and would otherwise overwrite the map
+    // entry, orphaning the writer already bound to the forwarded request's
+    // `_meta.stream` (its timers keep running and a later probe timeout can
+    // evict the client's session).
+    const existing = this.writers.get(eventId);
+    if (existing) {
+      return existing;
     }
 
     const writer = new OpenStreamWriter({
