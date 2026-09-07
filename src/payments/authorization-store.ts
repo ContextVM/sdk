@@ -114,24 +114,12 @@ export class AuthorizationStore {
   }
 
   /**
-   * Whether the pending map can accept a new entry: purges expired entries
-   * first, then reports capacity. Lets callers refuse BEFORE minting an
-   * invoice instead of silently evicting a live payment's dedup entry.
-   */
-  public hasPendingCapacity(): boolean {
-    if (this.pending.size >= this.maxEntries) {
-      this.purgeExpiredPending();
-    }
-    return this.pending.size < this.maxEntries;
-  }
-
-  /**
    * Atomically checks whether a payment is already pending for this identity
    * and, if not, marks it as pending. Returns `true` if this call transitioned
    * the identity to pending (caller should emit -32042). Returns `false` if
    * already pending (caller should emit -32043) or the store is at capacity
-   * with only live entries (caller should refuse — check
-   * {@link hasPendingCapacity} first to distinguish).
+   * with only live entries (caller should emit a capacity refusal) — the two
+   * are distinguished via {@link getPendingRemainingMs}.
    *
    * This atomic check-and-set prevents concurrent requests from both receiving
    * -32042 and triggering duplicate payment flows. Live entries are never

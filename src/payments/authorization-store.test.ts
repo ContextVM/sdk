@@ -126,21 +126,6 @@ describe('AuthorizationStore', () => {
     expect(store.getPendingRemainingMs(id3)).toBeGreaterThan(0);
   });
 
-  test('hasPendingCapacity reports capacity after purging expired entries', async () => {
-    const store = new AuthorizationStore({ maxEntries: 1 });
-
-    expect(store.hasPendingCapacity()).toBe(true);
-
-    store.trySetPending(identity, 20);
-    expect(store.hasPendingCapacity()).toBe(false);
-
-    await new Promise((resolve) => setTimeout(resolve, 40));
-
-    // The expired entry is purged by the capacity check itself.
-    expect(store.hasPendingCapacity()).toBe(true);
-    expect(store.trySetPending(identity, 10000)).toBe(true);
-  });
-
   test('expired grants are purged before capacity-driven eviction', async () => {
     const store = new AuthorizationStore({ maxEntries: 2 });
 

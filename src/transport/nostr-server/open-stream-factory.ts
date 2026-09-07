@@ -248,6 +248,16 @@ export class ServerOpenStreamFactory {
     if (!writer) {
       return;
     }
+    // A started writer is owned by a running invocation: a dropped duplicate
+    // of the same request event must not dispose the live stream. The
+    // writer's own lifecycle reaps it (close/abort → flushPendingResponse,
+    // probe timeout, or teardown clear()).
+    // ponytail: a duplicate dropped before the handler's first frame still
+    // disposes the reservation the forwarded handler holds — the request then
+    // completes stream-less; refcount reservations if that window matters.
+    if (writer.hasStarted) {
+      return;
+    }
     this.writers.delete(eventId);
     this.writerMeta.delete(eventId);
     writer.dispose();

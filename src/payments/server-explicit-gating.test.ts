@@ -837,4 +837,51 @@ describe('Explicit Gating Middleware', () => {
       }),
     ).toBeGreaterThan(0);
   });
+
+  test('a same-identity retry at capacity still answers -32043, not capacity', async () => {
+    // Capacity 1, occupied by THIS client's own pending payment. Verification
+    // hangs so the pending entry stays live for the whole test.
+    const hangingProcessor = {
+      ...processor,
+      async verifyPayment(): Promise<{ _meta?: Record<string, unknown> }> {
+        return new Promise(() => {});
+      },
+    };
+    const store = new AuthorizationStore({ maxEntries: 1 });
+    const sentResponses: JSONRPCErrorResponse[] = [];
+
+    const mw = createExplicitGatingMiddleware({
+      options: {
+        processors: [hangingProcessor],
+        pricedCapabilities: [...pricedCapabilities],
+      },
+      authorizationStore: store,
+      sendResponse: async (_pubkey, response) => {
+        sentResponses.push(response);
+      },
+    });
+
+    // First delivery: -32042 with invoice (pending store now full).
+    await mw(message, ctx, async () => {});
+    expect(sentResponses[0].error.code).toBe(PAYMENT_REQUIRED_ERROR_CODE);
+
+    // Same-identity retry while verification is in flight: the payment is
+    // still pending, so the client must get -32043 (keep retrying) — a
+    // terminal capacity error here would abort the client's poll loop even
+    // though the grant is about to land.
+    await mw(message, ctx, async () => {});
+    expect(sentResponses[1].error.code).toBe(PAYMENT_PENDING_ERROR_CODE);
+
+    // A different identity at capacity: terminal capacity refusal.
+    const otherMessage = {
+      ...message,
+      id: 'evt-cap-other',
+      params: { name: 'add', arguments: { a: 99, b: 1 } },
+    };
+    await mw(otherMessage, ctx, async () => {});
+    expect(sentResponses[2].error.code).toBe(-32000);
+    expect(sentResponses[2].error.message).toBe(
+      'Payment capacity reached, retry later',
+    );
+  });
 });
