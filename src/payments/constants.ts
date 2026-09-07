@@ -30,6 +30,13 @@ export const PAYMENT_REQUIRED_ERROR_CODE = -32042;
 export const PAYMENT_PENDING_ERROR_CODE = -32043;
 
 /**
+ * CEP-8 explicit-gating JSON-RPC error: pending-payment store at capacity;
+ * the server refuses to mint another invoice (retry later). Generic -32000
+ * server error, like other unspecified CEP-8 rejections.
+ */
+export const PAYMENT_CAPACITY_ERROR_CODE = -32000;
+
+/**
  * CEP-8 unsupported payment_interaction negotiation error.
  *
  * Uses -32602 (Invalid params) as mandated by CEP-8 spec: the `payment_interaction`

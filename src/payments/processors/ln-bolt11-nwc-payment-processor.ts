@@ -185,10 +185,11 @@ export class LnBolt11NwcPaymentProcessor implements PaymentProcessor {
           this.notificationsUnsubscribe = unsubscribe;
         })
         .finally(() => {
-          // Clear only when not retained, so a failed subscribe can be retried.
-          if (!this.notificationsUnsubscribe) {
-            this.notificationsSubscribePromise = undefined;
-          }
+          // Always clear: on success the unsubscribe handle gates re-entry, on
+          // failure the next call retries. Retaining a resolved promise would
+          // make a future re-entry (after the handle is released) silently
+          // skip resubscribing.
+          this.notificationsSubscribePromise = undefined;
         });
     }
     await this.notificationsSubscribePromise;

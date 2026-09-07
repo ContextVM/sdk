@@ -12,6 +12,7 @@ import {
 import { createLogger } from '../core/utils/logger.js';
 import { withTimeout } from '../core/utils/utils.js';
 import {
+  PAYMENT_CAPACITY_ERROR_CODE,
   PAYMENT_PENDING_ERROR_CODE,
   PAYMENT_REQUIRED_ERROR_CODE,
 } from './constants.js';
@@ -90,7 +91,7 @@ export function createExplicitGatingMiddleware(
         jsonrpc: '2.0',
         id: message.id,
         error: {
-          code: -32000,
+          code: PAYMENT_CAPACITY_ERROR_CODE,
           message: 'Payment capacity reached, retry later',
         },
       };
