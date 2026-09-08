@@ -1,5 +1,17 @@
 # @contextvm/sdk
 
+## 0.13.14
+
+### Patch Changes
+
+- chore(deps): bump dependencies within ranges and clear all `bun audit` findings
+
+  - @noble/hashes 2.2.0 → 2.4.0 (perf + security fixes)
+  - nostr-tools 2.23.9 → 2.25.2
+  - zod 4.4.3 → 4.5.4
+  - ws 8.21.0 → 8.21.3
+  - dev tooling minors; lockfile regenerated (fast-uri 3.1.7, nanoid 5.1.16, brace-expansion 1.1.18, js-yaml 3.15.2)
+
 ## 0.13.13
 
 ### Patch Changes

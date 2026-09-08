@@ -41,6 +41,7 @@
 
 - Tests must be co-located with source files.
 - Use descriptive test names that clearly state what is being tested.
+- Run tests the same way CI does: `bun test --concurrent --timeout=60000`.
 
 ## Comments
 
