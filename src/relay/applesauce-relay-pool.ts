@@ -622,7 +622,9 @@ export class ApplesauceRelayPool implements RelayHandler {
 
   /** Rebuilds the relay group and replays all subscriptions (single-flight) */
   private rebuild(reason: string): void {
-    if (this.rebuildInFlight) return;
+    // A pending liveness probe can time out after terminal disconnect(); the
+    // pool must never resurrect (same lifecycle signal publish() honors).
+    if (this.lifecycle.signal.aborted || this.rebuildInFlight) return;
 
     this.rebuildInFlight = (async () => {
       this.relayGeneration += 1;
