@@ -1012,10 +1012,13 @@ describe('ApplesauceRelayPool terminal lifecycle', () => {
     const internals = pool as unknown as GhostPoolInternals;
 
     // Fake relay: reports connected, accepts sends, never answers EOSE, closeable.
+    let pingCount = 0;
     const fakeRelay = {
       url: 'wss://relay.example',
       connected: true,
-      send: () => {},
+      send: () => {
+        pingCount += 1;
+      },
       close: () => {},
       message$: new Subject<unknown>(),
       connected$: new Subject<boolean>(),
@@ -1033,6 +1036,8 @@ describe('ApplesauceRelayPool terminal lifecycle', () => {
 
     await sleep(25); // probe fires and goes pending (times out at +60ms)
     expect(internals.destroy$.isStopped).toBe(false);
+    // Guard against vacuous pass: the probe must actually be in flight across disconnect.
+    expect(pingCount).toBeGreaterThan(0);
 
     await pool.disconnect();
 
