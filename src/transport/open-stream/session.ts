@@ -432,7 +432,11 @@ export class OpenStreamSession implements OpenStreamSessionLike<string> {
     try {
       await this.sendPing?.(nonce);
     } catch (error) {
-      if (!this.active) return; // probe timeout may have already finalized
+      // A matching pong already reconciled this probe (or a newer probe
+      // superseded it); a late publication rejection must not abort a stream
+      // with proven liveness. A truly undelivered ping still fails via the
+      // probe timeout armed before publishing.
+      if (!this.active || this.pendingProbeNonce !== nonce) return;
       await this.finishAborted(
         error instanceof Error ? error : new Error(String(error)),
         'Failed to send keepalive ping',

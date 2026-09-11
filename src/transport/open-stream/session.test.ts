@@ -925,4 +925,82 @@ describe('OpenStreamSession staleness', () => {
     session.dispose();
     await session.closed.catch(() => undefined);
   });
+
+  test('ignores late keepalive publication rejection after a matching pong', async () => {
+    let rejectPing: ((error: Error) => void) | undefined;
+    const session = new OpenStreamSession({
+      progressToken: 'token-late-reject-after-pong',
+      maxBufferedChunks: 8,
+      maxBufferedBytes: 1024,
+      idleTimeoutMs: 10,
+      probeTimeoutMs: 5_000, // backstop that must not fire in this scenario
+      closeGracePeriodMs: 100,
+      sendPing: () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectPing = reject; // publication pends on relay acknowledgements
+        }),
+    });
+
+    await session.processFrame(1, {
+      type: 'open-stream',
+      frameType: 'start',
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 20)); // probe armed, publication pending
+
+    const pendingProbeNonce = (
+      session as unknown as { pendingProbeNonce?: string }
+    ).pendingProbeNonce;
+    expect(pendingProbeNonce).toBeTypeOf('string'); // probe in flight
+    // Hold this probe's rejecter: the pong refreshes the idle timer, so a
+    // second probe could overwrite the binding before we read it below.
+    const rejectProbe = rejectPing!;
+
+    await session.processFrame(2, {
+      type: 'open-stream',
+      frameType: 'pong',
+      nonce: pendingProbeNonce!,
+    });
+    expect(session.isActive).toBe(true); // probe acknowledged
+
+    rejectProbe(new Error('relay acknowledgement failed')); // late rejection
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(session.isActive).toBe(true); // acknowledged stream must survive
+
+    session.dispose();
+    await expect(session.closed).resolves.toBeUndefined();
+  });
+
+  test('still aborts when keepalive publication rejects while the probe is unacknowledged', async () => {
+    let rejectPing: ((error: Error) => void) | undefined;
+    const session = new OpenStreamSession({
+      progressToken: 'token-late-reject-no-pong',
+      maxBufferedChunks: 8,
+      maxBufferedBytes: 1024,
+      idleTimeoutMs: 10,
+      probeTimeoutMs: 5_000,
+      closeGracePeriodMs: 100,
+      sendPing: () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectPing = reject;
+        }),
+    });
+    const closed = session.closed.catch((error: unknown) => error);
+
+    await session.processFrame(1, {
+      type: 'open-stream',
+      frameType: 'start',
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 20)); // probe armed, no pong
+
+    rejectPing!(new Error('relay acknowledgement failed'));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(session.isActive).toBe(false); // fast-path abort preserved
+    expect(await closed).toBeInstanceOf(Error);
+
+    session.dispose();
+  });
 });
