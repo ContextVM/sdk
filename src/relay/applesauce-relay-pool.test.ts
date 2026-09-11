@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { bytesToHex } from 'nostr-tools/utils';
 import { sleep } from 'bun';
+import { Subject } from 'rxjs';
 import {
   generateSecretKey,
   getPublicKey,
@@ -991,4 +992,62 @@ describe('ApplesauceRelayPool configuration', () => {
 
     pool.unsubscribe();
   });
+});
+
+describe('ApplesauceRelayPool terminal lifecycle', () => {
+  test('late liveness-probe timeout after disconnect() does not resurrect the pool', async () => {
+    type GhostPoolInternals = {
+      relays: unknown[];
+      relayObservers: unknown[];
+      subscriptions: Map<string, unknown>;
+      pingSubscription?: { closed: boolean };
+      startPingMonitor: () => void;
+      destroy$: Subject<void>;
+    };
+
+    const pool = new ApplesauceRelayPool(['wss://relay.example'], {
+      pingFrequencyMs: 10,
+      pingTimeoutMs: 60,
+    });
+    const internals = pool as unknown as GhostPoolInternals;
+
+    // Fake relay: reports connected, accepts sends, never answers EOSE, closeable.
+    let pingCount = 0;
+    const fakeRelay = {
+      url: 'wss://relay.example',
+      connected: true,
+      send: () => {
+        pingCount += 1;
+      },
+      close: () => {},
+      message$: new Subject<unknown>(),
+      connected$: new Subject<boolean>(),
+      error$: new Subject<unknown>(),
+    };
+    internals.relays = [fakeRelay] as never;
+
+    // Probe-shaped subscription entry + running monitor = pending liveness probe.
+    internals.subscriptions.set('probe', {
+      id: 'probe',
+      filters: [],
+      onEvent: () => {},
+    });
+    internals.startPingMonitor();
+
+    await sleep(25); // probe fires and goes pending (times out at +60ms)
+    expect(internals.destroy$.isStopped).toBe(false);
+    // Guard against vacuous pass: the probe must actually be in flight across disconnect.
+    expect(pingCount).toBeGreaterThan(0);
+
+    await pool.disconnect();
+
+    expect(internals.relays).toHaveLength(0); // fully torn down
+
+    await sleep(120); // late probe times out here, after terminal disconnect
+
+    expect(internals.destroy$.isStopped).toBe(true);
+    expect(internals.relays).toHaveLength(0); // must NOT resurrect
+    expect(internals.relayObservers).toHaveLength(0);
+    expect(internals.pingSubscription).toBeUndefined(); // no immortal monitor
+  }, 10_000);
 });
