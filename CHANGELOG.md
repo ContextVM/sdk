@@ -1,5 +1,11 @@
 # @contextvm/sdk
 
+## 0.13.16
+
+### Patch Changes
+
+- 4e62352: Fix `OpenStreamSession` aborting an acknowledged stream when a keepalive ping's publication rejects late: if a matching pong already reconciled the probe (or a newer probe superseded it), the late publication error is now ignored. Streams with proven liveness survive relay acknowledgement failures that resolve after the pong; probes that are still unacknowledged abort exactly as before.
+
 ## 0.13.15
 
 ### Patch Changes
