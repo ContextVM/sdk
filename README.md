@@ -159,8 +159,8 @@ This project requires [Bun](https://bun.sh/) (version 1.2.0 or higher).
 1. Clone the repository:
 
 ```bash
-git clone https://github.com/ContextVM/ts-sdk.git
-cd ts-sdk
+git clone https://github.com/ContextVM/sdk.git
+cd sdk
 ```
 
 2. Install dependencies:
@@ -174,5 +174,5 @@ bun install
 To run the test suite, use Bun:
 
 ```bash
-bun tests
+bun test
 ```
