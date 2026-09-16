@@ -165,6 +165,8 @@ export class InboundNotificationDispatcher {
           const frameType = frame?.frameType;
 
           if (frameType === 'start' && session.supportsOpenStream) {
+            // CEP-41 per-sender progress: accept lives on the accepting
+            // peer's own outbound sequence, not the starter's sequence + 1.
             await this.deps.sendNotification(event.pubkey, {
               jsonrpc: '2.0',
               method: 'notifications/progress',
@@ -172,7 +174,7 @@ export class InboundNotificationDispatcher {
                 progressToken: String(
                   inboundMessage.params?.progressToken ?? '',
                 ),
-                progress: Number(inboundMessage.params?.progress ?? 0) + 1,
+                progress: 1,
               }),
             });
           }
