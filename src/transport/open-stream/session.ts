@@ -643,9 +643,15 @@ export class OpenStreamSession implements OpenStreamSessionLike<string> {
     publishAbort: boolean = false,
   ): Promise<void> {
     this.finalize(error);
-    if (publishAbort) {
-      await this.sendAbort?.(reason);
+    // Cleanup must run even when publishing the abort frame fails, or the
+    // registry's onAbort wrapper (which deletes the session) never fires and
+    // the inactive session holds a concurrency slot forever.
+    try {
+      if (publishAbort) {
+        await this.sendAbort?.(reason);
+      }
+    } finally {
+      await this.onAbort?.(reason);
     }
-    await this.onAbort?.(reason);
   }
 }

@@ -170,6 +170,10 @@ export class ClientOpenStreamFactory {
         progress: this.nextOutboundProgress(progressToken),
       }),
     });
+    // Session death (peer abort, probe timeout, teardown) must also end the
+    // returned writer: dispose() is teardown-only, so no second abort frame
+    // is published for a stream the peer already terminated.
+    void session.closed.catch(() => undefined).then(() => writer.dispose());
     await session.accepted;
     return { session, writer };
   }

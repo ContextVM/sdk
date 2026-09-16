@@ -149,6 +149,7 @@ export class OpenStreamRegistry {
       onClose: async () => {
         try {
           await sessionOptions.onClose?.();
+          await derivedSessionOptions.onClose?.();
         } finally {
           this.sessions.delete(progressToken);
         }
@@ -156,6 +157,7 @@ export class OpenStreamRegistry {
       onAbort: async (reason?: string) => {
         try {
           await sessionOptions.onAbort?.(reason);
+          await derivedSessionOptions.onAbort?.(reason);
         } finally {
           this.sessions.delete(progressToken);
         }
