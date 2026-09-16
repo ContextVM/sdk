@@ -11,6 +11,15 @@ import { OpenStreamPolicyError, OpenStreamSequenceError } from './errors.js';
 import { OpenStreamSession, type OpenStreamSessionOptions } from './session.js';
 import type { OpenStreamFrame, OpenStreamProgress } from './types.js';
 
+/**
+ * Session creation input: a bare token or token plus overrides. Anything
+ * omitted falls back to registry defaults (receiver construction values).
+ */
+export type OpenStreamCreateSessionOptions =
+  | string
+  | (Pick<OpenStreamSessionOptions, 'progressToken'> &
+      Partial<Omit<OpenStreamSessionOptions, 'progressToken'>>);
+
 export interface OpenStreamRegistryOptions {
   maxConcurrentStreams?: number;
   maxBufferedChunksPerStream?: number;
@@ -87,10 +96,7 @@ export class OpenStreamRegistry {
   }
 
   public createSession(
-    options:
-      | string
-      | (Pick<OpenStreamSessionOptions, 'progressToken'> &
-          Partial<Omit<OpenStreamSessionOptions, 'progressToken'>>),
+    options: OpenStreamCreateSessionOptions,
     senderPubkey?: string,
   ): OpenStreamSession {
     const sessionOptions =

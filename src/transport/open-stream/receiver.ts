@@ -1,9 +1,10 @@
 import type { JSONRPCNotification } from '@contextvm/mcp-sdk/types.js';
 import {
   OpenStreamRegistry,
+  type OpenStreamCreateSessionOptions,
   type OpenStreamRegistryOptions,
 } from './registry.js';
-import type { OpenStreamSession, OpenStreamSessionOptions } from './session.js';
+import type { OpenStreamSession } from './session.js';
 import type { OpenStreamProgress } from './types.js';
 
 /**
@@ -38,7 +39,9 @@ export class OpenStreamReceiver {
     return this.registry.getOrCreateSession(progressToken);
   }
 
-  public createSession(options: OpenStreamSessionOptions): OpenStreamSession {
+  public createSession(
+    options: OpenStreamCreateSessionOptions,
+  ): OpenStreamSession {
     return this.registry.createSession(options);
   }
 

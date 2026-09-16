@@ -1,18 +1,12 @@
 import {
   OpenStreamReceiver,
   OpenStreamSession,
+  type OpenStreamProgress,
   buildOpenStreamStartFrame,
   buildOpenStreamPingFrame,
   buildOpenStreamPongFrame,
   buildOpenStreamAbortFrame,
 } from '../open-stream/index.js';
-import {
-  DEFAULT_OPEN_STREAM_CLOSE_GRACE_PERIOD_MS,
-  DEFAULT_OPEN_STREAM_IDLE_TIMEOUT_MS,
-  DEFAULT_OPEN_STREAM_PROBE_TIMEOUT_MS,
-  DEFAULT_MAX_BUFFERED_BYTES_PER_STREAM,
-  DEFAULT_MAX_BUFFERED_CHUNKS_PER_STREAM,
-} from '../open-stream/constants.js';
 import type { OpenStreamTransportPolicy } from '../open-stream-policy.js';
 import type { JSONRPCMessage } from '@contextvm/mcp-sdk/types.js';
 import type { Logger } from '../../core/utils/logger.js';
@@ -34,7 +28,6 @@ export interface ClientOpenStreamFactoryDeps {
  */
 export class ClientOpenStreamFactory {
   private readonly receiver: OpenStreamReceiver;
-  private readonly policy: OpenStreamTransportPolicy | undefined;
   private readonly send: (message: JSONRPCMessage) => Promise<void>;
   /**
    * Per-token outbound progress counter. CEP-41 progress sequences are
@@ -44,7 +37,6 @@ export class ClientOpenStreamFactory {
   private readonly outboundProgress = new Map<string, number>();
 
   constructor(deps: ClientOpenStreamFactoryDeps) {
-    this.policy = deps.policy;
     this.send = deps.send;
 
     this.receiver = new OpenStreamReceiver({
@@ -54,47 +46,26 @@ export class ClientOpenStreamFactory {
       idleTimeoutMs: deps.policy?.idleTimeoutMs,
       probeTimeoutMs: deps.policy?.probeTimeoutMs,
       closeGracePeriodMs: deps.policy?.closeGracePeriodMs,
-      getSessionOptions: (progressToken) => {
-        let progress = 0;
-        return {
-          sendPing: async (nonce: string): Promise<void> => {
-            progress += 1;
-            await this.send({
-              jsonrpc: '2.0',
-              method: 'notifications/progress',
-              params: buildOpenStreamPingFrame({
-                progressToken,
-                progress,
-                nonce,
-              }),
-            });
-          },
-          sendPong: async (nonce: string): Promise<void> => {
-            progress += 1;
-            await this.send({
-              jsonrpc: '2.0',
-              method: 'notifications/progress',
-              params: buildOpenStreamPongFrame({
-                progressToken,
-                progress,
-                nonce,
-              }),
-            });
-          },
-          sendAbort: async (reason?: string): Promise<void> => {
-            progress += 1;
-            await this.send({
-              jsonrpc: '2.0',
-              method: 'notifications/progress',
-              params: buildOpenStreamAbortFrame({
-                progressToken,
-                progress,
-                reason,
-              }),
-            });
-          },
-        };
-      },
+      getSessionOptions: (progressToken) => ({
+        sendPing: (nonce: string): Promise<void> =>
+          this.sendControlFrame(progressToken, (progress) =>
+            buildOpenStreamPingFrame({ progressToken, progress, nonce }),
+          ),
+        sendPong: (nonce: string): Promise<void> =>
+          this.sendControlFrame(progressToken, (progress) =>
+            buildOpenStreamPongFrame({ progressToken, progress, nonce }),
+          ),
+        sendAbort: (reason?: string): Promise<void> =>
+          this.sendControlFrame(progressToken, (progress) =>
+            buildOpenStreamAbortFrame({ progressToken, progress, reason }),
+          ),
+        onClose: async (): Promise<void> => {
+          this.outboundProgress.delete(progressToken);
+        },
+        onAbort: async (): Promise<void> => {
+          this.outboundProgress.delete(progressToken);
+        },
+      }),
       logger: deps.logger,
     });
   }
@@ -127,61 +98,11 @@ export class ClientOpenStreamFactory {
       return existing;
     }
 
+    // Control-frame callbacks, buffer limits and lifecycle pruning come from
+    // the receiver's getSessionOptions, which shares the per-token counter.
     return this.receiver.createSession({
       progressToken,
       locallyInitiated: options?.locallyInitiated,
-      maxBufferedChunks:
-        this.policy?.maxBufferedChunksPerStream ??
-        DEFAULT_MAX_BUFFERED_CHUNKS_PER_STREAM,
-      maxBufferedBytes:
-        this.policy?.maxBufferedBytesPerStream ??
-        DEFAULT_MAX_BUFFERED_BYTES_PER_STREAM,
-      idleTimeoutMs:
-        this.policy?.idleTimeoutMs ?? DEFAULT_OPEN_STREAM_IDLE_TIMEOUT_MS,
-      probeTimeoutMs:
-        this.policy?.probeTimeoutMs ?? DEFAULT_OPEN_STREAM_PROBE_TIMEOUT_MS,
-      closeGracePeriodMs:
-        this.policy?.closeGracePeriodMs ??
-        DEFAULT_OPEN_STREAM_CLOSE_GRACE_PERIOD_MS,
-      sendPing: async (nonce: string): Promise<void> => {
-        await this.send({
-          jsonrpc: '2.0',
-          method: 'notifications/progress',
-          params: buildOpenStreamPingFrame({
-            progressToken,
-            progress: this.nextOutboundProgress(progressToken),
-            nonce,
-          }),
-        });
-      },
-      sendPong: async (nonce: string): Promise<void> => {
-        await this.send({
-          jsonrpc: '2.0',
-          method: 'notifications/progress',
-          params: buildOpenStreamPongFrame({
-            progressToken,
-            progress: this.nextOutboundProgress(progressToken),
-            nonce,
-          }),
-        });
-      },
-      sendAbort: async (reason?: string): Promise<void> => {
-        await this.send({
-          jsonrpc: '2.0',
-          method: 'notifications/progress',
-          params: buildOpenStreamAbortFrame({
-            progressToken,
-            progress: this.nextOutboundProgress(progressToken),
-            reason,
-          }),
-        });
-      },
-      onClose: async (): Promise<void> => {
-        this.outboundProgress.delete(progressToken);
-      },
-      onAbort: async (): Promise<void> => {
-        this.outboundProgress.delete(progressToken);
-      },
     });
   }
 
@@ -190,6 +111,18 @@ export class ClientOpenStreamFactory {
     const next = (this.outboundProgress.get(progressToken) ?? 0) + 1;
     this.outboundProgress.set(progressToken, next);
     return next;
+  }
+
+  /** Publishes a session control frame on the token's per-sender sequence. */
+  private async sendControlFrame(
+    progressToken: string,
+    build: (progress: number) => OpenStreamProgress,
+  ): Promise<void> {
+    await this.send({
+      jsonrpc: '2.0',
+      method: 'notifications/progress',
+      params: build(this.nextOutboundProgress(progressToken)),
+    });
   }
 
   /**

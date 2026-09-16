@@ -1134,8 +1134,9 @@ describe('callToolStream end-to-end', () => {
     expect(parseRelayMessage(acceptEvent)?.params?.progress).toBe(1);
     const serverPublicKey = acceptEvent.pubkey;
 
-    // Idle fires on the client session; the server answers through the
-    // shared per-token counter, so accept@1 -> pong@2 stays monotonic.
+    // Keepalive idles on both sessions with this fixture policy; whichever
+    // side probes first, each side stays on its own shared per-token
+    // sequence, so the server frames stay monotonic after accept@1.
     await waitFor({
       produce: () =>
         relayHub.getEvents().find((event) => {
