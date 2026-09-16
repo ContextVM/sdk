@@ -1034,7 +1034,9 @@ describe('callToolStream end-to-end', () => {
       method: 'notifications/progress',
       params: {
         progressToken,
-        progress: 2,
+        // CEP-41 per-sender progress: accept is the server's first outbound
+        // frame on its own sequence, independent of the client's start value.
+        progress: 1,
         cvm: {
           type: 'open-stream',
           frameType: 'accept',
