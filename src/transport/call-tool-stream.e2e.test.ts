@@ -1119,7 +1119,7 @@ describe('callToolStream end-to-end', () => {
 
     // Client-started bootstrap: start@1 on the client's own sequence, and a
     // session that can receive the server's accept and control frames.
-    const session = await clientTransport.startOpenStream(progressToken);
+    const { session } = await clientTransport.startOpenStream(progressToken);
     expect(session.isActive).toBe(true);
 
     const acceptEvent = await waitFor({
@@ -1174,6 +1174,99 @@ describe('callToolStream end-to-end', () => {
     expect(
       relayHub.getEvents().some((event) => getFrameType(event) === 'abort'),
     ).toBe(false);
+
+    await cleanupOpenStreamFixture({ client, server, relayHub });
+  }, 15_000);
+
+  test('streams client payload to a tool over a client-started stream end to end', async () => {
+    const { relayHub, server, client, serverTransport, clientTransport } =
+      createOpenStreamFixture({ idleTimeoutMs: 40, probeTimeoutMs: 5_000 });
+
+    server.registerTool(
+      'ingestStream',
+      {
+        title: 'Ingest Stream',
+        description: 'Consumes streamed input.',
+        inputSchema: { topic: z.string() },
+      },
+      async (_args, extra) => {
+        const inputStream = (
+          extra._meta as {
+            inputStream?: AsyncIterable<{ value: string; chunkIndex: number }>;
+          } | undefined
+        )?.inputStream;
+        expect(inputStream).toBeDefined();
+
+        let text = '';
+        for await (const chunk of inputStream!) {
+          text += chunk.value;
+        }
+
+        return { content: [{ type: 'text', text: `got:${text}` }] };
+      },
+    );
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+
+    const pending = client.callTool(
+      { name: 'ingestStream', arguments: { topic: 'orders' } },
+      undefined,
+      { onprogress: () => undefined, resetTimeoutOnProgress: false },
+    );
+    void pending.catch(() => undefined);
+
+    const requestEvent = await waitFor({
+      produce: () =>
+        relayHub.getEvents().find(
+          (event) => parseRelayMessage(event)?.method === 'tools/call',
+        ),
+      timeoutMs: 5_000,
+    });
+    const progressToken = String(
+      (
+        parseRelayMessage(requestEvent)?.params as
+          | { _meta?: { progressToken?: unknown } }
+          | undefined
+      )?._meta?.progressToken,
+    );
+    const clientPublicKey = requestEvent.pubkey;
+
+    // Bootstrap: start@1 on the client sequence, gated on the server's
+    // accept before any chunk frame (CEP-41).
+    const { session, writer } =
+      await clientTransport.startOpenStream(progressToken);
+    expect(session.isActive).toBe(true);
+
+    await writer.write('hello ');
+    await writer.write('world');
+    await writer.close();
+
+    const result = (await pending) as {
+      content: Array<{ type: string; text: string }>;
+    };
+    expect(result.content[0]?.text).toBe('got:hello world');
+
+    // The client's own outbound sequence stays strictly monotonic from
+    // start@1 across chunks, interleaved keepalive and the final close.
+    const clientFrames = relayHub
+      .getEvents()
+      .filter(
+        (event) =>
+          event.pubkey === clientPublicKey &&
+          parseRelayMessage(event)?.params?.progressToken === progressToken,
+      )
+      .map((event) => ({
+        frameType: getFrameType(event),
+        progress: parseRelayMessage(event)?.params?.progress,
+      }));
+    expect(clientFrames[0]).toEqual({ frameType: 'start', progress: 1 });
+    for (let i = 1; i < clientFrames.length; i++) {
+      expect(clientFrames[i]!.progress!).toBeGreaterThan(
+        clientFrames[i - 1]!.progress!,
+      );
+    }
+    expect(clientFrames.some((f) => f.frameType === 'close')).toBe(true);
+    expect(session.isActive).toBe(false);
 
     await cleanupOpenStreamFixture({ client, server, relayHub });
   }, 15_000);

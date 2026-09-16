@@ -391,12 +391,25 @@ export class ServerInboundCoordinator {
       clientPubkey,
       progressToken ? String(progressToken) : undefined,
     );
-    if (openStreamWriter) {
+    // Mirror the output-writer binding for the input side: a request whose
+    // token may carry a client-started stream exposes a lazy chunk iterator,
+    // so tools can consume streamed input symmetrically to `stream`.
+    const inputStream = progressToken
+      ? this.deps.openStreamFactory.inputStreamIfEnabled(String(progressToken))
+      : undefined;
+    if (openStreamWriter || inputStream) {
       const params = request.params ?? {};
       request.params = params;
       const meta = params._meta ?? {};
       params._meta = meta;
-      (meta as { stream?: OpenStreamWriter }).stream = openStreamWriter;
+      if (openStreamWriter) {
+        (meta as { stream?: OpenStreamWriter }).stream = openStreamWriter;
+      }
+      if (inputStream) {
+        (meta as {
+          inputStream?: AsyncIterable<{ value: string; chunkIndex: number }>;
+        }).inputStream = inputStream;
+      }
     }
   }
 

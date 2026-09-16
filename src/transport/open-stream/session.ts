@@ -68,6 +68,7 @@ type CloseState = {
 export class OpenStreamSession implements OpenStreamSessionLike<string> {
   public readonly progressToken: string;
   public readonly closed: Promise<void>;
+  private readonly acceptDeferred = createDeferred<undefined>();
 
   private readonly onAbort?: (reason?: string) => Promise<void>;
   private readonly onClose?: () => Promise<void>;
@@ -122,6 +123,35 @@ export class OpenStreamSession implements OpenStreamSessionLike<string> {
     // external callers that attach their own handler still receive the same
     // rejection. Browser- and Node-safe: plain promise plumbing.
     void this.closed.catch(() => undefined);
+    void this.acceptDeferred.promise.catch(() => undefined);
+    // A locally initiated stream never receives a `start` frame to arm the
+    // idle window; arm it now so a peer that never accepts is detected via
+    // the normal keepalive probe cycle.
+    if (this.started) {
+      this.refreshIdleTimer();
+    }
+  }
+
+  /**
+   * Resolves when the peer's `accept` frame arrives; rejects if the session
+   * fails first. CEP-41: a bootstrap sender MUST wait for `accept` before
+   * emitting `chunk` frames.
+   */
+  public get accepted(): Promise<void> {
+    return this.acceptDeferred.promise;
+  }
+
+  /**
+   * Locally closes the stream after this peer's writer published its
+   * `close` frame: finalizes consumers and fires lifecycle cleanup without
+   * publishing anything.
+   */
+  public async close(): Promise<void> {
+    if (!this.active) {
+      return;
+    }
+
+    await this.finishClosed();
   }
 
   public get isActive(): boolean {
@@ -195,6 +225,7 @@ export class OpenStreamSession implements OpenStreamSessionLike<string> {
         this.refreshIdleTimer();
         return;
       case 'accept':
+        this.acceptDeferred.resolve(undefined);
         this.refreshIdleTimer();
         return;
       case 'ping':
@@ -563,8 +594,10 @@ export class OpenStreamSession implements OpenStreamSessionLike<string> {
 
     if (error) {
       this.closeDeferred.reject(error);
+      this.acceptDeferred.reject(error);
     } else {
       this.closeDeferred.resolve(undefined);
+      this.acceptDeferred.resolve(undefined);
     }
   }
 

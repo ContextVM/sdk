@@ -29,6 +29,12 @@ export interface OpenStreamWriterOptions {
    */
   nextProgress?: () => number;
   /**
+   * Marks the stream as already started: the `start` frame was published by
+   * a sibling component (client bootstrap, CEP-41). The writer then emits
+   * `chunk`/`close` frames directly without sending `start` itself.
+   */
+  preStarted?: boolean;
+  /**
    * Sender-side keepalive (CEP-41). When set, the writer arms an idle timer
    * once it starts streaming and probes the peer with `ping` frames; a peer
    * that never responds within {@link probeTimeoutMs} aborts the stream.
@@ -72,6 +78,7 @@ export class OpenStreamWriter {
     this.idleTimeoutMs = options.idleTimeoutMs;
     this.probeTimeoutMs = options.probeTimeoutMs;
     this.externalNextProgress = options.nextProgress;
+    this.started = options.preStarted ?? false;
   }
 
   public get isActive(): boolean {

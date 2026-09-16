@@ -1,6 +1,7 @@
 import {
   OpenStreamReceiver,
   OpenStreamSession,
+  OpenStreamWriter,
   type OpenStreamProgress,
   buildOpenStreamStartFrame,
   buildOpenStreamPingFrame,
@@ -126,15 +127,40 @@ export class ClientOpenStreamFactory {
   }
 
   /**
-   * Starts a client-to-server CEP-41 stream: creates the session that
-   * receives the server's `accept` and control frames, then publishes
-   * `start` as the first frame on the client's own outbound sequence for
-   * the token. The token must be the progress token of the already-sent
-   * request.
+   * Starts a client-to-server CEP-41 stream on a request's progress token:
+   * publishes `start` as the first frame on the client's own outbound
+   * sequence, waits for the server's `accept` (CEP-41 requires the sender to
+   * wait for accept before chunk frames), and returns the paired session and
+   * writer. The writer's chunk/close/abort frames share the session's
+   * per-sender sequence; keepalive is owned by the session.
    */
-  public async startStream(progressToken: string): Promise<OpenStreamSession> {
+  public async startStream(
+    progressToken: string,
+  ): Promise<ClientOpenStreamHandle> {
     const session = this.createOutboundSession(progressToken, {
       locallyInitiated: true,
+    });
+    const writer = new OpenStreamWriter({
+      progressToken,
+      preStarted: true,
+      nextProgress: () => this.nextOutboundProgress(progressToken),
+      publishFrame: async (frame): Promise<string | undefined> => {
+        await this.send({
+          jsonrpc: '2.0',
+          method: 'notifications/progress',
+          params: frame,
+        });
+        return undefined;
+      },
+      onClose: async (): Promise<void> => {
+        await session.close();
+      },
+      // The writer already published its abort frame; finalize the session
+      // locally and prune the shared counter without a second abort frame.
+      onAbort: async (): Promise<void> => {
+        session.dispose();
+        this.outboundProgress.delete(progressToken);
+      },
     });
     await this.send({
       jsonrpc: '2.0',
@@ -144,6 +170,15 @@ export class ClientOpenStreamFactory {
         progress: this.nextOutboundProgress(progressToken),
       }),
     });
-    return session;
+    await session.accepted;
+    return { session, writer };
   }
+}
+
+/** Client-side handle for a client-started CEP-41 stream. */
+export interface ClientOpenStreamHandle {
+  /** Session receiving the server's control frames; owns keepalive. */
+  readonly session: OpenStreamSession;
+  /** Ordered payload writer sharing the session's per-sender sequence. */
+  readonly writer: OpenStreamWriter;
 }

@@ -1,6 +1,8 @@
 import {
   OpenStreamWriter,
   OpenStreamReceiver,
+  OpenStreamSession,
+  type OpenStreamReadResult,
   buildOpenStreamAcceptFrame,
   buildOpenStreamPingFrame,
   buildOpenStreamPongFrame,
@@ -74,6 +76,13 @@ export class ServerOpenStreamFactory {
    * monotonic sequence, so the factory owns the single counter per token.
    */
   private readonly outboundProgress = new Map<string, number>();
+  /**
+   * Sessions of client-started streams, captured at accept time. The
+   * registry deletes a session once it closes; a tool that starts consuming
+   * after the (possibly very short-lived) stream finished still needs the
+   * session, whose buffered chunks survive finalization for its iterator.
+   */
+  private readonly inputSessions = new Map<string, OpenStreamSession>();
   private readonly pendingResponses = new Map<string, JSONRPCResponse>();
   private readonly receiver: OpenStreamReceiver;
   private readonly pendingSessionEvictions = new Map<
@@ -174,6 +183,11 @@ export class ServerOpenStreamFactory {
     clientPubkey: string,
     progressToken: string,
   ): Promise<void> {
+    const inputSession = this.receiver.getSession(progressToken);
+    if (inputSession) {
+      this.inputSessions.set(progressToken, inputSession);
+    }
+
     await this.deps.sendNotification(clientPubkey, {
       jsonrpc: '2.0',
       method: 'notifications/progress',
@@ -190,6 +204,56 @@ export class ServerOpenStreamFactory {
     const session = this.receiver.getSession(progressToken);
     if (session?.isActive) return;
     this.outboundProgress.delete(progressToken);
+  }
+
+  /**
+   * Lazy async iterable over the chunks of a client-started stream for a
+   * request token. Resolves the receiver session when the client's `start`
+   * frame arrives (bounded by the open-stream idle timeout), then delegates
+   * to the session's own iterator, so consumers see ordered chunks and a
+   * normal end-of-stream once the client closes.
+   */
+  public inputStreamIfEnabled(
+    progressToken: string,
+  ): AsyncIterable<OpenStreamReadResult<string>> | undefined {
+    if (!this.deps.openStreamEnabled) {
+      return undefined;
+    }
+
+    const factory = this;
+    return {
+      async *[Symbol.asyncIterator](): AsyncIterator<OpenStreamReadResult<string>> {
+        const session = await factory.waitForReceiverSession(progressToken);
+        yield* session;
+      },
+    };
+  }
+
+  /** Waits for the receiver session of a client-started stream to exist. */
+  private async waitForReceiverSession(
+    progressToken: string,
+  ): Promise<OpenStreamSession> {
+    // Bounded by the default idle window, not the tuned policy: policy idle
+    // is a keepalive cadence (tests set 40ms), while this is the bootstrap
+    // budget for the client's `start` frame after its request.
+    const deadline = Date.now() + DEFAULT_OPEN_STREAM_IDLE_TIMEOUT_MS;
+    for (;;) {
+      const session =
+        this.inputSessions.get(progressToken) ??
+        this.receiver.getSession(progressToken);
+      if (session) {
+        return session;
+      }
+      if (session) {
+        return session;
+      }
+      if (Date.now() >= deadline) {
+        throw new Error(
+          `Client-started open stream ${progressToken} did not start`,
+        );
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
   }
 
   /**
@@ -233,6 +297,7 @@ export class ServerOpenStreamFactory {
     this.writerMeta.clear();
     this.tokenEventIds.clear();
     this.outboundProgress.clear();
+    this.inputSessions.clear();
     this.pendingResponses.clear();
     this.pendingSessionEvictions.clear();
     this.evictedClientPubkeys.clear();

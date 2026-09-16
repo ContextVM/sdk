@@ -42,7 +42,8 @@ import { ServerMetadataStore } from './nostr-client/server-metadata-store.js';
 import { ClientOutboundSender } from './nostr-client/outbound-sender.js';
 import { ClientInboundNotificationDispatcher } from './nostr-client/inbound-notification-dispatcher.js';
 import { ClientEventPipeline } from './nostr-client/event-pipeline.js';
-import { ClientOpenStreamFactory } from './nostr-client/open-stream-factory.js';
+import { ClientOpenStreamFactory,
+  type ClientOpenStreamHandle,} from './nostr-client/open-stream-factory.js';
 import {
   DEFAULT_CHUNK_SIZE,
   DEFAULT_OVERSIZED_THRESHOLD,
@@ -511,17 +512,15 @@ export class NostrClientTransport
 
   /**
    * Starts a client-to-server CEP-41 open stream on the progress token of
-   * an already-sent request. Creates the session that receives the server's
-   * `accept` and control frames, and publishes `start` as the first frame
-   * on the client's per-sender outbound sequence for the token.
-   *
-   * CEP-41 requires stateless bootstrap flows to wait for the server's
-   * `accept` before sending `chunk` frames; iterate the returned session or
-   * use its `closed` promise to observe the outcome.
+   * an already-sent request: publishes `start` as the first frame on the
+   * client's per-sender outbound sequence, waits for the server's `accept`
+   * (CEP-41 requires it before chunk frames), and returns the paired
+   * session (control frames, keepalive) and writer (ordered chunks, close,
+   * abort) sharing that one sequence.
    */
   public async startOpenStream(
     progressToken: string,
-  ): Promise<OpenStreamSession> {
+  ): Promise<ClientOpenStreamHandle> {
     return this.openStreamFactory.startStream(progressToken);
   }
 
