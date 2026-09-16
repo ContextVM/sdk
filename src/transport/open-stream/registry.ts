@@ -119,6 +119,7 @@ export class OpenStreamRegistry {
 
     const session = new OpenStreamSession({
       progressToken,
+      senderPubkey,
       maxBufferedChunks:
         sessionOptions.maxBufferedChunks ??
         derivedSessionOptions.maxBufferedChunks ??
@@ -178,6 +179,20 @@ export class OpenStreamRegistry {
   ): Promise<OpenStreamSession> {
     const progressToken = String(frame.progressToken);
     const existingSession = this.getSession(progressToken);
+
+    if (
+      existingSession?.senderPubkey &&
+      senderPubkey &&
+      existingSession.senderPubkey !== senderPubkey
+    ) {
+      // Token collision across senders: drop the frame without failing the
+      // owning session, so one client cannot corrupt or read another
+      // client's stream by reusing its progress token.
+      this.logger.warn(
+        `Dropping open stream frame for token ${progressToken}: sender ${senderPubkey} does not own the stream`,
+      );
+      return existingSession;
+    }
 
     if (!existingSession) {
       if (frame.cvm.frameType !== 'start') {

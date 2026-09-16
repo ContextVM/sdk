@@ -395,7 +395,10 @@ export class ServerInboundCoordinator {
     // token may carry a client-started stream exposes a lazy chunk iterator,
     // so tools can consume streamed input symmetrically to `stream`.
     const inputStream = progressToken
-      ? this.deps.openStreamFactory.inputStreamIfEnabled(String(progressToken))
+      ? this.deps.openStreamFactory.inputStreamIfEnabled(
+          clientPubkey,
+          String(progressToken),
+        )
       : undefined;
     if (openStreamWriter || inputStream) {
       const params = request.params ?? {};

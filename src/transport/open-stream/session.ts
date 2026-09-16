@@ -56,6 +56,12 @@ export interface OpenStreamSessionOptions {
    * inbound `start` is rejected as a duplicate.
    */
   locallyInitiated?: boolean;
+  /**
+   * Authenticated sender identity of the peer that owns this stream (the
+   * signer of its frames). Used to scope sessions per client so a token
+   * collision across senders cannot cross streams.
+   */
+  senderPubkey?: string;
 }
 
 type CloseState = {
@@ -67,6 +73,7 @@ type CloseState = {
  */
 export class OpenStreamSession implements OpenStreamSessionLike<string> {
   public readonly progressToken: string;
+  public readonly senderPubkey: string | undefined;
   public readonly closed: Promise<void>;
   private readonly acceptDeferred = createDeferred<undefined>();
 
@@ -103,6 +110,7 @@ export class OpenStreamSession implements OpenStreamSessionLike<string> {
 
   constructor(options: OpenStreamSessionOptions) {
     this.progressToken = options.progressToken;
+    this.senderPubkey = options.senderPubkey;
     this.started = options.locallyInitiated ?? false;
     this.maxBufferedChunks = options.maxBufferedChunks;
     this.maxBufferedBytes = options.maxBufferedBytes;

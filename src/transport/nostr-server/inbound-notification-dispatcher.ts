@@ -29,6 +29,7 @@ export interface InboundNotificationDispatcherDeps {
   openStreamFactory: {
     getWriter: (eventId: string) => OpenStreamWriter | undefined;
     sendAccept: (clientPubkey: string, progressToken: string) => Promise<void>;
+    isInputStream: (clientPubkey: string, progressToken: string) => boolean;
   };
   correlationStore: CorrelationStore;
   sendNotification: (
@@ -85,11 +86,22 @@ export class InboundNotificationDispatcher {
         | { frameType?: string; reason?: string }
         | undefined;
 
+      // Client-started input streams own their keepalive and input lifecycle
+      // through the receiver session; the request's reserved output writer
+      // must not intercept their pings, pongs or aborts.
+      const inputToken = String(inboundMessage.params?.progressToken ?? '');
+      const inputOwned = this.deps.openStreamFactory.isInputStream(
+        event.pubkey,
+        inputToken,
+      );
+
       if (frame?.frameType === 'abort') {
         const progressToken = String(
           inboundMessage.params?.progressToken ?? '',
         );
-        const writer = this.resolveWriter(progressToken, event.pubkey);
+        const writer = inputOwned
+          ? undefined
+          : this.resolveWriter(progressToken, event.pubkey);
 
         if (writer) {
           void writer.abort(frame.reason).catch((err: unknown) => {
@@ -118,7 +130,9 @@ export class InboundNotificationDispatcher {
           'nonce' in frame && typeof frame.nonce === 'string'
             ? frame.nonce
             : '';
-        const writer = this.resolveWriter(progressToken, event.pubkey);
+        const writer = inputOwned
+          ? undefined
+          : this.resolveWriter(progressToken, event.pubkey);
 
         if (writer) {
           void writer.pong(nonce).catch((err: unknown) => {
@@ -151,7 +165,9 @@ export class InboundNotificationDispatcher {
           'nonce' in frame && typeof frame.nonce === 'string'
             ? frame.nonce
             : '';
-        const writer = this.resolveWriter(progressToken, event.pubkey);
+        const writer = inputOwned
+          ? undefined
+          : this.resolveWriter(progressToken, event.pubkey);
 
         if (writer) {
           writer.ackProbe(nonce);

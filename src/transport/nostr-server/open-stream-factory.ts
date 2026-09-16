@@ -3,6 +3,7 @@ import {
   OpenStreamReceiver,
   OpenStreamSession,
   type OpenStreamReadResult,
+  DEFAULT_MAX_CACHED_INPUT_STREAMS,
   buildOpenStreamAcceptFrame,
   buildOpenStreamPingFrame,
   buildOpenStreamPongFrame,
@@ -171,6 +172,45 @@ export class ServerOpenStreamFactory {
     return next;
   }
 
+  /** Cache key scoping a client-started stream to its authenticated sender. */
+  private static inputCacheKey(
+    clientPubkey: string,
+    progressToken: string,
+  ): string {
+    return `${clientPubkey}:${progressToken}`;
+  }
+
+  /** True when the token carries a client-started input stream for the sender. */
+  public isInputStream(clientPubkey: string, progressToken: string): boolean {
+    return this.inputSessions.has(
+      ServerOpenStreamFactory.inputCacheKey(clientPubkey, progressToken),
+    );
+  }
+
+  private evictInputStream(clientPubkey: string, progressToken: string): void {
+    this.inputSessions.delete(
+      ServerOpenStreamFactory.inputCacheKey(clientPubkey, progressToken),
+    );
+  }
+
+  private cacheInputSession(
+    clientPubkey: string,
+    progressToken: string,
+    session: OpenStreamSession,
+  ): void {
+    // Bounded retention: completed streams a tool never reads must not
+    // accumulate (evict-on-read and evict-on-response cover the normal path).
+    while (this.inputSessions.size >= DEFAULT_MAX_CACHED_INPUT_STREAMS) {
+      const oldest = this.inputSessions.keys().next();
+      if (oldest.done) break;
+      this.inputSessions.delete(oldest.value);
+    }
+    this.inputSessions.set(
+      ServerOpenStreamFactory.inputCacheKey(clientPubkey, progressToken),
+      session,
+    );
+  }
+
   /**
    * Publishes the CEP-41 bootstrap `accept` for a client-started stream.
    * Numbered on the token's shared outbound sequence so `accept`, writer
@@ -181,8 +221,17 @@ export class ServerOpenStreamFactory {
     progressToken: string,
   ): Promise<void> {
     const inputSession = this.receiver.getSession(progressToken);
+    if (
+      inputSession?.senderPubkey &&
+      inputSession.senderPubkey !== clientPubkey
+    ) {
+      // Token collision: the colliding start frame was dropped by the
+      // registry; do not acknowledge or cache a stream the requester does
+      // not own.
+      return;
+    }
     if (inputSession) {
-      this.inputSessions.set(progressToken, inputSession);
+      this.cacheInputSession(clientPubkey, progressToken, inputSession);
     }
 
     await this.deps.sendNotification(clientPubkey, {
@@ -211,6 +260,7 @@ export class ServerOpenStreamFactory {
    * normal end-of-stream once the client closes.
    */
   public inputStreamIfEnabled(
+    clientPubkey: string,
     progressToken: string,
   ): AsyncIterable<OpenStreamReadResult<string>> | undefined {
     if (!this.deps.openStreamEnabled) {
@@ -219,25 +269,28 @@ export class ServerOpenStreamFactory {
 
     return {
       [Symbol.asyncIterator]: (): AsyncIterator<OpenStreamReadResult<string>> =>
-        this.iterateInputStream(progressToken),
+        this.iterateInputStream(clientPubkey, progressToken),
     };
   }
 
   private async *iterateInputStream(
+    clientPubkey: string,
     progressToken: string,
   ): AsyncIterator<OpenStreamReadResult<string>> {
-    const session = await this.waitForReceiverSession(progressToken);
+    const session = await this.waitForReceiverSession(
+      clientPubkey,
+      progressToken,
+    );
     try {
       yield* session;
     } finally {
-      // ponytail: cache entries for streams whose tool never attaches to
-      // inputStream leak until clear(); evict-on-read covers the normal path.
-      this.inputSessions.delete(progressToken);
+      this.evictInputStream(clientPubkey, progressToken);
     }
   }
 
   /** Waits for the receiver session of a client-started stream to exist. */
   private async waitForReceiverSession(
+    clientPubkey: string,
     progressToken: string,
   ): Promise<OpenStreamSession> {
     // Bounded by the default idle window, not the tuned policy: policy idle
@@ -245,13 +298,16 @@ export class ServerOpenStreamFactory {
     // budget for the client's `start` frame after its request.
     const deadline = Date.now() + DEFAULT_OPEN_STREAM_IDLE_TIMEOUT_MS;
     for (;;) {
-      const session =
-        this.inputSessions.get(progressToken) ??
-        this.receiver.getSession(progressToken);
-      if (session) {
-        return session;
+      const cached = this.inputSessions.get(
+        ServerOpenStreamFactory.inputCacheKey(clientPubkey, progressToken),
+      );
+      if (cached) {
+        return cached;
       }
-      if (session) {
+      // Sender-scoped fallback: a token-colliding client must not resolve
+      // another sender's session from the shared registry.
+      const session = this.receiver.getSession(progressToken);
+      if (session?.senderPubkey === clientPubkey) {
         return session;
       }
       if (Date.now() >= deadline) {
@@ -350,6 +406,12 @@ export class ServerOpenStreamFactory {
     eventId: string,
     response: JSONRPCResponse,
   ): boolean {
+    // The request is answering: its input stream (if any) is done whether
+    // or not the tool consumed it, so stop retaining the buffered payload.
+    const route = this.deps.correlationStore.getEventRoute(eventId);
+    if (route?.progressToken) {
+      this.evictInputStream(route.clientPubkey, String(route.progressToken));
+    }
     const existingWriter = this.writers.get(eventId);
     if (existingWriter && existingWriter.hasStarted) {
       this.pendingResponses.set(eventId, response);

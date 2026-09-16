@@ -38,6 +38,7 @@ function createOpenStreamFixture(options?: {
   client: Client;
   serverTransport: NostrServerTransport;
   clientTransport: NostrClientTransport;
+  serverPublicKey: string;
 } {
   const relayHub = new MockRelayHub();
   const serverPrivateKey = bytesToHex(generateSecretKey());
@@ -89,6 +90,7 @@ function createOpenStreamFixture(options?: {
     client,
     serverTransport,
     clientTransport,
+    serverPublicKey,
   };
 }
 
@@ -1268,6 +1270,186 @@ describe('callToolStream end-to-end', () => {
     expect(clientFrames.some((f) => f.frameType === 'close')).toBe(true);
     expect(session.isActive).toBe(false);
 
+    await cleanupOpenStreamFixture({ client, server, relayHub });
+  }, 15_000);
+
+  test('keeps a client-started stream alive across session keepalive probe cycles', async () => {
+    const { relayHub, server, client, serverTransport, clientTransport } =
+      createOpenStreamFixture({ idleTimeoutMs: 40, probeTimeoutMs: 150 });
+
+    server.registerTool(
+      'ingestStream',
+      {
+        title: 'Ingest Stream',
+        description: 'Consumes streamed input.',
+        inputSchema: { topic: z.string() },
+      },
+      async (_args, extra) => {
+        const inputStream = (
+          extra._meta as {
+            inputStream?: AsyncIterable<{ value: string; chunkIndex: number }>;
+          } | undefined
+        )?.inputStream;
+
+        let text = '';
+        for await (const chunk of inputStream ?? []) {
+          text += chunk.value;
+        }
+
+        return { content: [{ type: 'text', text: `got:${text}` }] };
+      },
+    );
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+
+    const pending = client.callTool(
+      { name: 'ingestStream', arguments: { topic: 'orders' } },
+      undefined,
+      { onprogress: () => undefined, resetTimeoutOnProgress: false },
+    );
+    void pending.catch(() => undefined);
+
+    const requestEvent = await waitFor({
+      produce: () =>
+        relayHub.getEvents().find(
+          (event) => parseRelayMessage(event)?.method === 'tools/call',
+        ),
+      timeoutMs: 5_000,
+    });
+    const progressToken = String(
+      (
+        parseRelayMessage(requestEvent)?.params as
+          | { _meta?: { progressToken?: unknown } }
+          | undefined
+      )?._meta?.progressToken,
+    );
+    const clientPublicKey = requestEvent.pubkey;
+
+    const { session, writer } =
+      await clientTransport.startOpenStream(progressToken);
+    await writer.write('hello ');
+
+    // Hold the stream open across several idle -> ping -> pong probe
+    // cycles. The session's keepalive pings are answered by the client
+    // session; those pongs must reach the receiver session (not the
+    // request's reserved output writer) or the stream dies on probe
+    // timeout.
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(session.isActive).toBe(true);
+
+    const serverPings = relayHub.getEvents().filter(
+      (event) =>
+        event.pubkey !== clientPublicKey &&
+        parseRelayMessage(event)?.params?.progressToken === progressToken &&
+        getFrameType(event) === 'ping',
+    );
+    expect(serverPings.length).toBeGreaterThan(0);
+
+    await writer.write('world');
+    await writer.close();
+
+    const result = (await pending) as {
+      content: Array<{ type: string; text: string }>;
+    };
+    expect(result.content[0]?.text).toBe('got:hello world');
+
+    await cleanupOpenStreamFixture({ client, server, relayHub });
+  }, 15_000);
+
+  test('isolates a concurrent client-started stream from a token-colliding client', async () => {
+    const {
+      relayHub,
+      server,
+      client,
+      serverTransport,
+      clientTransport,
+      serverPublicKey,
+    } = createOpenStreamFixture({ idleTimeoutMs: 5_000, probeTimeoutMs: 5_000 });
+
+    server.registerTool(
+      'ingestStream',
+      {
+        title: 'Ingest Stream',
+        description: 'Consumes streamed input.',
+        inputSchema: { topic: z.string() },
+      },
+      async (_args, extra) => {
+        const inputStream = (
+          extra._meta as {
+            inputStream?: AsyncIterable<{ value: string; chunkIndex: number }>;
+          } | undefined
+        )?.inputStream;
+
+        let text = '';
+        for await (const chunk of inputStream ?? []) {
+          text += chunk.value;
+        }
+
+        return { content: [{ type: 'text', text: `got:${text}` }] };
+      },
+    );
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+
+    const pending = client.callTool(
+      { name: 'ingestStream', arguments: { topic: 'orders' } },
+      undefined,
+      { onprogress: () => undefined, resetTimeoutOnProgress: false },
+    );
+    void pending.catch(() => undefined);
+
+    const requestEvent = await waitFor({
+      produce: () =>
+        relayHub.getEvents().find(
+          (event) => parseRelayMessage(event)?.method === 'tools/call',
+        ),
+      timeoutMs: 5_000,
+    });
+    const progressToken = String(
+      (
+        parseRelayMessage(requestEvent)?.params as
+          | { _meta?: { progressToken?: unknown } }
+          | undefined
+      )?._meta?.progressToken,
+    );
+
+    // Client A holds an active upload on the token.
+    const { session: ownerSession, writer } =
+      await clientTransport.startOpenStream(progressToken);
+    await writer.write('A-');
+
+    // Client B reuses the token concurrently: its start must be dropped
+    // (no accept) instead of attaching to or corrupting A's stream.
+    const clientBTransport = new NostrClientTransport({
+      signer: new PrivateKeySigner(bytesToHex(generateSecretKey())),
+      relayHandler: relayHub.createRelayHandler(),
+      serverPubkey: serverPublicKey,
+      encryptionMode: EncryptionMode.DISABLED,
+      openStream: { enabled: true },
+    });
+    const bStart = clientBTransport.startOpenStream(progressToken);
+    void bStart.catch(() => undefined);
+    const bOutcome = await Promise.race([
+      bStart.then(
+        () => 'accepted',
+        () => 'failed',
+      ),
+      new Promise<'timeout'>((resolve) =>
+        setTimeout(() => resolve('timeout'), 400),
+      ),
+    ]);
+    expect(bOutcome).toBe('timeout');
+    expect(ownerSession.isActive).toBe(true);
+
+    // A's stream completes untouched.
+    await writer.write('data');
+    await writer.close();
+    const result = (await pending) as {
+      content: Array<{ type: string; text: string }>;
+    };
+    expect(result.content[0]?.text).toBe('got:A-data');
+
+    await clientBTransport.close();
     await cleanupOpenStreamFixture({ client, server, relayHub });
   }, 15_000);
 

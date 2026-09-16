@@ -411,6 +411,63 @@ describe('OpenStreamRegistry', () => {
     expect(() => registry.createSession('token-after-failed-abort')).not.toThrow();
   });
 
+  test('drops frames from a sender that does not own the session', async () => {
+    const registry = new OpenStreamRegistry({
+      maxBufferedChunksPerStream: 4,
+      maxBufferedBytesPerStream: 128,
+      logger: createLogger('test', { level: 'silent' }),
+    });
+
+    const owner = await registry.processFrame(
+      {
+        progressToken: 'token-owned',
+        progress: 1,
+        cvm: { type: 'open-stream', frameType: 'start' },
+      },
+      'sender-a',
+    );
+    expect(owner.senderPubkey).toBe('sender-a');
+
+    // A different sender reusing the token: chunk and duplicate start are
+    // both dropped without failing or corrupting the owner's stream.
+    const afterChunk = await registry.processFrame(
+      {
+        progressToken: 'token-owned',
+        progress: 2,
+        cvm: {
+          type: 'open-stream',
+          frameType: 'chunk',
+          chunkIndex: 0,
+          data: 'evil',
+        },
+      },
+      'sender-b',
+    );
+    const afterStart = await registry.processFrame(
+      {
+        progressToken: 'token-owned',
+        progress: 2,
+        cvm: { type: 'open-stream', frameType: 'start' },
+      },
+      'sender-b',
+    );
+
+    expect(afterChunk).toBe(owner);
+    expect(afterStart).toBe(owner);
+    expect(registry.getSession('token-owned')).toBe(owner);
+    expect(owner.isActive).toBe(true);
+
+    await owner.processFrame(2, {
+      type: 'open-stream',
+      frameType: 'chunk',
+      chunkIndex: 0,
+      data: 'good',
+    });
+    await owner.processFrame(3, { type: 'open-stream', frameType: 'close' });
+    await owner.closed;
+    expect(registry.getSession('token-owned')).toBeUndefined();
+  });
+
   test('rejects accept as the first frame for an unknown token', async () => {
     const registry = new OpenStreamRegistry({
       maxConcurrentStreams: 2,
