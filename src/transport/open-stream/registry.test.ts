@@ -316,6 +316,27 @@ describe('OpenStreamRegistry', () => {
     expect(registry.getSession('token-seq-fail')).toBeUndefined();
   });
 
+  test('rejects accepted when the stream closes before the peer accepts', async () => {
+    const registry = new OpenStreamRegistry({
+      maxBufferedChunksPerStream: 4,
+      maxBufferedBytesPerStream: 128,
+      logger: createLogger('test', { level: 'silent' }),
+    });
+    const session = registry.createSession({
+      progressToken: 'token-close-before-accept',
+      locallyInitiated: true,
+    });
+
+    await session.processFrame(1, {
+      type: 'open-stream',
+      frameType: 'close',
+    });
+
+    await expect(session.accepted).rejects.toThrow(
+      'closed before accept',
+    );
+  });
+
   test('rejects accept as the first frame for an unknown token', async () => {
     const registry = new OpenStreamRegistry({
       maxConcurrentStreams: 2,

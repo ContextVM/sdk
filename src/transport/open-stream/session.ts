@@ -88,6 +88,7 @@ export class OpenStreamSession implements OpenStreamSessionLike<string> {
   private queuedBytes = 0;
   private active = true;
   private started: boolean;
+  private acceptedFlag = false;
   private closedRemotely = false;
   private closeState: CloseState | undefined;
   private nextExpectedChunkIndex = 0;
@@ -243,6 +244,7 @@ export class OpenStreamSession implements OpenStreamSessionLike<string> {
         this.refreshIdleTimer();
         return;
       case 'accept':
+        this.acceptedFlag = true;
         this.acceptDeferred.resolve(undefined);
         this.refreshIdleTimer();
         return;
@@ -615,7 +617,18 @@ export class OpenStreamSession implements OpenStreamSessionLike<string> {
       this.acceptDeferred.reject(error);
     } else {
       this.closeDeferred.resolve(undefined);
-      this.acceptDeferred.resolve(undefined);
+      // A graceful finish never implies accept: a stream that closed before
+      // the peer accepted must surface as a rejected `accepted` promise so
+      // bootstrap callers do not proceed with a dead handle.
+      if (this.acceptedFlag) {
+        this.acceptDeferred.resolve(undefined);
+      } else {
+        this.acceptDeferred.reject(
+          new OpenStreamSequenceError(
+            `Stream ${this.progressToken} closed before accept`,
+          ),
+        );
+      }
     }
   }
 

@@ -164,11 +164,8 @@ export class ServerOpenStreamFactory {
     });
   }
 
-  /**
-   * Next value on the token's shared per-sender outbound sequence.
-   * @internal
-   */
-  public nextOutboundProgress(progressToken: string): number {
+  /** Next value on the token's shared per-sender outbound sequence. */
+  private nextOutboundProgress(progressToken: string): number {
     const next = (this.outboundProgress.get(progressToken) ?? 0) + 1;
     this.outboundProgress.set(progressToken, next);
     return next;
