@@ -433,6 +433,11 @@ export class OpenStreamSession implements OpenStreamSessionLike<string> {
   }
 
   private maybeFinishGracefully(): void {
+    // Exactly-once: `case 'close'` reaches this via flushContiguousChunks()
+    // and again directly, so a finalized session must not re-fire lifecycle.
+    if (!this.active) {
+      return;
+    }
     if (!this.closedRemotely || this.bufferedChunks.size > 0) {
       return;
     }
