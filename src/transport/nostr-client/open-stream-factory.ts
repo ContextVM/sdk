@@ -155,11 +155,11 @@ export class ClientOpenStreamFactory {
       onClose: async (): Promise<void> => {
         await session.close();
       },
-      // The writer already published its abort frame; finalize the session
-      // locally and prune the shared counter without a second abort frame.
-      onAbort: async (): Promise<void> => {
-        session.dispose();
-        this.outboundProgress.delete(progressToken);
+      // The writer already published its abort frame; terminate the session
+      // locally without publishing a second one (lifecycle cleanup runs and
+      // prunes the shared counter).
+      onAbort: async (reason?: string): Promise<void> => {
+        await session.terminate(reason);
       },
     });
     await this.send({

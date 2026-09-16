@@ -190,6 +190,24 @@ export class OpenStreamSession implements OpenStreamSessionLike<string> {
   }
 
   /**
+   * Aborts the stream locally without publishing `abort`: the peer was
+   * already notified by a sibling component (e.g. the payload writer
+   * published its own abort frame on the shared sequence). Fires the normal
+   * abort lifecycle so registries and counters are cleaned up.
+   */
+  public async terminate(reason?: string): Promise<void> {
+    if (!this.active) {
+      return;
+    }
+
+    await this.finishAborted(
+      new OpenStreamAbortError(this.progressToken, reason),
+      reason,
+      false,
+    );
+  }
+
+  /**
    * Fails the stream because an inbound frame violated stream rules.
    * Publishes `abort` to the peer when a `sendAbort` hook is wired — a peer
    * that fails a stream SHOULD send abort while it can still transmit

@@ -220,13 +220,23 @@ export class ServerOpenStreamFactory {
       return undefined;
     }
 
-    const factory = this;
     return {
-      async *[Symbol.asyncIterator](): AsyncIterator<OpenStreamReadResult<string>> {
-        const session = await factory.waitForReceiverSession(progressToken);
-        yield* session;
-      },
+      [Symbol.asyncIterator]: (): AsyncIterator<OpenStreamReadResult<string>> =>
+        this.iterateInputStream(progressToken),
     };
+  }
+
+  private async *iterateInputStream(
+    progressToken: string,
+  ): AsyncIterator<OpenStreamReadResult<string>> {
+    const session = await this.waitForReceiverSession(progressToken);
+    try {
+      yield* session;
+    } finally {
+      // ponytail: cache entries for streams whose tool never attaches to
+      // inputStream leak until clear(); evict-on-read covers the normal path.
+      this.inputSessions.delete(progressToken);
+    }
   }
 
   /** Waits for the receiver session of a client-started stream to exist. */

@@ -1271,6 +1271,68 @@ describe('callToolStream end-to-end', () => {
     await cleanupOpenStreamFixture({ client, server, relayHub });
   }, 15_000);
 
+  test('terminates the client session without a second abort when the payload writer aborts', async () => {
+    const { relayHub, server, client, serverTransport, clientTransport } =
+      createOpenStreamFixture();
+
+    server.registerTool(
+      'bootstrapAbortSink',
+      {
+        title: 'Bootstrap Abort Sink',
+        description: 'Stays pending.',
+        inputSchema: { topic: z.string() },
+      },
+      async () => {
+        await new Promise<void>(() => undefined);
+        return { content: [{ type: 'text', text: 'unused' }] };
+      },
+    );
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+
+    const pending = client.callTool(
+      { name: 'bootstrapAbortSink', arguments: { topic: 'orders' } },
+      undefined,
+      { onprogress: () => undefined, resetTimeoutOnProgress: false },
+    );
+    void pending.catch(() => undefined);
+
+    const requestEvent = await waitFor({
+      produce: () =>
+        relayHub.getEvents().find(
+          (event) => parseRelayMessage(event)?.method === 'tools/call',
+        ),
+      timeoutMs: 5_000,
+    });
+    const progressToken = String(
+      (
+        parseRelayMessage(requestEvent)?.params as
+          | { _meta?: { progressToken?: unknown } }
+          | undefined
+      )?._meta?.progressToken,
+    );
+    const clientPublicKey = requestEvent.pubkey;
+
+    const { session, writer } =
+      await clientTransport.startOpenStream(progressToken);
+    await writer.abort('client stopped');
+
+    // Exactly one abort frame from the client, and the session is gone
+    // locally (registry cleanup ran through the terminate lifecycle).
+    const clientAborts = relayHub.getEvents().filter((event) => {
+      const message = parseRelayMessage(event);
+      return (
+        event.pubkey === clientPublicKey &&
+        message?.params?.progressToken === progressToken &&
+        message.params.cvm?.frameType === 'abort'
+      );
+    });
+    expect(clientAborts.length).toBe(1);
+    expect(session.isActive).toBe(false);
+
+    await cleanupOpenStreamFixture({ client, server, relayHub });
+  }, 15_000);
+
   test('publishes abort when a duplicate start fails the stream server-side', async () => {
     const { relayHub, server, client, serverTransport, clientTransport } =
       createOpenStreamFixture();
