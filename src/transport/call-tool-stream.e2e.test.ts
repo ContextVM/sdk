@@ -9,6 +9,7 @@ import { EncryptionMode } from '../core/interfaces.js';
 import { MockRelayHub } from '../__mocks__/mock-relay-handler.js';
 import { PrivateKeySigner } from '../signer/private-key-signer.js';
 import {
+  buildOpenStreamPingFrame,
   buildOpenStreamStartFrame,
   type OpenStreamWriter,
 } from './open-stream/index.js';
@@ -1041,6 +1042,199 @@ describe('callToolStream end-to-end', () => {
           type: 'open-stream',
           frameType: 'accept',
         },
+      },
+    });
+
+    // A keepalive ping on the bootstrap token must be answered even though
+    // the token has no correlation route: the session resolves the peer from
+    // the frame's signer, and the pong joins the server's shared sequence.
+    await clientTransport.send({
+      jsonrpc: '2.0',
+      method: 'notifications/progress',
+      params: buildOpenStreamPingFrame({
+        progressToken,
+        progress: 2,
+        nonce: 'bootstrap-ping',
+      }),
+    });
+
+    const pongEvent = await waitFor({
+      produce: () =>
+        relayHub.getEvents().find((event) => {
+          const message = parseRelayMessage(event);
+          return (
+            message?.params?.cvm?.frameType === 'pong' &&
+            message.params.cvm.nonce === 'bootstrap-ping'
+          );
+        }),
+      timeoutMs: 5_000,
+    });
+    expect(parseRelayMessage(pongEvent)?.params?.progress).toBe(2);
+
+    await cleanupOpenStreamFixture({ client, server, relayHub });
+  }, 15_000);
+
+  test('keeps a client-started stream alive across bootstrap, ping and pong on one per-sender sequence', async () => {
+    const { relayHub, server, client, serverTransport, clientTransport } =
+      createOpenStreamFixture({ idleTimeoutMs: 40, probeTimeoutMs: 5_000 });
+
+    server.registerTool(
+      'clientStartedEcho',
+      {
+        title: 'Client Started Echo',
+        description: 'Stays pending while the client streams.',
+        inputSchema: { topic: z.string() },
+      },
+      async () => {
+        await new Promise<void>(() => undefined);
+        return { content: [{ type: 'text', text: 'unused' }] };
+      },
+    );
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+
+    // Routed token via the real progress-token machinery.
+    void client
+      .callTool(
+        { name: 'clientStartedEcho', arguments: { topic: 'orders' } },
+        undefined,
+        { onprogress: () => undefined, resetTimeoutOnProgress: false },
+      )
+      .catch(() => undefined);
+    const requestEvent = await waitFor({
+      produce: () =>
+        relayHub.getEvents().find(
+          (event) => parseRelayMessage(event)?.method === 'tools/call',
+        ),
+      timeoutMs: 5_000,
+    });
+    const progressToken = String(
+      (
+        parseRelayMessage(requestEvent)?.params as
+          | { _meta?: { progressToken?: unknown } }
+          | undefined
+      )?._meta?.progressToken,
+    );
+    expect(progressToken.length).toBeGreaterThan(0);
+
+    // Client-started bootstrap: start@1 on the client's own sequence, and a
+    // session that can receive the server's accept and control frames.
+    const session = await clientTransport.startOpenStream(progressToken);
+    expect(session.isActive).toBe(true);
+
+    const acceptEvent = await waitFor({
+      produce: () =>
+        relayHub.getEvents().find(
+          (event) =>
+            getFrameType(event) === 'accept' &&
+            parseRelayMessage(event)?.params?.progressToken === progressToken,
+        ),
+      timeoutMs: 5_000,
+    });
+    expect(parseRelayMessage(acceptEvent)?.params?.progress).toBe(1);
+    const serverPublicKey = acceptEvent.pubkey;
+
+    // Idle fires on the client session; the server answers through the
+    // shared per-token counter, so accept@1 -> pong@2 stays monotonic.
+    await waitFor({
+      produce: () =>
+        relayHub.getEvents().find((event) => {
+          const message = parseRelayMessage(event);
+          return (
+            message?.params?.cvm?.frameType === 'pong' &&
+            message.params.progressToken === progressToken
+          );
+        }),
+      timeoutMs: 5_000,
+    });
+
+    const serverFrames = relayHub
+      .getEvents()
+      .filter(
+        (event) =>
+          event.pubkey === serverPublicKey &&
+          parseRelayMessage(event)?.params?.progressToken === progressToken,
+      )
+      .map((event) => ({
+        frameType: getFrameType(event),
+        progress: parseRelayMessage(event)?.params?.progress,
+      }));
+
+    // The server's own outbound sequence stays strictly monotonic across
+    // bootstrap accept and keepalive traffic (accept@1, then ping/pong at 2+).
+    expect(serverFrames[0]).toEqual({ frameType: 'accept', progress: 1 });
+    for (let i = 1; i < serverFrames.length; i++) {
+      expect(serverFrames[i]!.progress!).toBeGreaterThan(
+        serverFrames[i - 1]!.progress!,
+      );
+    }
+    // The keepalive round-trip kept the client session alive.
+    expect(session.isActive).toBe(true);
+    expect(
+      relayHub.getEvents().some((event) => getFrameType(event) === 'abort'),
+    ).toBe(false);
+
+    await cleanupOpenStreamFixture({ client, server, relayHub });
+  }, 15_000);
+
+  test('publishes abort when a duplicate start fails the stream server-side', async () => {
+    const { relayHub, server, client, serverTransport, clientTransport } =
+      createOpenStreamFixture();
+
+    server.registerTool(
+      'bootstrapHang',
+      {
+        title: 'Bootstrap Hang',
+        description: 'Stays pending.',
+        inputSchema: { topic: z.string() },
+      },
+      async () => {
+        await new Promise<void>(() => undefined);
+        return { content: [{ type: 'text', text: 'unused' }] };
+      },
+    );
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+
+    const progressToken = 'duplicate-start-token';
+    void client
+      .callTool({
+        name: 'bootstrapHang',
+        arguments: { topic: 'orders', _meta: { progressToken } },
+      })
+      .catch(() => undefined);
+
+    await clientTransport.send({
+      jsonrpc: '2.0',
+      method: 'notifications/progress',
+      params: buildOpenStreamStartFrame({ progressToken, progress: 1 }),
+    });
+    const acceptEvent = await waitFor({
+      produce: () =>
+        relayHub.getEvents().find((event) => getFrameType(event) === 'accept'),
+      timeoutMs: 5_000,
+    });
+
+    // Second start for an active token: the stream MUST fail (CEP-41) and
+    // the failure must reach the peer as abort, not die silently.
+    await clientTransport.send({
+      jsonrpc: '2.0',
+      method: 'notifications/progress',
+      params: buildOpenStreamStartFrame({ progressToken, progress: 2 }),
+    });
+
+    const abortEvent = await waitFor({
+      produce: () =>
+        relayHub.getEvents().find((event) => getFrameType(event) === 'abort'),
+      timeoutMs: 5_000,
+    });
+    expect(abortEvent.pubkey).toBe(acceptEvent.pubkey);
+    expect(parseRelayMessage(abortEvent)?.params).toMatchObject({
+      progressToken,
+      progress: 2,
+      cvm: {
+        type: 'open-stream',
+        frameType: 'abort',
       },
     });
 

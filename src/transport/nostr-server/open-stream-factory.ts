@@ -1,6 +1,7 @@
 import {
   OpenStreamWriter,
   OpenStreamReceiver,
+  buildOpenStreamAcceptFrame,
   buildOpenStreamPingFrame,
   buildOpenStreamPongFrame,
   buildOpenStreamAbortFrame,
@@ -64,6 +65,15 @@ export class ServerOpenStreamFactory {
     string,
     { clientPubkey: string; startedAt: number }
   >();
+  /** eventId sets per progress token, to know when a token has no writers left. */
+  private readonly tokenEventIds = new Map<string, Set<string>>();
+  /**
+   * Per-token outbound progress counter. CEP-41 progress sequences are
+   * per-sender: every server frame for one stream (bootstrap `accept`, writer
+   * start/chunk/close/ping/pong, session ping/pong/abort) must come from one
+   * monotonic sequence, so the factory owns the single counter per token.
+   */
+  private readonly outboundProgress = new Map<string, number>();
   private readonly pendingResponses = new Map<string, JSONRPCResponse>();
   private readonly receiver: OpenStreamReceiver;
   private readonly pendingSessionEvictions = new Map<
@@ -80,20 +90,21 @@ export class ServerOpenStreamFactory {
       idleTimeoutMs: deps.policy?.idleTimeoutMs,
       probeTimeoutMs: deps.policy?.probeTimeoutMs,
       closeGracePeriodMs: deps.policy?.closeGracePeriodMs,
-      getSessionOptions: (progressToken) => {
-        let progress = 0;
-
-        const getClientPubkey = () => {
+      getSessionOptions: (progressToken, senderPubkey) => {
+        const getClientPubkey = (): string | undefined => {
           const eventId =
             this.deps.correlationStore.getEventIdByProgressToken(progressToken);
-          if (!eventId) return undefined;
-          const route = this.deps.correlationStore.getEventRoute(eventId);
-          return route?.clientPubkey;
+          if (eventId) {
+            const route = this.deps.correlationStore.getEventRoute(eventId);
+            if (route?.clientPubkey) return route.clientPubkey;
+          }
+          // Stateless bootstrap frames (CEP-41) may arrive on a token with
+          // no registered route; the frame's signer pubkey is the sender.
+          return senderPubkey;
         };
 
         return {
           sendPing: async (nonce: string): Promise<void> => {
-            progress += 1;
             const clientPubkey = getClientPubkey();
             if (!clientPubkey) return;
             await this.deps.sendNotification(clientPubkey, {
@@ -101,13 +112,12 @@ export class ServerOpenStreamFactory {
               method: 'notifications/progress',
               params: buildOpenStreamPingFrame({
                 progressToken,
-                progress,
+                progress: this.nextOutboundProgress(progressToken),
                 nonce,
               }),
             });
           },
           sendPong: async (nonce: string): Promise<void> => {
-            progress += 1;
             const clientPubkey = getClientPubkey();
             if (!clientPubkey) return;
             await this.deps.sendNotification(clientPubkey, {
@@ -115,13 +125,12 @@ export class ServerOpenStreamFactory {
               method: 'notifications/progress',
               params: buildOpenStreamPongFrame({
                 progressToken,
-                progress,
+                progress: this.nextOutboundProgress(progressToken),
                 nonce,
               }),
             });
           },
           sendAbort: async (reason?: string): Promise<void> => {
-            progress += 1;
             const clientPubkey = getClientPubkey();
             if (!clientPubkey) return;
             await this.deps.sendNotification(clientPubkey, {
@@ -129,15 +138,58 @@ export class ServerOpenStreamFactory {
               method: 'notifications/progress',
               params: buildOpenStreamAbortFrame({
                 progressToken,
-                progress,
+                progress: this.nextOutboundProgress(progressToken),
                 reason,
               }),
             });
+          },
+          onClose: async (): Promise<void> => {
+            this.pruneOutboundProgress(progressToken);
+          },
+          onAbort: async (): Promise<void> => {
+            this.pruneOutboundProgress(progressToken);
           },
         };
       },
       logger: deps.logger,
     });
+  }
+
+  /**
+   * Next value on the token's shared per-sender outbound sequence.
+   * @internal
+   */
+  public nextOutboundProgress(progressToken: string): number {
+    const next = (this.outboundProgress.get(progressToken) ?? 0) + 1;
+    this.outboundProgress.set(progressToken, next);
+    return next;
+  }
+
+  /**
+   * Publishes the CEP-41 bootstrap `accept` for a client-started stream.
+   * Numbered on the token's shared outbound sequence so `accept`, writer
+   * frames and session control frames stay monotonic as one sender.
+   */
+  public async sendAccept(
+    clientPubkey: string,
+    progressToken: string,
+  ): Promise<void> {
+    await this.deps.sendNotification(clientPubkey, {
+      jsonrpc: '2.0',
+      method: 'notifications/progress',
+      params: buildOpenStreamAcceptFrame({
+        progressToken,
+        progress: this.nextOutboundProgress(progressToken),
+      }),
+    });
+  }
+
+  /** Drops the token counter once no live sender remains for the token. */
+  private pruneOutboundProgress(progressToken: string): void {
+    if ((this.tokenEventIds.get(progressToken)?.size ?? 0) > 0) return;
+    const session = this.receiver.getSession(progressToken);
+    if (session?.isActive) return;
+    this.outboundProgress.delete(progressToken);
   }
 
   /**
@@ -179,6 +231,8 @@ export class ServerOpenStreamFactory {
     }
     this.writers.clear();
     this.writerMeta.clear();
+    this.tokenEventIds.clear();
+    this.outboundProgress.clear();
     this.pendingResponses.clear();
     this.pendingSessionEvictions.clear();
     this.evictedClientPubkeys.clear();
@@ -258,8 +312,7 @@ export class ServerOpenStreamFactory {
     if (writer.hasStarted) {
       return;
     }
-    this.writers.delete(eventId);
-    this.writerMeta.delete(eventId);
+    this.removeWriterBooking(eventId, writer.progressToken);
     writer.dispose();
   }
 
@@ -289,6 +342,10 @@ export class ServerOpenStreamFactory {
 
     const writer = new OpenStreamWriter({
       progressToken,
+      // All server frames for this token share the factory's per-sender
+      // sequence (CEP-41), including bootstrap accept and session control
+      // frames, so a routed client-started stream stays monotonic.
+      nextProgress: () => this.nextOutboundProgress(progressToken),
       publishFrame: async (frame) => {
         await this.deps.sendNotification(clientPubkey, {
           jsonrpc: '2.0',
@@ -316,6 +373,12 @@ export class ServerOpenStreamFactory {
 
     this.writers.set(eventId, writer);
     this.writerMeta.set(eventId, { clientPubkey, startedAt: Date.now() });
+    let eventIds = this.tokenEventIds.get(progressToken);
+    if (!eventIds) {
+      eventIds = new Set();
+      this.tokenEventIds.set(progressToken, eventIds);
+    }
+    eventIds.add(eventId);
     return writer;
   }
 
@@ -325,14 +388,27 @@ export class ServerOpenStreamFactory {
   public async flushPendingResponse(eventId: string): Promise<void> {
     const pendingResponse = this.pendingResponses.get(eventId);
     this.pendingResponses.delete(eventId);
+    const token = this.writers.get(eventId)?.progressToken;
     this.writers.delete(eventId);
     this.writerMeta.delete(eventId);
+    if (token) {
+      this.tokenEventIds.get(token)?.delete(eventId);
+      this.pruneOutboundProgress(token);
+    }
 
     if (!pendingResponse) {
       return;
     }
 
     await this.deps.handleResponse(pendingResponse);
+  }
+
+  /** Removes a writer's map bookings and drops the token counter if last. */
+  private removeWriterBooking(eventId: string, progressToken: string): void {
+    this.writers.delete(eventId);
+    this.writerMeta.delete(eventId);
+    this.tokenEventIds.get(progressToken)?.delete(eventId);
+    this.pruneOutboundProgress(progressToken);
   }
 
   private async handleProbeTimeout(

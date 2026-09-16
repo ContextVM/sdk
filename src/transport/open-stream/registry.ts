@@ -20,6 +20,7 @@ export interface OpenStreamRegistryOptions {
   closeGracePeriodMs?: number;
   getSessionOptions?: (
     progressToken: string,
+    senderPubkey?: string,
   ) => Partial<Omit<OpenStreamSessionOptions, 'progressToken'>>;
   logger: Logger;
 }
@@ -47,6 +48,7 @@ export class OpenStreamRegistry {
   private readonly getSessionOptions:
     | ((
         progressToken: string,
+        senderPubkey?: string,
       ) => Partial<Omit<OpenStreamSessionOptions, 'progressToken'>>)
     | undefined;
   private readonly sessions = new Map<string, OpenStreamSession>();
@@ -89,11 +91,13 @@ export class OpenStreamRegistry {
       | string
       | (Pick<OpenStreamSessionOptions, 'progressToken'> &
           Partial<Omit<OpenStreamSessionOptions, 'progressToken'>>),
+    senderPubkey?: string,
   ): OpenStreamSession {
     const sessionOptions =
       typeof options === 'string' ? { progressToken: options } : options;
     const { progressToken } = sessionOptions;
-    const derivedSessionOptions = this.getSessionOptions?.(progressToken) ?? {};
+    const derivedSessionOptions =
+      this.getSessionOptions?.(progressToken, senderPubkey) ?? {};
 
     if (this.sessions.has(progressToken)) {
       throw new OpenStreamSequenceError(
@@ -132,6 +136,10 @@ export class OpenStreamRegistry {
       sendPing: sessionOptions.sendPing ?? derivedSessionOptions.sendPing,
       sendPong: sessionOptions.sendPong ?? derivedSessionOptions.sendPong,
       sendAbort: sessionOptions.sendAbort ?? derivedSessionOptions.sendAbort,
+      locallyInitiated:
+        sessionOptions.locallyInitiated ??
+        derivedSessionOptions.locallyInitiated ??
+        false,
       onClose: async () => {
         try {
           await sessionOptions.onClose?.();
@@ -158,6 +166,7 @@ export class OpenStreamRegistry {
 
   public async processFrame(
     frame: OpenStreamProgress,
+    senderPubkey?: string,
   ): Promise<OpenStreamSession> {
     const progressToken = String(frame.progressToken);
     const existingSession = this.getSession(progressToken);
@@ -170,7 +179,8 @@ export class OpenStreamRegistry {
       }
     }
 
-    const session = existingSession ?? this.createSession(progressToken);
+    const session =
+      existingSession ?? this.createSession(progressToken, senderPubkey);
 
     try {
       await session.processFrame(frame.progress, frame.cvm);

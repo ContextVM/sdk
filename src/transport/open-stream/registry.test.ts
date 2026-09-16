@@ -283,6 +283,39 @@ describe('OpenStreamRegistry', () => {
     ).toBe(true);
   });
 
+  test('publishes abort to the peer when an inbound frame fails the stream', async () => {
+    const registry = new OpenStreamRegistry({
+      maxBufferedChunksPerStream: 4,
+      maxBufferedBytesPerStream: 128,
+      logger: createLogger('test', { level: 'silent' }),
+    });
+    const publishedAborts: Array<{ progress: number; reason?: string }> = [];
+    const session = registry.createSession({
+      progressToken: 'token-seq-fail',
+      sendAbort: async (reason?: string): Promise<void> => {
+        publishedAborts.push({ progress: 0, reason });
+      },
+    });
+
+    await session.processFrame(1, {
+      type: 'open-stream',
+      frameType: 'start',
+    });
+
+    // Non-monotonic progress fails the stream and must reach the peer.
+    await expect(
+      registry.processFrame({
+        progressToken: 'token-seq-fail',
+        progress: 1,
+        cvm: { type: 'open-stream', frameType: 'ping', nonce: 'n1' },
+      }),
+    ).rejects.toBeInstanceOf(OpenStreamSequenceError);
+
+    expect(publishedAborts.length).toBe(1);
+    expect(publishedAborts[0]?.reason).toContain('Non-increasing progress');
+    expect(registry.getSession('token-seq-fail')).toBeUndefined();
+  });
+
   test('rejects accept as the first frame for an unknown token', async () => {
     const registry = new OpenStreamRegistry({
       maxConcurrentStreams: 2,

@@ -22,9 +22,11 @@ export class OpenStreamReceiver {
 
   public async processFrame(
     notification: JSONRPCNotification,
+    senderPubkey?: string,
   ): Promise<OpenStreamSession> {
     return this.registry.processFrame(
       notification.params as OpenStreamProgress,
+      senderPubkey,
     );
   }
 

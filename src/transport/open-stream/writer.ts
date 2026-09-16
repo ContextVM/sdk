@@ -20,6 +20,15 @@ export interface OpenStreamWriterOptions {
   onClose?: () => Promise<void>;
   onAbort?: (reason?: string) => Promise<void>;
   /**
+   * External per-stream progress counter. When set, every outbound frame
+   * (start/chunk/close/ping/pong/abort) draws its `progress` from this
+   * source instead of the writer's private counter. CEP-41 progress
+   * sequences are per-sender: a stream whose control frames are also
+   * published from sibling components (session pong/abort, bootstrap
+   * accept) must share one monotonic sequence across all of them.
+   */
+  nextProgress?: () => number;
+  /**
    * Sender-side keepalive (CEP-41). When set, the writer arms an idle timer
    * once it starts streaming and probes the peer with `ping` frames; a peer
    * that never responds within {@link probeTimeoutMs} aborts the stream.
@@ -49,6 +58,7 @@ export class OpenStreamWriter {
   private operationQueue: Promise<void> = Promise.resolve();
   private abortPromise?: Promise<void>;
   private readonly abortController = new AbortController();
+  private readonly externalNextProgress: (() => number) | undefined;
   private idleTimer: ReturnType<typeof setTimeout> | undefined;
   private probeTimer: ReturnType<typeof setTimeout> | undefined;
   private pendingProbeNonce: string | undefined;
@@ -61,6 +71,7 @@ export class OpenStreamWriter {
     this.onAbort = options.onAbort;
     this.idleTimeoutMs = options.idleTimeoutMs;
     this.probeTimeoutMs = options.probeTimeoutMs;
+    this.externalNextProgress = options.nextProgress;
   }
 
   public get isActive(): boolean {
@@ -338,6 +349,9 @@ export class OpenStreamWriter {
   }
 
   private nextProgress(): number {
+    if (this.externalNextProgress) {
+      return this.externalNextProgress();
+    }
     this.progress += 1;
     return this.progress;
   }

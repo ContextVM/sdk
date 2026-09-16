@@ -49,6 +49,13 @@ export interface OpenStreamSessionOptions {
   sendAbort?: (reason?: string) => Promise<void>;
   onAbort?: (reason?: string) => Promise<void>;
   onClose?: () => Promise<void>;
+  /**
+   * Marks the session as already started because this peer sent the
+   * `start` frame itself (client-to-server bootstrap, CEP-41). Inbound
+   * `accept`/`ping`/`pong` are then valid without a peer `start`, while an
+   * inbound `start` is rejected as a duplicate.
+   */
+  locallyInitiated?: boolean;
 }
 
 type CloseState = {
@@ -79,7 +86,7 @@ export class OpenStreamSession implements OpenStreamSessionLike<string> {
   private bufferedBytes = 0;
   private queuedBytes = 0;
   private active = true;
-  private started = false;
+  private started: boolean;
   private closedRemotely = false;
   private closeState: CloseState | undefined;
   private nextExpectedChunkIndex = 0;
@@ -94,6 +101,7 @@ export class OpenStreamSession implements OpenStreamSessionLike<string> {
 
   constructor(options: OpenStreamSessionOptions) {
     this.progressToken = options.progressToken;
+    this.started = options.locallyInitiated ?? false;
     this.maxBufferedChunks = options.maxBufferedChunks;
     this.maxBufferedBytes = options.maxBufferedBytes;
     this.idleTimeoutMs =
@@ -151,12 +159,18 @@ export class OpenStreamSession implements OpenStreamSessionLike<string> {
     await this.finishAborted(error, reason, true);
   }
 
+  /**
+   * Fails the stream because an inbound frame violated stream rules.
+   * Publishes `abort` to the peer when a `sendAbort` hook is wired — a peer
+   * that fails a stream SHOULD send abort while it can still transmit
+   * (CEP-41), so the peer stops streaming into a dead stream.
+   */
   public async fail(error: Error): Promise<void> {
     if (!this.active) {
       return;
     }
 
-    await this.finishAborted(error, error.message, false);
+    await this.finishAborted(error, error.message, true);
   }
 
   public dispose(): void {

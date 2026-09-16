@@ -10,7 +10,6 @@ import { type Logger } from '../../core/utils/logger.js';
 import {
   OpenStreamReceiver,
   OpenStreamWriter,
-  buildOpenStreamAcceptFrame,
 } from '../open-stream/index.js';
 import { OversizedTransferReceiver } from '../oversized-transfer/index.js';
 import { type CorrelationStore } from './correlation-store.js';
@@ -29,6 +28,7 @@ export interface InboundNotificationDispatcherDeps {
   oversizedReceiver: OversizedTransferReceiver;
   openStreamFactory: {
     getWriter: (eventId: string) => OpenStreamWriter | undefined;
+    sendAccept: (clientPubkey: string, progressToken: string) => Promise<void>;
   };
   correlationStore: CorrelationStore;
   sendNotification: (
@@ -160,23 +160,17 @@ export class InboundNotificationDispatcher {
       }
 
       this.deps.openStreamReceiver
-        .processFrame(inboundMessage)
+        .processFrame(inboundMessage, event.pubkey)
         .then(async () => {
           const frameType = frame?.frameType;
 
           if (frameType === 'start' && session.supportsOpenStream) {
-            // CEP-41 per-sender progress: accept lives on the accepting
-            // peer's own outbound sequence, not the starter's sequence + 1.
-            await this.deps.sendNotification(event.pubkey, {
-              jsonrpc: '2.0',
-              method: 'notifications/progress',
-              params: buildOpenStreamAcceptFrame({
-                progressToken: String(
-                  inboundMessage.params?.progressToken ?? '',
-                ),
-                progress: 1,
-              }),
-            });
+            // Accept joins the token's shared per-sender sequence; the
+            // frame's signer is the bootstrap peer even without a route.
+            await this.deps.openStreamFactory.sendAccept(
+              event.pubkey,
+              String(inboundMessage.params?.progressToken ?? ''),
+            );
           }
         })
         .catch((err: unknown) => {

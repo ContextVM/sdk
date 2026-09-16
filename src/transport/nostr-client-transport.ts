@@ -510,6 +510,22 @@ export class NostrClientTransport
   }
 
   /**
+   * Starts a client-to-server CEP-41 open stream on the progress token of
+   * an already-sent request. Creates the session that receives the server's
+   * `accept` and control frames, and publishes `start` as the first frame
+   * on the client's per-sender outbound sequence for the token.
+   *
+   * CEP-41 requires stateless bootstrap flows to wait for the server's
+   * `accept` before sending `chunk` frames; iterate the returned session or
+   * use its `closed` promise to observe the outcome.
+   */
+  public async startOpenStream(
+    progressToken: string,
+  ): Promise<OpenStreamSession> {
+    return this.openStreamFactory.startStream(progressToken);
+  }
+
+  /**
    * Emulates the server's initialize response for stateless clients.
    * @param requestId - The ID of the original initialize request
    */
