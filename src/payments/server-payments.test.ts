@@ -315,3 +315,210 @@ describe('createServerPaymentsMiddleware onInvoiceIssued', () => {
     expect(harness.forwards()).toBe(0);
   });
 });
+
+describe('createServerPaymentsMiddleware transport shutdown', () => {
+  /** Verification the test settles by hand, after `abortSignal` fires. */
+  interface DeferredVerify {
+    processor: PaymentProcessor;
+    started: Promise<AbortSignal | undefined>;
+    resolve: () => void;
+  }
+
+  function makeDeferredProcessor(opts: {
+    /** Reject on the per-request signal like the built-in processors do. */
+    honorAbort: boolean;
+  }): DeferredVerify {
+    let onStarted!: (signal: AbortSignal | undefined) => void;
+    const started = new Promise<AbortSignal | undefined>((r) => {
+      onStarted = r;
+    });
+    let resolveVerify: () => void = () => {};
+    const processor: PaymentProcessor = {
+      pmi: 'test-pmi',
+      async createPaymentRequired(params) {
+        return { amount: params.amount, pay_req: 'invoice-1', pmi: 'test-pmi' };
+      },
+      verifyPayment(params) {
+        onStarted(params.abortSignal);
+        return new Promise((resolve, reject) => {
+          resolveVerify = () => resolve({});
+          if (opts.honorAbort) {
+            params.abortSignal?.addEventListener(
+              'abort',
+              () => reject(new Error('verifyPayment aborted')),
+              { once: true },
+            );
+          }
+        });
+      },
+    };
+    return { processor, started, resolve: () => resolveVerify() };
+  }
+
+  function buildShutdownHarness(
+    processor: PaymentProcessor,
+    sender: CorrelatedNotificationSender,
+    abortSignal: AbortSignal,
+  ): {
+    run: (requestEventId: string) => Promise<void>;
+    forwards: () => number;
+  } {
+    let forwards = 0;
+    const middleware = createServerPaymentsMiddleware({
+      sender,
+      options: { processors: [processor], pricedCapabilities: [PRICED] },
+      abortSignal,
+    });
+    return {
+      run: (id) =>
+        middleware(
+          {
+            jsonrpc: '2.0',
+            id,
+            method: 'tools/call',
+            params: { name: 'expensive_tool' },
+          },
+          { clientPubkey: 'client' },
+          async () => {
+            forwards += 1;
+          },
+        ),
+      forwards: () => forwards,
+    };
+  }
+
+  function captureUnhandledRejections(): () => unknown[] {
+    const seen: unknown[] = [];
+    const onRejection = (reason: unknown): void => {
+      seen.push(reason);
+    };
+    process.on('unhandledRejection', onRejection);
+    return () => {
+      process.off('unhandledRejection', onRejection);
+      return seen;
+    };
+  }
+
+  test('a verify that settles after abort neither publishes payment_accepted nor forwards', async () => {
+    const unhandled = captureUnhandledRejections();
+    const deferred = makeDeferredProcessor({ honorAbort: false });
+    const { sender, methods } = makeSender();
+    const shutdown = new AbortController();
+    const harness = buildShutdownHarness(
+      deferred.processor,
+      sender,
+      shutdown.signal,
+    );
+
+    const run = harness.run('evt1');
+    const perRequestSignal = await deferred.started;
+    expect(perRequestSignal?.aborted).toBe(false);
+
+    shutdown.abort();
+    expect(perRequestSignal?.aborted).toBe(true);
+
+    // Processor ignores the abort and reports success anyway.
+    deferred.resolve();
+    await run;
+
+    expect(harness.forwards()).toBe(0);
+    expect(methods).toEqual(['notifications/payment_required']);
+    expect(unhandled()).toEqual([]);
+  });
+
+  test('abort cuts a pending verify short, the run settles cleanly, and the pending entry survives for redelivery dedup', async () => {
+    const unhandled = captureUnhandledRejections();
+    const deferred = makeDeferredProcessor({ honorAbort: true });
+    const { sender, methods } = makeSender();
+    const shutdown = new AbortController();
+    const harness = buildShutdownHarness(
+      deferred.processor,
+      sender,
+      shutdown.signal,
+    );
+
+    const run = harness.run('evt1');
+    await deferred.started;
+    shutdown.abort();
+
+    // No timeout wait, no rethrow: the abort resolves the run promptly.
+    let settled = false;
+    await Promise.race([
+      run.then(() => {
+        settled = true;
+      }),
+      new Promise((r) => setTimeout(r, 200)),
+    ]);
+    expect(settled).toBe(true);
+    expect(harness.forwards()).toBe(0);
+    expect(methods).toEqual(['notifications/payment_required']);
+
+    // Cancel-not-drain: the invoice stays pending until TTL, so a redelivery
+    // of the same event neither mints a second invoice nor forwards.
+    await harness.run('evt1');
+    expect(harness.forwards()).toBe(0);
+    expect(methods).toEqual(['notifications/payment_required']);
+    expect(unhandled()).toEqual([]);
+  });
+
+  test('detaches its listener from the shared signal once verify settles', async () => {
+    const deferred = makeDeferredProcessor({ honorAbort: false });
+    const { sender } = makeSender();
+    const shutdown = new AbortController();
+    const added: string[] = [];
+    const removed: string[] = [];
+    const originalAdd = shutdown.signal.addEventListener.bind(shutdown.signal);
+    const originalRemove = shutdown.signal.removeEventListener.bind(
+      shutdown.signal,
+    );
+    shutdown.signal.addEventListener = ((type: string, ...rest: unknown[]) => {
+      added.push(type);
+      return (originalAdd as (...args: unknown[]) => void)(type, ...rest);
+    }) as typeof shutdown.signal.addEventListener;
+    shutdown.signal.removeEventListener = ((
+      type: string,
+      ...rest: unknown[]
+    ) => {
+      removed.push(type);
+      return (originalRemove as (...args: unknown[]) => void)(type, ...rest);
+    }) as typeof shutdown.signal.removeEventListener;
+    const harness = buildShutdownHarness(
+      deferred.processor,
+      sender,
+      shutdown.signal,
+    );
+
+    const run = harness.run('evt1');
+    await deferred.started;
+    expect(added).toEqual(['abort']);
+    expect(removed).toEqual([]);
+
+    deferred.resolve();
+    await run;
+
+    expect(removed).toEqual(['abort']);
+    expect(harness.forwards()).toBe(1);
+  });
+
+  test('a signal that never fires leaves the paid flow unchanged', async () => {
+    const deferred = makeDeferredProcessor({ honorAbort: true });
+    const { sender, methods } = makeSender();
+    const shutdown = new AbortController();
+    const harness = buildShutdownHarness(
+      deferred.processor,
+      sender,
+      shutdown.signal,
+    );
+
+    const run = harness.run('evt1');
+    await deferred.started;
+    deferred.resolve();
+    await run;
+
+    expect(harness.forwards()).toBe(1);
+    expect(methods).toEqual([
+      'notifications/payment_required',
+      'notifications/payment_accepted',
+    ]);
+  });
+});

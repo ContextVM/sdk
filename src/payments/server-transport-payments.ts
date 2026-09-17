@@ -65,6 +65,11 @@ export function withServerPayments(
   // or reject per-session `payment_interaction` requests.
   transport.setSupportedPaymentInteraction(policy);
 
+  // Transport-owned shutdown signal (aborted at the top of close()). Both
+  // middlewares stop polling and skip forward/grant once it fires. Not chained
+  // through `onclose`, which consumers may reassign after registration.
+  const abortSignal = transport.closeSignal;
+
   transport.addInboundMiddleware(
     createServerPaymentsMiddleware({
       sender: transport,
@@ -74,6 +79,7 @@ export function withServerPayments(
       // response survives route-pop (duplicate cleanup) and session eviction.
       onInvoiceIssued: ({ requestEventId, snapshotTtlMs }) =>
         transport.capturePaymentRouteSnapshot(requestEventId, snapshotTtlMs),
+      abortSignal,
     }),
   );
 
@@ -94,6 +100,7 @@ export function withServerPayments(
           );
         },
         processorsByPmi,
+        abortSignal,
       }),
     );
   }

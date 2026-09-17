@@ -885,3 +885,198 @@ describe('Explicit Gating Middleware', () => {
     );
   });
 });
+
+describe('Explicit Gating Middleware transport shutdown', () => {
+  const pricedCapabilities = [
+    { method: 'tools/call', name: 'add', amount: 10, currencyUnit: 'test' },
+  ] as const;
+
+  const ctx: ServerPaymentsContext = {
+    clientPubkey: 'test-client',
+    paymentInteraction: 'explicit_gating',
+  };
+
+  const message: JSONRPCRequest = {
+    jsonrpc: '2.0',
+    id: 'event-id',
+    method: 'tools/call',
+    params: { name: 'add', arguments: { a: 1, b: 2 } },
+  };
+
+  const identity = computeCanonicalInvocationIdentity(
+    ctx.clientPubkey,
+    message.method,
+    message.params,
+  );
+
+  /** Verification the test settles by hand, after `abortSignal` fires. */
+  function makeDeferredProcessor(opts: { honorAbort: boolean }): {
+    processor: {
+      pmi: string;
+      createPaymentRequired: (params: {
+        amount: number;
+        requestEventId: string;
+        clientPubkey: string;
+      }) => Promise<{ amount: number; pay_req: string; pmi: string }>;
+      verifyPayment: (params: {
+        abortSignal?: AbortSignal;
+      }) => Promise<{ _meta?: Record<string, unknown> }>;
+    };
+    started: Promise<AbortSignal | undefined>;
+    resolve: () => void;
+    createCount: () => number;
+  } {
+    let createCount = 0;
+    let onStarted!: (signal: AbortSignal | undefined) => void;
+    const started = new Promise<AbortSignal | undefined>((r) => {
+      onStarted = r;
+    });
+    let resolveVerify: () => void = () => {};
+    return {
+      processor: {
+        pmi: 'fake',
+        async createPaymentRequired(params) {
+          createCount += 1;
+          return {
+            amount: params.amount,
+            pay_req: `pr-${createCount}`,
+            pmi: 'fake',
+          };
+        },
+        verifyPayment(params) {
+          onStarted(params.abortSignal);
+          return new Promise((resolve, reject) => {
+            resolveVerify = () => resolve({ _meta: { ok: true } });
+            if (opts.honorAbort) {
+              params.abortSignal?.addEventListener(
+                'abort',
+                () => reject(new Error('verifyPayment aborted')),
+                { once: true },
+              );
+            }
+          });
+        },
+      },
+      started,
+      resolve: () => resolveVerify(),
+      createCount: () => createCount,
+    };
+  }
+
+  function captureUnhandledRejections(): () => unknown[] {
+    const seen: unknown[] = [];
+    const onRejection = (reason: unknown): void => {
+      seen.push(reason);
+    };
+    process.on('unhandledRejection', onRejection);
+    return () => {
+      process.off('unhandledRejection', onRejection);
+      return seen;
+    };
+  }
+
+  test('a verify that settles after abort does not grant; the retry mints a fresh -32042', async () => {
+    const unhandled = captureUnhandledRejections();
+    const store = new AuthorizationStore();
+    const sentResponses: JSONRPCErrorResponse[] = [];
+    const deferred = makeDeferredProcessor({ honorAbort: false });
+    const shutdown = new AbortController();
+    let forwards = 0;
+
+    const mw = createExplicitGatingMiddleware({
+      options: {
+        processors: [deferred.processor],
+        pricedCapabilities: [...pricedCapabilities],
+      },
+      authorizationStore: store,
+      sendResponse: async (_pubkey, response) => {
+        sentResponses.push(response);
+      },
+      abortSignal: shutdown.signal,
+    });
+
+    await mw(message, ctx, async () => {
+      forwards += 1;
+    });
+    expect(sentResponses[0].error.code).toBe(PAYMENT_REQUIRED_ERROR_CODE);
+
+    const perRequestSignal = await deferred.started;
+    expect(perRequestSignal?.aborted).toBe(false);
+
+    shutdown.abort();
+    expect(perRequestSignal?.aborted).toBe(true);
+
+    // Processor ignores the abort and reports success anyway.
+    deferred.resolve();
+    await new Promise((r) => setTimeout(r, 5));
+
+    expect(store.claim(identity)).toBe(false);
+
+    // Same cleanup as a failed verify: pending is cleared, retry re-invoices.
+    await mw(message, ctx, async () => {
+      forwards += 1;
+    });
+    expect(sentResponses).toHaveLength(2);
+    expect(sentResponses[1].error.code).toBe(PAYMENT_REQUIRED_ERROR_CODE);
+    expect(deferred.createCount()).toBe(2);
+    expect(forwards).toBe(0);
+    expect(unhandled()).toEqual([]);
+  });
+
+  test('abort cuts a pending verify short without granting or leaking a rejection', async () => {
+    const unhandled = captureUnhandledRejections();
+    const store = new AuthorizationStore();
+    const sentResponses: JSONRPCErrorResponse[] = [];
+    const deferred = makeDeferredProcessor({ honorAbort: true });
+    const shutdown = new AbortController();
+
+    const mw = createExplicitGatingMiddleware({
+      options: {
+        processors: [deferred.processor],
+        pricedCapabilities: [...pricedCapabilities],
+      },
+      authorizationStore: store,
+      sendResponse: async (_pubkey, response) => {
+        sentResponses.push(response);
+      },
+      abortSignal: shutdown.signal,
+    });
+
+    await mw(message, ctx, async () => {});
+    await deferred.started;
+
+    shutdown.abort();
+    await new Promise((r) => setTimeout(r, 5));
+
+    expect(store.claim(identity)).toBe(false);
+    expect(store.getPendingRemainingMs(identity)).toBe(0);
+    expect(unhandled()).toEqual([]);
+  });
+
+  test('a signal that never fires leaves the grant flow unchanged', async () => {
+    const store = new AuthorizationStore();
+    const deferred = makeDeferredProcessor({ honorAbort: true });
+    const shutdown = new AbortController();
+    let forwards = 0;
+
+    const mw = createExplicitGatingMiddleware({
+      options: {
+        processors: [deferred.processor],
+        pricedCapabilities: [...pricedCapabilities],
+      },
+      authorizationStore: store,
+      sendResponse: async () => {},
+      abortSignal: shutdown.signal,
+    });
+
+    await mw(message, ctx, async () => {});
+    await deferred.started;
+    deferred.resolve();
+    await new Promise((r) => setTimeout(r, 5));
+
+    await mw(message, ctx, async () => {
+      forwards += 1;
+    });
+    expect(forwards).toBe(1);
+  });
+});
