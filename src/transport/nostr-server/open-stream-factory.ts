@@ -199,24 +199,16 @@ export class ServerOpenStreamFactory {
     return `${clientPubkey}\u0000${progressToken}`;
   }
 
-  /** Cache key scoping a client-started stream to its authenticated sender. */
-  private static inputCacheKey(
-    clientPubkey: string,
-    progressToken: string,
-  ): string {
-    return `${clientPubkey}:${progressToken}`;
-  }
-
   /** True when the token carries a client-started input stream for the sender. */
   public isInputStream(clientPubkey: string, progressToken: string): boolean {
     return this.inputSessions.has(
-      ServerOpenStreamFactory.inputCacheKey(clientPubkey, progressToken),
+      ServerOpenStreamFactory.senderKey(clientPubkey, progressToken),
     );
   }
 
   private evictInputStream(clientPubkey: string, progressToken: string): void {
     this.inputSessions.delete(
-      ServerOpenStreamFactory.inputCacheKey(clientPubkey, progressToken),
+      ServerOpenStreamFactory.senderKey(clientPubkey, progressToken),
     );
   }
 
@@ -243,7 +235,7 @@ export class ServerOpenStreamFactory {
       if (!evicted) break;
     }
     this.inputSessions.set(
-      ServerOpenStreamFactory.inputCacheKey(clientPubkey, progressToken),
+      ServerOpenStreamFactory.senderKey(clientPubkey, progressToken),
       session,
     );
   }
@@ -328,7 +320,7 @@ export class ServerOpenStreamFactory {
     const deadline = Date.now() + DEFAULT_OPEN_STREAM_IDLE_TIMEOUT_MS;
     for (;;) {
       const cached = this.inputSessions.get(
-        ServerOpenStreamFactory.inputCacheKey(clientPubkey, progressToken),
+        ServerOpenStreamFactory.senderKey(clientPubkey, progressToken),
       );
       if (cached) {
         return cached;

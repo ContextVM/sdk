@@ -138,7 +138,6 @@ export class OpenStreamRegistry {
 
     const session = new OpenStreamSession({
       progressToken,
-      senderPubkey,
       maxBufferedChunks:
         sessionOptions.maxBufferedChunks ??
         derivedSessionOptions.maxBufferedChunks ??
