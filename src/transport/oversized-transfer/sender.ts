@@ -31,32 +31,37 @@ function splitStringByByteSize(str: string, maxBytes: number): string[] {
     throw new Error(`Invalid chunkSizeBytes: ${String(maxBytes)}`);
   }
 
+  const bytes = new TextEncoder().encode(str);
+  const decoder = new TextDecoder();
   const chunks: string[] = [];
 
-  let currentChunk = '';
-  let currentChunkBytes = 0;
-
-  for (const char of str) {
-    const charBytes = utf8ByteLength(char);
-    if (charBytes > maxBytes) {
+  let start = 0;
+  while (bytes.length - start > maxBytes) {
+    let end = start + maxBytes;
+    // Back off to a UTF-8 character boundary.
+    while (end > start && bytes[end] >= 0x80 && bytes[end] < 0xc0) {
+      end--;
+    }
+    if (end === start) {
+      // The window starts mid-character: measure it for the error message.
+      let charBytes = 1;
+      while (
+        start + charBytes < bytes.length &&
+        bytes[start + charBytes] >= 0x80 &&
+        bytes[start + charBytes] < 0xc0
+      ) {
+        charBytes++;
+      }
       throw new Error(
         `Unable to split message: single character exceeds chunk size (${charBytes} > ${maxBytes})`,
       );
     }
-
-    if (currentChunkBytes > 0 && currentChunkBytes + charBytes > maxBytes) {
-      chunks.push(currentChunk);
-      currentChunk = char;
-      currentChunkBytes = charBytes;
-      continue;
-    }
-
-    currentChunk += char;
-    currentChunkBytes += charBytes;
+    chunks.push(decoder.decode(bytes.subarray(start, end)));
+    start = end;
   }
 
-  if (currentChunk.length > 0) {
-    chunks.push(currentChunk);
+  if (bytes.length > start) {
+    chunks.push(decoder.decode(bytes.subarray(start)));
   }
 
   return chunks;
