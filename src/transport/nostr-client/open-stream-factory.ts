@@ -162,18 +162,26 @@ export class ClientOpenStreamFactory {
         await session.terminate(reason);
       },
     });
-    await this.send({
-      jsonrpc: '2.0',
-      method: 'notifications/progress',
-      params: buildOpenStreamStartFrame({
-        progressToken,
-        progress: this.nextOutboundProgress(progressToken),
-      }),
-    });
     // Session death (peer abort, probe timeout, teardown) must also end the
     // returned writer: dispose() is teardown-only, so no second abort frame
-    // is published for a stream the peer already terminated.
+    // is published for a stream the peer already terminated. Attached before
+    // the publish so a failed start tears the writer down too.
     void session.closed.catch(() => undefined).then(() => writer.dispose());
+    try {
+      await this.send({
+        jsonrpc: '2.0',
+        method: 'notifications/progress',
+        params: buildOpenStreamStartFrame({
+          progressToken,
+          progress: this.nextOutboundProgress(progressToken),
+        }),
+      });
+    } catch (error) {
+      // The peer never heard the start; terminate locally (non-publishing,
+      // the transport just failed) so no slot or token state leaks.
+      await session.terminate('start publish failed');
+      throw error;
+    }
     await session.accepted;
     return { session, writer };
   }

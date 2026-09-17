@@ -94,6 +94,17 @@ function createOpenStreamFixture(options?: {
   };
 }
 
+async function bStartOutcome(
+  handle: Promise<unknown>,
+): Promise<'accepted' | 'failed'> {
+  try {
+    await handle;
+    return 'accepted';
+  } catch {
+    return 'failed';
+  }
+}
+
 function getFrameType(event: { content: string }): string | undefined {
   try {
     const message = JSON.parse(event.content) as {
@@ -1356,7 +1367,7 @@ describe('callToolStream end-to-end', () => {
     await cleanupOpenStreamFixture({ client, server, relayHub });
   }, 15_000);
 
-  test('isolates a concurrent client-started stream from a token-colliding client', async () => {
+  test('gives concurrent same-token clients independent client-started streams', async () => {
     const {
       relayHub,
       server,
@@ -1418,8 +1429,9 @@ describe('callToolStream end-to-end', () => {
       await clientTransport.startOpenStream(progressToken);
     await writer.write('A-');
 
-    // Client B reuses the token concurrently: its start must be dropped
-    // (no accept) instead of attaching to or corrupting A's stream.
+    // Client B legitimately reuses the same client-local token concurrently:
+    // it must get an INDEPENDENT stream (own session, own accept), never
+    // attaching to or corrupting A's stream.
     const clientBTransport = new NostrClientTransport({
       signer: new PrivateKeySigner(bytesToHex(generateSecretKey())),
       relayHandler: relayHub.createRelayHandler(),
@@ -1427,21 +1439,29 @@ describe('callToolStream end-to-end', () => {
       encryptionMode: EncryptionMode.DISABLED,
       openStream: { enabled: true },
     });
-    const bStart = clientBTransport.startOpenStream(progressToken);
-    void bStart.catch(() => undefined);
+    const clientB = new Client({ name: 'stream-client-b', version: '1.0.0' });
+    await clientB.connect(clientBTransport);
+
+    const bHandle = clientBTransport.startOpenStream(progressToken);
     const bOutcome = await Promise.race([
-      bStart.then(
-        () => 'accepted',
-        () => 'failed',
-      ),
+      bStartOutcome(bHandle),
       new Promise<'timeout'>((resolve) =>
-        setTimeout(() => resolve('timeout'), 400),
+        setTimeout(() => resolve('timeout'), 2_000),
       ),
     ]);
-    expect(bOutcome).toBe('timeout');
+    expect(bOutcome).toBe('accepted');
     expect(ownerSession.isActive).toBe(true);
 
-    // A's stream completes untouched.
+    const { session: sessionB, writer: writerB } = await bHandle;
+    await writerB.write('B-only');
+
+    // Hold both streams open across keepalive cycles: A's pongs must be
+    // routed back to A's session even though B now shares the token.
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(ownerSession.isActive).toBe(true);
+    expect(sessionB.isActive).toBe(true);
+
+    // A's stream completes with A's payload only; B's closes independently.
     await writer.write('data');
     await writer.close();
     const result = (await pending) as {
@@ -1449,7 +1469,84 @@ describe('callToolStream end-to-end', () => {
     };
     expect(result.content[0]?.text).toBe('got:A-data');
 
+    await writerB.close();
+    await sessionB.closed;
+
+    await clientB.close();
     await clientBTransport.close();
+    await cleanupOpenStreamFixture({ client, server, relayHub });
+  }, 15_000);
+
+  test('unblocks the tool input iterator when the client aborts an input stream', async () => {
+    const { relayHub, server, client, serverTransport, clientTransport } =
+      createOpenStreamFixture({ idleTimeoutMs: 5_000, probeTimeoutMs: 5_000 });
+
+    server.registerTool(
+      'ingestStream',
+      {
+        title: 'Ingest Stream',
+        description: 'Consumes streamed input.',
+        inputSchema: { topic: z.string() },
+      },
+      async (_args, extra) => {
+        const inputStream = (
+          extra._meta as {
+            inputStream?: AsyncIterable<{ value: string; chunkIndex: number }>;
+          } | undefined
+        )?.inputStream;
+
+        let text = '';
+        try {
+          for await (const chunk of inputStream ?? []) {
+            text += chunk.value;
+          }
+          return {
+            content: [{ type: 'text', text: `got:${text}` }],
+          };
+        } catch {
+          // The input stream aborted mid-transfer; the tool must observe it
+          // promptly instead of blocking until keepalive timeout.
+          return {
+            content: [{ type: 'text', text: `aborted:${text}` }],
+          };
+        }
+      },
+    );
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+
+    const pending = client.callTool(
+      { name: 'ingestStream', arguments: { topic: 'orders' } },
+      undefined,
+      { onprogress: () => undefined, resetTimeoutOnProgress: false },
+    );
+
+    const requestEvent = await waitFor({
+      produce: () =>
+        relayHub.getEvents().find(
+          (event) => parseRelayMessage(event)?.method === 'tools/call',
+        ),
+      timeoutMs: 5_000,
+    });
+    const progressToken = String(
+      (
+        parseRelayMessage(requestEvent)?.params as
+          | { _meta?: { progressToken?: unknown } }
+          | undefined
+      )?._meta?.progressToken,
+    );
+
+    const { session, writer } =
+      await clientTransport.startOpenStream(progressToken);
+    await writer.write('part');
+    await writer.abort('client done');
+
+    const result = (await pending) as {
+      content: Array<{ type: string; text: string }>;
+    };
+    expect(result.content[0]?.text).toBe('aborted:part');
+    expect(session.isActive).toBe(false);
+
     await cleanupOpenStreamFixture({ client, server, relayHub });
   }, 15_000);
 

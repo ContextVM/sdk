@@ -117,9 +117,13 @@ export class InboundNotificationDispatcher {
               err instanceof Error ? err : new Error(String(err)),
             );
           });
+
+          return true;
         }
 
-        return true;
+        // No output writer handled it (e.g. a client-started input stream):
+        // fall through so the abort reaches the receiver session and the
+        // tool's input iterator unblocks.
       }
 
       if (frame?.frameType === 'ping') {

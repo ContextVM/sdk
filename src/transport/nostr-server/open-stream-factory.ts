@@ -68,13 +68,14 @@ export class ServerOpenStreamFactory {
     string,
     { clientPubkey: string; startedAt: number }
   >();
-  /** eventId sets per progress token, to know when a token has no writers left. */
+  /** eventId sets per (client, token), to know when a token has no writers left. */
   private readonly tokenEventIds = new Map<string, Set<string>>();
   /**
-   * Per-token outbound progress counter. CEP-41 progress sequences are
-   * per-sender: every server frame for one stream (bootstrap `accept`, writer
-   * start/chunk/close/ping/pong, session ping/pong/abort) must come from one
-   * monotonic sequence, so the factory owns the single counter per token.
+   * Per-(client, token) outbound progress counter. CEP-41 progress sequences
+   * are per-sender toward one peer: every server frame for one stream
+   * (bootstrap `accept`, writer start/chunk/close/ping/pong, session
+   * ping/pong/abort) must come from one monotonic sequence, and two clients
+   * using the same client-local token must not share that sequence.
    */
   private readonly outboundProgress = new Map<string, number>();
   /**
@@ -102,15 +103,16 @@ export class ServerOpenStreamFactory {
       closeGracePeriodMs: deps.policy?.closeGracePeriodMs,
       getSessionOptions: (progressToken, senderPubkey) => {
         const getClientPubkey = (): string | undefined => {
+          // The authenticated session owner wins: a token-only route lookup
+          // could resolve to another client that happens to reuse the token.
+          if (senderPubkey) return senderPubkey;
           const eventId =
             this.deps.correlationStore.getEventIdByProgressToken(progressToken);
           if (eventId) {
             const route = this.deps.correlationStore.getEventRoute(eventId);
             if (route?.clientPubkey) return route.clientPubkey;
           }
-          // Stateless bootstrap frames (CEP-41) may arrive on a token with
-          // no registered route; the frame's signer pubkey is the sender.
-          return senderPubkey;
+          return undefined;
         };
 
         return {
@@ -122,7 +124,10 @@ export class ServerOpenStreamFactory {
               method: 'notifications/progress',
               params: buildOpenStreamPingFrame({
                 progressToken,
-                progress: this.nextOutboundProgress(progressToken),
+                progress: this.nextOutboundProgress(
+                  clientPubkey,
+                  progressToken,
+                ),
                 nonce,
               }),
             });
@@ -135,7 +140,10 @@ export class ServerOpenStreamFactory {
               method: 'notifications/progress',
               params: buildOpenStreamPongFrame({
                 progressToken,
-                progress: this.nextOutboundProgress(progressToken),
+                progress: this.nextOutboundProgress(
+                  clientPubkey,
+                  progressToken,
+                ),
                 nonce,
               }),
             });
@@ -148,16 +156,23 @@ export class ServerOpenStreamFactory {
               method: 'notifications/progress',
               params: buildOpenStreamAbortFrame({
                 progressToken,
-                progress: this.nextOutboundProgress(progressToken),
+                progress: this.nextOutboundProgress(
+                  clientPubkey,
+                  progressToken,
+                ),
                 reason,
               }),
             });
           },
           onClose: async (): Promise<void> => {
-            this.pruneOutboundProgress(progressToken);
+            if (senderPubkey) {
+              this.pruneOutboundProgress(senderPubkey, progressToken);
+            }
           },
           onAbort: async (): Promise<void> => {
-            this.pruneOutboundProgress(progressToken);
+            if (senderPubkey) {
+              this.pruneOutboundProgress(senderPubkey, progressToken);
+            }
           },
         };
       },
@@ -165,11 +180,23 @@ export class ServerOpenStreamFactory {
     });
   }
 
-  /** Next value on the token's shared per-sender outbound sequence. */
-  private nextOutboundProgress(progressToken: string): number {
-    const next = (this.outboundProgress.get(progressToken) ?? 0) + 1;
-    this.outboundProgress.set(progressToken, next);
+  /** Next value on the (client, token)'s shared per-sender outbound sequence. */
+  private nextOutboundProgress(
+    clientPubkey: string,
+    progressToken: string,
+  ): number {
+    const key = ServerOpenStreamFactory.senderKey(clientPubkey, progressToken);
+    const next = (this.outboundProgress.get(key) ?? 0) + 1;
+    this.outboundProgress.set(key, next);
     return next;
+  }
+
+  /** Key scoping a token's server-side state to one authenticated client. */
+  private static senderKey(
+    clientPubkey: string,
+    progressToken: string,
+  ): string {
+    return `${clientPubkey}\u0000${progressToken}`;
   }
 
   /** Cache key scoping a client-started stream to its authenticated sender. */
@@ -200,10 +227,20 @@ export class ServerOpenStreamFactory {
   ): void {
     // Bounded retention: completed streams a tool never reads must not
     // accumulate (evict-on-read and evict-on-response cover the normal path).
+    // Active sessions are never evicted — routing an active upload's control
+    // frames away from the receiver would kill a live stream on probe
+    // timeout. If every retained session is still active, the cache grows
+    // past the cap; actives are bounded by the concurrency policy anyway.
     while (this.inputSessions.size >= DEFAULT_MAX_CACHED_INPUT_STREAMS) {
-      const oldest = this.inputSessions.keys().next();
-      if (oldest.done) break;
-      this.inputSessions.delete(oldest.value);
+      let evicted = false;
+      for (const [key, retained] of this.inputSessions) {
+        if (!retained.isActive) {
+          this.inputSessions.delete(key);
+          evicted = true;
+          break;
+        }
+      }
+      if (!evicted) break;
     }
     this.inputSessions.set(
       ServerOpenStreamFactory.inputCacheKey(clientPubkey, progressToken),
@@ -220,16 +257,7 @@ export class ServerOpenStreamFactory {
     clientPubkey: string,
     progressToken: string,
   ): Promise<void> {
-    const inputSession = this.receiver.getSession(progressToken);
-    if (
-      inputSession?.senderPubkey &&
-      inputSession.senderPubkey !== clientPubkey
-    ) {
-      // Token collision: the colliding start frame was dropped by the
-      // registry; do not acknowledge or cache a stream the requester does
-      // not own.
-      return;
-    }
+    const inputSession = this.receiver.getSession(progressToken, clientPubkey);
     if (inputSession) {
       this.cacheInputSession(clientPubkey, progressToken, inputSession);
     }
@@ -239,17 +267,18 @@ export class ServerOpenStreamFactory {
       method: 'notifications/progress',
       params: buildOpenStreamAcceptFrame({
         progressToken,
-        progress: this.nextOutboundProgress(progressToken),
+        progress: this.nextOutboundProgress(clientPubkey, progressToken),
       }),
     });
   }
 
-  /** Drops the token counter once no live sender remains for the token. */
-  private pruneOutboundProgress(progressToken: string): void {
-    if ((this.tokenEventIds.get(progressToken)?.size ?? 0) > 0) return;
-    const session = this.receiver.getSession(progressToken);
+  /** Drops the client's token counter once no live sender remains for it. */
+  private pruneOutboundProgress(clientPubkey: string, progressToken: string): void {
+    const key = ServerOpenStreamFactory.senderKey(clientPubkey, progressToken);
+    if ((this.tokenEventIds.get(key)?.size ?? 0) > 0) return;
+    const session = this.receiver.getSession(progressToken, clientPubkey);
     if (session?.isActive) return;
-    this.outboundProgress.delete(progressToken);
+    this.outboundProgress.delete(key);
   }
 
   /**
@@ -304,10 +333,10 @@ export class ServerOpenStreamFactory {
       if (cached) {
         return cached;
       }
-      // Sender-scoped fallback: a token-colliding client must not resolve
-      // another sender's session from the shared registry.
-      const session = this.receiver.getSession(progressToken);
-      if (session?.senderPubkey === clientPubkey) {
+      // Sender-scoped registry fallback for streams accepted but not yet
+      // cached (and independent same-token streams from other clients).
+      const session = this.receiver.getSession(progressToken, clientPubkey);
+      if (session) {
         return session;
       }
       if (Date.now() >= deadline) {
@@ -479,7 +508,8 @@ export class ServerOpenStreamFactory {
       // All server frames for this token share the factory's per-sender
       // sequence (CEP-41), including bootstrap accept and session control
       // frames, so a routed client-started stream stays monotonic.
-      nextProgress: () => this.nextOutboundProgress(progressToken),
+      nextProgress: () =>
+        this.nextOutboundProgress(clientPubkey, progressToken),
       publishFrame: async (frame) => {
         await this.deps.sendNotification(clientPubkey, {
           jsonrpc: '2.0',
@@ -507,10 +537,14 @@ export class ServerOpenStreamFactory {
 
     this.writers.set(eventId, writer);
     this.writerMeta.set(eventId, { clientPubkey, startedAt: Date.now() });
-    let eventIds = this.tokenEventIds.get(progressToken);
+    const bookingKey = ServerOpenStreamFactory.senderKey(
+      clientPubkey,
+      progressToken,
+    );
+    let eventIds = this.tokenEventIds.get(bookingKey);
     if (!eventIds) {
       eventIds = new Set();
-      this.tokenEventIds.set(progressToken, eventIds);
+      this.tokenEventIds.set(bookingKey, eventIds);
     }
     eventIds.add(eventId);
     return writer;
@@ -523,11 +557,14 @@ export class ServerOpenStreamFactory {
     const pendingResponse = this.pendingResponses.get(eventId);
     this.pendingResponses.delete(eventId);
     const token = this.writers.get(eventId)?.progressToken;
+    const owner = this.writerMeta.get(eventId)?.clientPubkey;
     this.writers.delete(eventId);
     this.writerMeta.delete(eventId);
-    if (token) {
-      this.tokenEventIds.get(token)?.delete(eventId);
-      this.pruneOutboundProgress(token);
+    if (token && owner) {
+      this.tokenEventIds
+        .get(ServerOpenStreamFactory.senderKey(owner, token))
+        ?.delete(eventId);
+      this.pruneOutboundProgress(owner, token);
     }
 
     if (!pendingResponse) {
@@ -537,12 +574,17 @@ export class ServerOpenStreamFactory {
     await this.deps.handleResponse(pendingResponse);
   }
 
-  /** Removes a writer's map bookings and drops the token counter if last. */
+  /** Removes a writer's map bookings and drops the client's counter if last. */
   private removeWriterBooking(eventId: string, progressToken: string): void {
+    const owner = this.writerMeta.get(eventId)?.clientPubkey;
     this.writers.delete(eventId);
     this.writerMeta.delete(eventId);
-    this.tokenEventIds.get(progressToken)?.delete(eventId);
-    this.pruneOutboundProgress(progressToken);
+    if (owner) {
+      this.tokenEventIds
+        .get(ServerOpenStreamFactory.senderKey(owner, progressToken))
+        ?.delete(eventId);
+      this.pruneOutboundProgress(owner, progressToken);
+    }
   }
 
   private async handleProbeTimeout(

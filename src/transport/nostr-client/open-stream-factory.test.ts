@@ -88,4 +88,24 @@ describe('ClientOpenStreamFactory', () => {
 
     receiver.clear();
   });
+
+  test('a failed start publish terminates the session instead of leaking it', async () => {
+    let failPublish = true;
+    const factory = new ClientOpenStreamFactory({
+      openStreamEnabled: true,
+      send: async (): Promise<void> => {
+        if (failPublish) {
+          throw new Error('relay unavailable');
+        }
+      },
+      logger: createLogger('test', { level: 'silent' }),
+    });
+
+    await expect(factory.startStream('token-failed-start')).rejects.toThrow(
+      'relay unavailable',
+    );
+
+    const session = factory.getSession('token-failed-start');
+    expect(session).toBeUndefined();
+  });
 });

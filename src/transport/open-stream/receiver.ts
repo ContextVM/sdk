@@ -31,8 +31,11 @@ export class OpenStreamReceiver {
     );
   }
 
-  public getSession(progressToken: string): OpenStreamSession | undefined {
-    return this.registry.getSession(progressToken);
+  public getSession(
+    progressToken: string,
+    senderPubkey?: string,
+  ): OpenStreamSession | undefined {
+    return this.registry.getSession(progressToken, senderPubkey);
   }
 
   public getOrCreateSession(progressToken: string): OpenStreamSession {
