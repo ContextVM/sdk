@@ -1,5 +1,22 @@
 # @contextvm/sdk
 
+## 0.13.17
+
+### Patch Changes
+
+- 9ece580: Align the CEP-41 open-stream `accept` frame with per-sender progress semantics: the server now sends `accept` at `progress: 1`, the first frame on its own outbound sequence, instead of the client's `start` progress + 1 (the shared cross-peer sequence reading, clarified away in CEP-41). No SDK receiver consumes the old value; the bootstrap e2e assertion pins the new numbering. The counter-unification limit this changeset originally carried is resolved by the accompanying `cep-41-client-started-streams` changeset in the same release: all server frames for a stream (bootstrap `accept`, writer frames, session control frames) now share one per-sender counter.
+- f92e799: Make CEP-41 client-to-server streams work end to end and close the per-sender sequence gaps left by the accept-numbering fix:
+
+  - One shared per-sender outbound counter per stream on both transports. The server's bootstrap `accept`, writer frames (`start`/`chunk`/`close`/`ping`/`pong`/`abort`) and session control frames now draw from a single monotonic sequence, so a receiver enforcing per-sender monotonicity no longer sees duplicate progress values from the server (previously `accept@1` then `pong@1`).
+  - Keepalive pings on bootstrap tokens without a correlation route are answered instead of silently dropped; session control frames resolve their recipient from the authenticated session owner (the stream's signer), with the request route as a fallback.
+  - A stream that fails on an inbound frame now publishes `abort` to the peer instead of dying silently, so the peer stops streaming into a dead stream (CEP-41).
+  - Every client session for a token now draws control-frame numbers from one shared per-sender sequence (sessions created through `getOrCreateOpenStreamSession` included), instead of an isolated per-session counter.
+  - New `NostrClientTransport.startOpenStream(progressToken)`: starts a client-to-server stream on a request's progress token — publishes `start` on the client's own outbound sequence, waits for the server's `accept` (CEP-41), and returns the paired session and payload writer sharing one per-sender sequence.
+  - Tool-side consumption: requests whose token carries a client-started stream expose a lazy chunk iterator as `_meta.inputStream` on the tool handler's `extra`, symmetric to the existing output `_meta.stream` writer. It resolves when the client's `start` arrives and ends when the client closes, including streams that complete before the tool starts reading.
+  - Client isolation and lifecycle hardening from review: server-side stream identity is (authenticated sender, progress token), so two clients may legitimately reuse the same client-local token and get fully independent sessions, accept frames and per-sender outbound sequences — while control frames always resolve their recipient from the authenticated session owner, never from a token-only route lookup another client could capture. The request's reserved output writer no longer intercepts a client-started stream's ping/pong/abort frames (which previously killed responsive uploads on probe timeout and hid client aborts from the tool), input-stream aborts reach the tool's iterator, per-sender counters and registry slots are cleaned up even when an abort publish or hook fails, a failed `start` publish no longer leaks an active session, the payload writer is terminated when the session dies, and the input-session cache never evicts an active stream (capped, evicted on read and when the request responds).
+
+- bfd4f2f: Stop signing throwaway events during CEP-22 oversized size probing. `measurePublishedMcpMessageSize` built and signed the real event via the configured signer just to measure its serialized length, so every progress-token request paid an extra `getPublicKey`+`signEvent` round trip (an approval prompt for NIP-07/NIP-55 users, a billed remote operation for NIP-46 bunkers), and the oversized chunk-size binary search multiplied that ~16x; the server response path had the same problem. Sizing now builds a placeholder event — pubkey/id/sig are fixed-length hex and NIP-44 v2 padding is deterministic given plaintext length, so the measured size is byte-identical without touching the signer. Also splits oversized chunks on UTF-8 byte boundaries instead of per-character encoding (~60x faster on MB-scale payloads).
+
 ## 0.13.16
 
 ### Patch Changes
