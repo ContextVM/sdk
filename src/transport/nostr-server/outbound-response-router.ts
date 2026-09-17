@@ -16,6 +16,7 @@ import { type ClientSession, type SessionStore } from './session-store.js';
 import { type AnnouncementManager } from './announcement-manager.js';
 import { NOSTR_TAGS, CTXVM_MESSAGES_KIND } from '../../core/constants.js';
 import { sendOversizedServerResponse } from './oversized-server-handler.js';
+import type { ResolveSafeOversizedChunkSizeParams } from '../base-nostr-transport.js';
 
 /**
  * Dependencies for the OutboundResponseRouter.
@@ -63,17 +64,9 @@ export interface OutboundResponseRouterDeps {
     isEncrypted?: boolean,
     giftWrapKind?: number,
   ) => Promise<number>;
-  resolveSafeOversizedChunkSize: (params: {
-    desiredChunkSizeBytes: number;
-    maxPublishedEventBytes: number;
-    recipientPublicKey: string;
-    kind: number;
-    progressToken: string;
-    progress: number;
-    tags?: string[][];
-    isEncrypted?: boolean;
-    giftWrapKind?: number;
-  }) => Promise<number>;
+  resolveSafeOversizedChunkSize: (
+    params: ResolveSafeOversizedChunkSizeParams,
+  ) => Promise<number>;
   logger: Logger;
   onerror?: (error: Error) => void;
 }

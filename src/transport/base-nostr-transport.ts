@@ -32,6 +32,22 @@ import { ApplesauceRelayPool } from '../relay/applesauce-relay-pool.js';
 import { PrivateKeySigner } from '../signer/private-key-signer.js';
 
 /**
+ * Parameters for {@link BaseNostrTransport.resolveSafeOversizedChunkSize}.
+ * Shared by the client and server outbound oversized paths.
+ */
+export interface ResolveSafeOversizedChunkSizeParams {
+  desiredChunkSizeBytes: number;
+  maxPublishedEventBytes: number;
+  recipientPublicKey: string;
+  kind: number;
+  progressToken: string;
+  progress: number;
+  tags?: NostrEvent['tags'];
+  isEncrypted?: boolean;
+  giftWrapKind?: number;
+}
+
+/**
  * Base options for configuring Nostr-based transports.
  */
 export interface BaseNostrTransportOptions {
@@ -363,17 +379,9 @@ export abstract class BaseNostrTransport {
    * Resolves a conservative per-chunk payload budget for oversized progress frames
    * against the final published event size limit.
    */
-  protected async resolveSafeOversizedChunkSize(params: {
-    desiredChunkSizeBytes: number;
-    maxPublishedEventBytes: number;
-    recipientPublicKey: string;
-    kind: number;
-    progressToken: string;
-    progress: number;
-    tags?: NostrEvent['tags'];
-    isEncrypted?: boolean;
-    giftWrapKind?: number;
-  }): Promise<number> {
+  protected async resolveSafeOversizedChunkSize(
+    params: ResolveSafeOversizedChunkSizeParams,
+  ): Promise<number> {
     const buildChunkNotification = (
       chunkSizeBytes: number,
     ): JSONRPCMessage => ({

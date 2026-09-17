@@ -17,6 +17,7 @@ import {
   mcpToNostrEvent,
   type NostrSigner,
 } from '../core/index.js';
+import type { ResolveSafeOversizedChunkSizeParams } from './base-nostr-transport.js';
 import type { JSONRPCMessage } from '@contextvm/mcp-sdk/types.js';
 
 describe('BaseNostrTransport signer shorthand', () => {
@@ -128,17 +129,9 @@ class MeasuringClientTransport extends NostrClientTransport {
     );
   }
 
-  publicResolveSafeOversizedChunkSize(params: {
-    desiredChunkSizeBytes: number;
-    maxPublishedEventBytes: number;
-    recipientPublicKey: string;
-    kind: number;
-    progressToken: string;
-    progress: number;
-    tags?: NostrEvent['tags'];
-    isEncrypted?: boolean;
-    giftWrapKind?: number;
-  }): Promise<number> {
+  publicResolveSafeOversizedChunkSize(
+    params: ResolveSafeOversizedChunkSizeParams,
+  ): Promise<number> {
     return this.resolveSafeOversizedChunkSize(params);
   }
 }

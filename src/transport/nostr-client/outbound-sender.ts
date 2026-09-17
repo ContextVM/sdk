@@ -10,6 +10,7 @@ import {
 } from './correlation-store.js';
 import { type ClientCapabilityNegotiator } from '../capability-negotiator.js';
 import { sendOversizedClientRequest } from './oversized-client-sender.js';
+import type { ResolveSafeOversizedChunkSizeParams } from '../base-nostr-transport.js';
 
 export interface ClientOutboundSenderDeps {
   serverPubkey: string;
@@ -43,17 +44,9 @@ export interface ClientOutboundSenderDeps {
     isEncrypted?: boolean,
     giftWrapKind?: number,
   ) => Promise<number>;
-  resolveSafeOversizedChunkSize: (params: {
-    desiredChunkSizeBytes: number;
-    maxPublishedEventBytes: number;
-    recipientPublicKey: string;
-    kind: number;
-    progressToken: string;
-    progress: number;
-    tags?: string[][];
-    isEncrypted?: boolean;
-    giftWrapKind?: number;
-  }) => Promise<number>;
+  resolveSafeOversizedChunkSize: (
+    params: ResolveSafeOversizedChunkSizeParams,
+  ) => Promise<number>;
   logger: Logger;
 }
 
