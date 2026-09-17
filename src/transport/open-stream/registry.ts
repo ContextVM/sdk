@@ -11,6 +11,15 @@ import { OpenStreamPolicyError, OpenStreamSequenceError } from './errors.js';
 import { OpenStreamSession, type OpenStreamSessionOptions } from './session.js';
 import type { OpenStreamFrame, OpenStreamProgress } from './types.js';
 
+/**
+ * Session creation input: a bare token or token plus overrides. Anything
+ * omitted falls back to registry defaults (receiver construction values).
+ */
+export type OpenStreamCreateSessionOptions =
+  | string
+  | (Pick<OpenStreamSessionOptions, 'progressToken'> &
+      Partial<Omit<OpenStreamSessionOptions, 'progressToken'>>);
+
 export interface OpenStreamRegistryOptions {
   maxConcurrentStreams?: number;
   maxBufferedChunksPerStream?: number;
@@ -20,6 +29,7 @@ export interface OpenStreamRegistryOptions {
   closeGracePeriodMs?: number;
   getSessionOptions?: (
     progressToken: string,
+    senderPubkey?: string,
   ) => Partial<Omit<OpenStreamSessionOptions, 'progressToken'>>;
   logger: Logger;
 }
@@ -37,6 +47,19 @@ function isOpenStreamFrame(value: unknown): value is OpenStreamFrame {
  * Registry of active CEP-41 sessions keyed by progress token.
  */
 export class OpenStreamRegistry {
+  /**
+   * Server-side sessions are identified by (sender, token) so concurrent
+   * same-token streams from different clients stay independent; the NUL
+   * separator cannot appear in a pubkey.
+   */
+  private static sessionKey(
+    progressToken: string,
+    senderPubkey?: string,
+  ): string {
+    return senderPubkey
+      ? `${senderPubkey}\u0000${progressToken}`
+      : progressToken;
+  }
   private readonly logger: Logger;
   private readonly maxConcurrentStreams: number;
   private readonly maxBufferedChunksPerStream: number;
@@ -47,6 +70,7 @@ export class OpenStreamRegistry {
   private readonly getSessionOptions:
     | ((
         progressToken: string,
+        senderPubkey?: string,
       ) => Partial<Omit<OpenStreamSessionOptions, 'progressToken'>>)
     | undefined;
   private readonly sessions = new Map<string, OpenStreamSession>();
@@ -80,22 +104,27 @@ export class OpenStreamRegistry {
     );
   }
 
-  public getSession(progressToken: string): OpenStreamSession | undefined {
-    return this.sessions.get(progressToken);
+  public getSession(
+    progressToken: string,
+    senderPubkey?: string,
+  ): OpenStreamSession | undefined {
+    return this.sessions.get(
+      OpenStreamRegistry.sessionKey(progressToken, senderPubkey),
+    );
   }
 
   public createSession(
-    options:
-      | string
-      | (Pick<OpenStreamSessionOptions, 'progressToken'> &
-          Partial<Omit<OpenStreamSessionOptions, 'progressToken'>>),
+    options: OpenStreamCreateSessionOptions,
+    senderPubkey?: string,
   ): OpenStreamSession {
     const sessionOptions =
       typeof options === 'string' ? { progressToken: options } : options;
     const { progressToken } = sessionOptions;
-    const derivedSessionOptions = this.getSessionOptions?.(progressToken) ?? {};
+    const key = OpenStreamRegistry.sessionKey(progressToken, senderPubkey);
+    const derivedSessionOptions =
+      this.getSessionOptions?.(progressToken, senderPubkey) ?? {};
 
-    if (this.sessions.has(progressToken)) {
+    if (this.sessions.has(key)) {
       throw new OpenStreamSequenceError(
         `Stream session already exists for ${progressToken}`,
       );
@@ -132,23 +161,36 @@ export class OpenStreamRegistry {
       sendPing: sessionOptions.sendPing ?? derivedSessionOptions.sendPing,
       sendPong: sessionOptions.sendPong ?? derivedSessionOptions.sendPong,
       sendAbort: sessionOptions.sendAbort ?? derivedSessionOptions.sendAbort,
+      locallyInitiated:
+        sessionOptions.locallyInitiated ??
+        derivedSessionOptions.locallyInitiated ??
+        false,
       onClose: async () => {
         try {
-          await sessionOptions.onClose?.();
+          // Each hook gets a chance to run even when the other fails.
+          try {
+            await sessionOptions.onClose?.();
+          } finally {
+            await derivedSessionOptions.onClose?.();
+          }
         } finally {
-          this.sessions.delete(progressToken);
+          this.sessions.delete(key);
         }
       },
       onAbort: async (reason?: string) => {
         try {
-          await sessionOptions.onAbort?.(reason);
+          try {
+            await sessionOptions.onAbort?.(reason);
+          } finally {
+            await derivedSessionOptions.onAbort?.(reason);
+          }
         } finally {
-          this.sessions.delete(progressToken);
+          this.sessions.delete(key);
         }
       },
     });
 
-    this.sessions.set(progressToken, session);
+    this.sessions.set(key, session);
     return session;
   }
 
@@ -158,9 +200,13 @@ export class OpenStreamRegistry {
 
   public async processFrame(
     frame: OpenStreamProgress,
+    senderPubkey?: string,
   ): Promise<OpenStreamSession> {
     const progressToken = String(frame.progressToken);
-    const existingSession = this.getSession(progressToken);
+    // Server-side identity is (sender, token): two clients may legitimately
+    // use the same client-local token concurrently, so a sender's frames
+    // only ever route to that sender's own session.
+    const existingSession = this.getSession(progressToken, senderPubkey);
 
     if (!existingSession) {
       if (frame.cvm.frameType !== 'start') {
@@ -170,7 +216,8 @@ export class OpenStreamRegistry {
       }
     }
 
-    const session = existingSession ?? this.createSession(progressToken);
+    const session =
+      existingSession ?? this.createSession(progressToken, senderPubkey);
 
     try {
       await session.processFrame(frame.progress, frame.cvm);

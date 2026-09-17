@@ -1,17 +1,13 @@
 import {
   OpenStreamReceiver,
   OpenStreamSession,
+  OpenStreamWriter,
+  type OpenStreamProgress,
+  buildOpenStreamStartFrame,
   buildOpenStreamPingFrame,
   buildOpenStreamPongFrame,
   buildOpenStreamAbortFrame,
 } from '../open-stream/index.js';
-import {
-  DEFAULT_OPEN_STREAM_CLOSE_GRACE_PERIOD_MS,
-  DEFAULT_OPEN_STREAM_IDLE_TIMEOUT_MS,
-  DEFAULT_OPEN_STREAM_PROBE_TIMEOUT_MS,
-  DEFAULT_MAX_BUFFERED_BYTES_PER_STREAM,
-  DEFAULT_MAX_BUFFERED_CHUNKS_PER_STREAM,
-} from '../open-stream/constants.js';
 import type { OpenStreamTransportPolicy } from '../open-stream-policy.js';
 import type { JSONRPCMessage } from '@contextvm/mcp-sdk/types.js';
 import type { Logger } from '../../core/utils/logger.js';
@@ -33,11 +29,15 @@ export interface ClientOpenStreamFactoryDeps {
  */
 export class ClientOpenStreamFactory {
   private readonly receiver: OpenStreamReceiver;
-  private readonly policy: OpenStreamTransportPolicy | undefined;
   private readonly send: (message: JSONRPCMessage) => Promise<void>;
+  /**
+   * Per-token outbound progress counter. CEP-41 progress sequences are
+   * per-sender: the client's start, ping, pong and abort frames for one
+   * stream must share a single monotonic sequence.
+   */
+  private readonly outboundProgress = new Map<string, number>();
 
   constructor(deps: ClientOpenStreamFactoryDeps) {
-    this.policy = deps.policy;
     this.send = deps.send;
 
     this.receiver = new OpenStreamReceiver({
@@ -47,47 +47,26 @@ export class ClientOpenStreamFactory {
       idleTimeoutMs: deps.policy?.idleTimeoutMs,
       probeTimeoutMs: deps.policy?.probeTimeoutMs,
       closeGracePeriodMs: deps.policy?.closeGracePeriodMs,
-      getSessionOptions: (progressToken) => {
-        let progress = 0;
-        return {
-          sendPing: async (nonce: string): Promise<void> => {
-            progress += 1;
-            await this.send({
-              jsonrpc: '2.0',
-              method: 'notifications/progress',
-              params: buildOpenStreamPingFrame({
-                progressToken,
-                progress,
-                nonce,
-              }),
-            });
-          },
-          sendPong: async (nonce: string): Promise<void> => {
-            progress += 1;
-            await this.send({
-              jsonrpc: '2.0',
-              method: 'notifications/progress',
-              params: buildOpenStreamPongFrame({
-                progressToken,
-                progress,
-                nonce,
-              }),
-            });
-          },
-          sendAbort: async (reason?: string): Promise<void> => {
-            progress += 1;
-            await this.send({
-              jsonrpc: '2.0',
-              method: 'notifications/progress',
-              params: buildOpenStreamAbortFrame({
-                progressToken,
-                progress,
-                reason,
-              }),
-            });
-          },
-        };
-      },
+      getSessionOptions: (progressToken) => ({
+        sendPing: (nonce: string): Promise<void> =>
+          this.sendControlFrame(progressToken, (progress) =>
+            buildOpenStreamPingFrame({ progressToken, progress, nonce }),
+          ),
+        sendPong: (nonce: string): Promise<void> =>
+          this.sendControlFrame(progressToken, (progress) =>
+            buildOpenStreamPongFrame({ progressToken, progress, nonce }),
+          ),
+        sendAbort: (reason?: string): Promise<void> =>
+          this.sendControlFrame(progressToken, (progress) =>
+            buildOpenStreamAbortFrame({ progressToken, progress, reason }),
+          ),
+        onClose: async (): Promise<void> => {
+          this.outboundProgress.delete(progressToken);
+        },
+        onAbort: async (): Promise<void> => {
+          this.outboundProgress.delete(progressToken);
+        },
+      }),
       logger: deps.logger,
     });
   }
@@ -111,56 +90,107 @@ export class ClientOpenStreamFactory {
    * Creates an outbound CEP-41 session whose local ping/pong/abort
    * publishes the corresponding notification to the server.
    */
-  public createOutboundSession(progressToken: string): OpenStreamSession {
+  public createOutboundSession(
+    progressToken: string,
+    options?: { locallyInitiated?: boolean },
+  ): OpenStreamSession {
     const existing = this.receiver.getSession(progressToken);
     if (existing) {
       return existing;
     }
 
-    let progress = 0;
+    // Control-frame callbacks, buffer limits and lifecycle pruning come from
+    // the receiver's getSessionOptions, which shares the per-token counter.
     return this.receiver.createSession({
       progressToken,
-      maxBufferedChunks:
-        this.policy?.maxBufferedChunksPerStream ??
-        DEFAULT_MAX_BUFFERED_CHUNKS_PER_STREAM,
-      maxBufferedBytes:
-        this.policy?.maxBufferedBytesPerStream ??
-        DEFAULT_MAX_BUFFERED_BYTES_PER_STREAM,
-      idleTimeoutMs:
-        this.policy?.idleTimeoutMs ?? DEFAULT_OPEN_STREAM_IDLE_TIMEOUT_MS,
-      probeTimeoutMs:
-        this.policy?.probeTimeoutMs ?? DEFAULT_OPEN_STREAM_PROBE_TIMEOUT_MS,
-      closeGracePeriodMs:
-        this.policy?.closeGracePeriodMs ??
-        DEFAULT_OPEN_STREAM_CLOSE_GRACE_PERIOD_MS,
-      sendPing: async (nonce: string): Promise<void> => {
-        progress += 1;
-        await this.send({
-          jsonrpc: '2.0',
-          method: 'notifications/progress',
-          params: buildOpenStreamPingFrame({ progressToken, progress, nonce }),
-        });
-      },
-      sendPong: async (nonce: string): Promise<void> => {
-        progress += 1;
-        await this.send({
-          jsonrpc: '2.0',
-          method: 'notifications/progress',
-          params: buildOpenStreamPongFrame({ progressToken, progress, nonce }),
-        });
-      },
-      sendAbort: async (reason?: string): Promise<void> => {
-        progress += 1;
-        await this.send({
-          jsonrpc: '2.0',
-          method: 'notifications/progress',
-          params: buildOpenStreamAbortFrame({
-            progressToken,
-            progress,
-            reason,
-          }),
-        });
-      },
+      locallyInitiated: options?.locallyInitiated,
     });
   }
+
+  /** Next value on the token's shared per-sender outbound sequence. */
+  private nextOutboundProgress(progressToken: string): number {
+    const next = (this.outboundProgress.get(progressToken) ?? 0) + 1;
+    this.outboundProgress.set(progressToken, next);
+    return next;
+  }
+
+  /** Publishes a session control frame on the token's per-sender sequence. */
+  private async sendControlFrame(
+    progressToken: string,
+    build: (progress: number) => OpenStreamProgress,
+  ): Promise<void> {
+    await this.send({
+      jsonrpc: '2.0',
+      method: 'notifications/progress',
+      params: build(this.nextOutboundProgress(progressToken)),
+    });
+  }
+
+  /**
+   * Starts a client-to-server CEP-41 stream on a request's progress token:
+   * publishes `start` as the first frame on the client's own outbound
+   * sequence, waits for the server's `accept` (CEP-41 requires the sender to
+   * wait for accept before chunk frames), and returns the paired session and
+   * writer. The writer's chunk/close/abort frames share the session's
+   * per-sender sequence; keepalive is owned by the session.
+   */
+  public async startStream(
+    progressToken: string,
+  ): Promise<ClientOpenStreamHandle> {
+    const session = this.createOutboundSession(progressToken, {
+      locallyInitiated: true,
+    });
+    const writer = new OpenStreamWriter({
+      progressToken,
+      preStarted: true,
+      nextProgress: () => this.nextOutboundProgress(progressToken),
+      publishFrame: async (frame): Promise<string | undefined> => {
+        await this.send({
+          jsonrpc: '2.0',
+          method: 'notifications/progress',
+          params: frame,
+        });
+        return undefined;
+      },
+      onClose: async (): Promise<void> => {
+        await session.close();
+      },
+      // The writer already published its abort frame; terminate the session
+      // locally without publishing a second one (lifecycle cleanup runs and
+      // prunes the shared counter).
+      onAbort: async (reason?: string): Promise<void> => {
+        await session.terminate(reason);
+      },
+    });
+    // Session death (peer abort, probe timeout, teardown) must also end the
+    // returned writer: dispose() is teardown-only, so no second abort frame
+    // is published for a stream the peer already terminated. Attached before
+    // the publish so a failed start tears the writer down too.
+    void session.closed.catch(() => undefined).then(() => writer.dispose());
+    try {
+      await this.send({
+        jsonrpc: '2.0',
+        method: 'notifications/progress',
+        params: buildOpenStreamStartFrame({
+          progressToken,
+          progress: this.nextOutboundProgress(progressToken),
+        }),
+      });
+    } catch (error) {
+      // The peer never heard the start; terminate locally (non-publishing,
+      // the transport just failed) so no slot or token state leaks.
+      await session.terminate('start publish failed');
+      throw error;
+    }
+    await session.accepted;
+    return { session, writer };
+  }
+}
+
+/** Client-side handle for a client-started CEP-41 stream. */
+export interface ClientOpenStreamHandle {
+  /** Session receiving the server's control frames; owns keepalive. */
+  readonly session: OpenStreamSession;
+  /** Ordered payload writer sharing the session's per-sender sequence. */
+  readonly writer: OpenStreamWriter;
 }

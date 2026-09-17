@@ -10,7 +10,6 @@ import { type Logger } from '../../core/utils/logger.js';
 import {
   OpenStreamReceiver,
   OpenStreamWriter,
-  buildOpenStreamAcceptFrame,
 } from '../open-stream/index.js';
 import { OversizedTransferReceiver } from '../oversized-transfer/index.js';
 import { type CorrelationStore } from './correlation-store.js';
@@ -29,6 +28,8 @@ export interface InboundNotificationDispatcherDeps {
   oversizedReceiver: OversizedTransferReceiver;
   openStreamFactory: {
     getWriter: (eventId: string) => OpenStreamWriter | undefined;
+    sendAccept: (clientPubkey: string, progressToken: string) => Promise<void>;
+    isInputStream: (clientPubkey: string, progressToken: string) => boolean;
   };
   correlationStore: CorrelationStore;
   sendNotification: (
@@ -85,11 +86,22 @@ export class InboundNotificationDispatcher {
         | { frameType?: string; reason?: string }
         | undefined;
 
+      // Client-started input streams own their keepalive and input lifecycle
+      // through the receiver session; the request's reserved output writer
+      // must not intercept their pings, pongs or aborts.
+      const inputToken = String(inboundMessage.params?.progressToken ?? '');
+      const inputOwned = this.deps.openStreamFactory.isInputStream(
+        event.pubkey,
+        inputToken,
+      );
+
       if (frame?.frameType === 'abort') {
         const progressToken = String(
           inboundMessage.params?.progressToken ?? '',
         );
-        const writer = this.resolveWriter(progressToken, event.pubkey);
+        const writer = inputOwned
+          ? undefined
+          : this.resolveWriter(progressToken, event.pubkey);
 
         if (writer) {
           void writer.abort(frame.reason).catch((err: unknown) => {
@@ -105,9 +117,13 @@ export class InboundNotificationDispatcher {
               err instanceof Error ? err : new Error(String(err)),
             );
           });
+
+          return true;
         }
 
-        return true;
+        // No output writer handled it (e.g. a client-started input stream):
+        // fall through so the abort reaches the receiver session and the
+        // tool's input iterator unblocks.
       }
 
       if (frame?.frameType === 'ping') {
@@ -118,7 +134,9 @@ export class InboundNotificationDispatcher {
           'nonce' in frame && typeof frame.nonce === 'string'
             ? frame.nonce
             : '';
-        const writer = this.resolveWriter(progressToken, event.pubkey);
+        const writer = inputOwned
+          ? undefined
+          : this.resolveWriter(progressToken, event.pubkey);
 
         if (writer) {
           void writer.pong(nonce).catch((err: unknown) => {
@@ -151,7 +169,9 @@ export class InboundNotificationDispatcher {
           'nonce' in frame && typeof frame.nonce === 'string'
             ? frame.nonce
             : '';
-        const writer = this.resolveWriter(progressToken, event.pubkey);
+        const writer = inputOwned
+          ? undefined
+          : this.resolveWriter(progressToken, event.pubkey);
 
         if (writer) {
           writer.ackProbe(nonce);
@@ -160,23 +180,17 @@ export class InboundNotificationDispatcher {
       }
 
       this.deps.openStreamReceiver
-        .processFrame(inboundMessage)
+        .processFrame(inboundMessage, event.pubkey)
         .then(async () => {
           const frameType = frame?.frameType;
 
           if (frameType === 'start' && session.supportsOpenStream) {
-            // CEP-41 per-sender progress: accept lives on the accepting
-            // peer's own outbound sequence, not the starter's sequence + 1.
-            await this.deps.sendNotification(event.pubkey, {
-              jsonrpc: '2.0',
-              method: 'notifications/progress',
-              params: buildOpenStreamAcceptFrame({
-                progressToken: String(
-                  inboundMessage.params?.progressToken ?? '',
-                ),
-                progress: 1,
-              }),
-            });
+            // Accept joins the token's shared per-sender sequence; the
+            // frame's signer is the bootstrap peer even without a route.
+            await this.deps.openStreamFactory.sendAccept(
+              event.pubkey,
+              String(inboundMessage.params?.progressToken ?? ''),
+            );
           }
         })
         .catch((err: unknown) => {

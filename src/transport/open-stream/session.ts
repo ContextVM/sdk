@@ -49,6 +49,13 @@ export interface OpenStreamSessionOptions {
   sendAbort?: (reason?: string) => Promise<void>;
   onAbort?: (reason?: string) => Promise<void>;
   onClose?: () => Promise<void>;
+  /**
+   * Marks the session as already started because this peer sent the
+   * `start` frame itself (client-to-server bootstrap, CEP-41). Inbound
+   * `accept`/`ping`/`pong` are then valid without a peer `start`, while an
+   * inbound `start` is rejected as a duplicate.
+   */
+  locallyInitiated?: boolean;
 }
 
 type CloseState = {
@@ -61,6 +68,7 @@ type CloseState = {
 export class OpenStreamSession implements OpenStreamSessionLike<string> {
   public readonly progressToken: string;
   public readonly closed: Promise<void>;
+  private readonly acceptDeferred = createDeferred<undefined>();
 
   private readonly onAbort?: (reason?: string) => Promise<void>;
   private readonly onClose?: () => Promise<void>;
@@ -79,7 +87,8 @@ export class OpenStreamSession implements OpenStreamSessionLike<string> {
   private bufferedBytes = 0;
   private queuedBytes = 0;
   private active = true;
-  private started = false;
+  private started: boolean;
+  private acceptedFlag = false;
   private closedRemotely = false;
   private closeState: CloseState | undefined;
   private nextExpectedChunkIndex = 0;
@@ -94,6 +103,7 @@ export class OpenStreamSession implements OpenStreamSessionLike<string> {
 
   constructor(options: OpenStreamSessionOptions) {
     this.progressToken = options.progressToken;
+    this.started = options.locallyInitiated ?? false;
     this.maxBufferedChunks = options.maxBufferedChunks;
     this.maxBufferedBytes = options.maxBufferedBytes;
     this.idleTimeoutMs =
@@ -114,6 +124,35 @@ export class OpenStreamSession implements OpenStreamSessionLike<string> {
     // external callers that attach their own handler still receive the same
     // rejection. Browser- and Node-safe: plain promise plumbing.
     void this.closed.catch(() => undefined);
+    void this.acceptDeferred.promise.catch(() => undefined);
+    // A locally initiated stream never receives a `start` frame to arm the
+    // idle window; arm it now so a peer that never accepts is detected via
+    // the normal keepalive probe cycle.
+    if (this.started) {
+      this.refreshIdleTimer();
+    }
+  }
+
+  /**
+   * Resolves when the peer's `accept` frame arrives; rejects if the session
+   * fails first. CEP-41: a bootstrap sender MUST wait for `accept` before
+   * emitting `chunk` frames.
+   */
+  public get accepted(): Promise<void> {
+    return this.acceptDeferred.promise;
+  }
+
+  /**
+   * Locally closes the stream after this peer's writer published its
+   * `close` frame: finalizes consumers and fires lifecycle cleanup without
+   * publishing anything.
+   */
+  public async close(): Promise<void> {
+    if (!this.active) {
+      return;
+    }
+
+    await this.finishClosed();
   }
 
   public get isActive(): boolean {
@@ -151,12 +190,36 @@ export class OpenStreamSession implements OpenStreamSessionLike<string> {
     await this.finishAborted(error, reason, true);
   }
 
+  /**
+   * Aborts the stream locally without publishing `abort`: the peer was
+   * already notified by a sibling component (e.g. the payload writer
+   * published its own abort frame on the shared sequence). Fires the normal
+   * abort lifecycle so registries and counters are cleaned up.
+   */
+  public async terminate(reason?: string): Promise<void> {
+    if (!this.active) {
+      return;
+    }
+
+    await this.finishAborted(
+      new OpenStreamAbortError(this.progressToken, reason),
+      reason,
+      false,
+    );
+  }
+
+  /**
+   * Fails the stream because an inbound frame violated stream rules.
+   * Publishes `abort` to the peer when a `sendAbort` hook is wired — a peer
+   * that fails a stream SHOULD send abort while it can still transmit
+   * (CEP-41), so the peer stops streaming into a dead stream.
+   */
   public async fail(error: Error): Promise<void> {
     if (!this.active) {
       return;
     }
 
-    await this.finishAborted(error, error.message, false);
+    await this.finishAborted(error, error.message, true);
   }
 
   public dispose(): void {
@@ -181,6 +244,8 @@ export class OpenStreamSession implements OpenStreamSessionLike<string> {
         this.refreshIdleTimer();
         return;
       case 'accept':
+        this.acceptedFlag = true;
+        this.acceptDeferred.resolve(undefined);
         this.refreshIdleTimer();
         return;
       case 'ping':
@@ -360,6 +425,11 @@ export class OpenStreamSession implements OpenStreamSessionLike<string> {
   }
 
   private maybeFinishGracefully(): void {
+    // Exactly-once: `case 'close'` reaches this via flushContiguousChunks()
+    // and again directly, so a finalized session must not re-fire lifecycle.
+    if (!this.active) {
+      return;
+    }
     if (!this.closedRemotely || this.bufferedChunks.size > 0) {
       return;
     }
@@ -549,8 +619,21 @@ export class OpenStreamSession implements OpenStreamSessionLike<string> {
 
     if (error) {
       this.closeDeferred.reject(error);
+      this.acceptDeferred.reject(error);
     } else {
       this.closeDeferred.resolve(undefined);
+      // A graceful finish never implies accept: a stream that closed before
+      // the peer accepted must surface as a rejected `accepted` promise so
+      // bootstrap callers do not proceed with a dead handle.
+      if (this.acceptedFlag) {
+        this.acceptDeferred.resolve(undefined);
+      } else {
+        this.acceptDeferred.reject(
+          new OpenStreamSequenceError(
+            `Stream ${this.progressToken} closed before accept`,
+          ),
+        );
+      }
     }
   }
 
@@ -565,9 +648,15 @@ export class OpenStreamSession implements OpenStreamSessionLike<string> {
     publishAbort: boolean = false,
   ): Promise<void> {
     this.finalize(error);
-    if (publishAbort) {
-      await this.sendAbort?.(reason);
+    // Cleanup must run even when publishing the abort frame fails, or the
+    // registry's onAbort wrapper (which deletes the session) never fires and
+    // the inactive session holds a concurrency slot forever.
+    try {
+      if (publishAbort) {
+        await this.sendAbort?.(reason);
+      }
+    } finally {
+      await this.onAbort?.(reason);
     }
-    await this.onAbort?.(reason);
   }
 }

@@ -6,4 +6,5 @@ export * from './server-transport-common-schemas.js';
 export * from './open-stream/index.js';
 export * from './open-stream-policy.js';
 export type { ServerOpenStreamInfo } from './nostr-server/open-stream-factory.js';
+export type { ClientOpenStreamHandle } from './nostr-client/open-stream-factory.js';
 export * from './call-tool-stream.js';

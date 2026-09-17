@@ -283,6 +283,229 @@ describe('OpenStreamRegistry', () => {
     ).toBe(true);
   });
 
+  test('publishes abort to the peer when an inbound frame fails the stream', async () => {
+    const registry = new OpenStreamRegistry({
+      maxBufferedChunksPerStream: 4,
+      maxBufferedBytesPerStream: 128,
+      logger: createLogger('test', { level: 'silent' }),
+    });
+    const publishedAborts: Array<{ progress: number; reason?: string }> = [];
+    const session = registry.createSession({
+      progressToken: 'token-seq-fail',
+      sendAbort: async (reason?: string): Promise<void> => {
+        publishedAborts.push({ progress: 0, reason });
+      },
+    });
+
+    await session.processFrame(1, {
+      type: 'open-stream',
+      frameType: 'start',
+    });
+
+    // Non-monotonic progress fails the stream and must reach the peer.
+    await expect(
+      registry.processFrame({
+        progressToken: 'token-seq-fail',
+        progress: 1,
+        cvm: { type: 'open-stream', frameType: 'ping', nonce: 'n1' },
+      }),
+    ).rejects.toBeInstanceOf(OpenStreamSequenceError);
+
+    expect(publishedAborts.length).toBe(1);
+    expect(publishedAborts[0]?.reason).toContain('Non-increasing progress');
+    expect(registry.getSession('token-seq-fail')).toBeUndefined();
+  });
+
+  test('rejects accepted when the stream closes before the peer accepts', async () => {
+    const registry = new OpenStreamRegistry({
+      maxBufferedChunksPerStream: 4,
+      maxBufferedBytesPerStream: 128,
+      logger: createLogger('test', { level: 'silent' }),
+    });
+    const session = registry.createSession({
+      progressToken: 'token-close-before-accept',
+      locallyInitiated: true,
+    });
+
+    await session.processFrame(1, {
+      type: 'open-stream',
+      frameType: 'close',
+    });
+
+    await expect(session.accepted).rejects.toThrow(
+      'closed before accept',
+    );
+  });
+
+  test('invokes derived lifecycle hooks from getSessionOptions on close and abort', async () => {
+    const events: string[] = [];
+    const registry = new OpenStreamRegistry({
+      maxBufferedChunksPerStream: 4,
+      maxBufferedBytesPerStream: 128,
+      logger: createLogger('test', { level: 'silent' }),
+      getSessionOptions: (progressToken) => ({
+        onClose: async (): Promise<void> => {
+          events.push(`derived-close:${progressToken}`);
+        },
+        onAbort: async (): Promise<void> => {
+          events.push(`derived-abort:${progressToken}`);
+        },
+      }),
+    });
+
+    const closed = registry.createSession('token-derived-close');
+    await closed.processFrame(1, { type: 'open-stream', frameType: 'start' });
+    await closed.processFrame(2, { type: 'open-stream', frameType: 'close' });
+    await closed.closed;
+
+    await registry.processFrame({
+      progressToken: 'token-derived-abort',
+      progress: 1,
+      cvm: { type: 'open-stream', frameType: 'start' },
+    });
+    await expect(
+      registry.processFrame({
+        progressToken: 'token-derived-abort',
+        progress: 2,
+        cvm: { type: 'open-stream', frameType: 'start' },
+      }),
+    ).rejects.toBeInstanceOf(OpenStreamSequenceError);
+
+    expect(events).toContain('derived-close:token-derived-close');
+    expect(events).toEqual(
+      expect.arrayContaining(['derived-abort:token-derived-abort']),
+    );
+    expect(registry.size).toBe(0);
+  });
+
+  test('still removes the session when the abort publish fails', async () => {
+    const registry = new OpenStreamRegistry({
+      maxConcurrentStreams: 1,
+      maxBufferedChunksPerStream: 4,
+      maxBufferedBytesPerStream: 128,
+      logger: createLogger('test', { level: 'silent' }),
+      getSessionOptions: () => ({
+        sendAbort: async (): Promise<void> => {
+          throw new Error('publish failed');
+        },
+      }),
+    });
+
+    await registry.processFrame({
+      progressToken: 'token-abort-publish-failure',
+      progress: 1,
+      cvm: { type: 'open-stream', frameType: 'start' },
+    });
+
+    await expect(
+      registry.processFrame({
+        progressToken: 'token-abort-publish-failure',
+        progress: 2,
+        cvm: { type: 'open-stream', frameType: 'start' },
+      }),
+    ).rejects.toThrow('publish failed');
+
+    expect(
+      registry.getSession('token-abort-publish-failure'),
+    ).toBeUndefined();
+    expect(() => registry.createSession('token-after-failed-abort')).not.toThrow();
+  });
+
+  test('keeps independent sessions per sender for the same token', async () => {
+    const registry = new OpenStreamRegistry({
+      maxBufferedChunksPerStream: 4,
+      maxBufferedBytesPerStream: 128,
+      logger: createLogger('test', { level: 'silent' }),
+    });
+
+    const sessionA = await registry.processFrame(
+      {
+        progressToken: 'shared-token',
+        progress: 1,
+        cvm: { type: 'open-stream', frameType: 'start' },
+      },
+      'sender-a',
+    );
+    // A second client legitimately reusing the same client-local token gets
+    // its own independent session, not sender A's.
+    const sessionB = await registry.processFrame(
+      {
+        progressToken: 'shared-token',
+        progress: 1,
+        cvm: { type: 'open-stream', frameType: 'start' },
+      },
+      'sender-b',
+    );
+
+    expect(sessionB).not.toBe(sessionA);
+    expect(registry.getSession('shared-token', 'sender-a')).toBe(sessionA);
+    expect(registry.getSession('shared-token', 'sender-b')).toBe(sessionB);
+    expect(registry.size).toBe(2);
+
+    await sessionB.processFrame(2, {
+      type: 'open-stream',
+      frameType: 'chunk',
+      chunkIndex: 0,
+      data: 'from-b',
+    });
+    await sessionB.processFrame(3, { type: 'open-stream', frameType: 'close' });
+    await sessionB.closed;
+
+    // Closing B's stream leaves A's untouched.
+    expect(sessionA.isActive).toBe(true);
+    expect(registry.getSession('shared-token', 'sender-a')).toBe(sessionA);
+    expect(registry.getSession('shared-token', 'sender-b')).toBeUndefined();
+  });
+
+  test('runs derived lifecycle hooks even when session-level hooks fail', async () => {
+    const events: string[] = [];
+    const registry = new OpenStreamRegistry({
+      maxBufferedChunksPerStream: 4,
+      maxBufferedBytesPerStream: 128,
+      logger: createLogger('test', { level: 'silent' }),
+      getSessionOptions: (progressToken) => ({
+        onClose: async (): Promise<void> => {
+          events.push(`derived-close:${progressToken}`);
+        },
+        onAbort: async (): Promise<void> => {
+          events.push(`derived-abort:${progressToken}`);
+        },
+      }),
+    });
+
+    const closing = registry.createSession({
+      progressToken: 'token-hook-failure-close',
+      onClose: async (): Promise<void> => {
+        throw new Error('session close hook failed');
+      },
+    });
+    await closing.processFrame(1, { type: 'open-stream', frameType: 'start' });
+    await closing.processFrame(2, { type: 'open-stream', frameType: 'close' });
+    // finishClosed runs fire-and-forget; let the hook chain settle.
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(events).toContain('derived-close:token-hook-failure-close');
+    expect(registry.getSession('token-hook-failure-close')).toBeUndefined();
+
+    registry.createSession({
+      progressToken: 'token-hook-failure-abort',
+      locallyInitiated: true,
+      onAbort: async (): Promise<void> => {
+        throw new Error('session abort hook failed');
+      },
+    });
+    await expect(
+      registry.processFrame({
+        progressToken: 'token-hook-failure-abort',
+        progress: 2,
+        cvm: { type: 'open-stream', frameType: 'start' },
+      }),
+    ).rejects.toThrow('session abort hook failed');
+    expect(events).toContain('derived-abort:token-hook-failure-abort');
+    expect(
+      registry.getSession('token-hook-failure-abort'),
+    ).toBeUndefined();
+  });
+
   test('rejects accept as the first frame for an unknown token', async () => {
     const registry = new OpenStreamRegistry({
       maxConcurrentStreams: 2,
