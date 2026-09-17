@@ -305,28 +305,6 @@ export abstract class BaseNostrTransport {
   }
 
   /**
-   * Builds the final outbound Nostr event that would be published for an MCP message.
-   */
-  protected async buildPublishedMcpEvent(
-    message: JSONRPCMessage,
-    recipientPublicKey: string,
-    kind: number,
-    tags?: NostrEvent['tags'],
-    isEncrypted?: boolean,
-    giftWrapKind?: number,
-  ): Promise<NostrEvent> {
-    const shouldEncrypt = this.shouldEncryptMessage(kind, isEncrypted);
-    const event = await this.createSignedNostrEvent(message, kind, tags);
-
-    return this.buildPublishedEventFromSignedEvent(
-      event,
-      recipientPublicKey,
-      shouldEncrypt,
-      giftWrapKind,
-    );
-  }
-
-  /**
    * Builds the final publishable event from an already-signed inner event.
    */
   protected buildPublishedEventFromSignedEvent(
@@ -347,7 +325,11 @@ export abstract class BaseNostrTransport {
   }
 
   /**
-   * Measures the UTF-8 byte length of the final outbound Nostr event that would be published.
+   * Measures the UTF-8 byte length of the final outbound Nostr event that would
+   * be published. Never touches the signer: pubkey/id/sig are fixed-length hex
+   * (64/64/128) and NIP-44 v2 padding is deterministic given plaintext length,
+   * so placeholder fields yield a byte-identical size without signing. Must stay
+   * sync with `createSignedNostrEvent`'s field set.
    */
   protected async measurePublishedMcpMessageSize(
     message: JSONRPCMessage,
@@ -357,16 +339,24 @@ export abstract class BaseNostrTransport {
     isEncrypted?: boolean,
     giftWrapKind?: number,
   ): Promise<number> {
-    const event = await this.buildPublishedMcpEvent(
-      message,
-      recipientPublicKey,
+    const placeholderEvent: NostrEvent = {
+      pubkey: '0'.repeat(64),
       kind,
-      tags,
-      isEncrypted,
+      tags: tags ?? [],
+      content: JSON.stringify(message),
+      created_at: Math.floor(Date.now() / 1000),
+      id: '0'.repeat(64),
+      sig: '0'.repeat(128),
+    };
+
+    const published = this.buildPublishedEventFromSignedEvent(
+      placeholderEvent,
+      recipientPublicKey,
+      this.shouldEncryptMessage(kind, isEncrypted),
       giftWrapKind,
     );
 
-    return new TextEncoder().encode(JSON.stringify(event)).byteLength;
+    return new TextEncoder().encode(JSON.stringify(published)).byteLength;
   }
 
   /**
