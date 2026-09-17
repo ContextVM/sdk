@@ -1,0 +1,5 @@
+---
+'@contextvm/sdk': patch
+---
+
+Cancel in-flight payment verification on `NostrServerTransport.close()`. The transport now exposes a `closeSignal: AbortSignal` getter, aborted at the top of `close()` before any teardown, and `withServerPayments` passes it to both payment middlewares as an `abortSignal` factory option. Each request bridges it to its own per-verify controller (listener added on start, removed once the verify settles), so `processor.verifyPayment` polls stop immediately instead of running to `verifyTimeoutMs`, and a verify that settles after shutdown no longer forwards the tool call, publishes `payment_accepted`, or grants explicit-gating authorization. Cancel-not-drain: the transparent pending entry is left to expire on its own TTL per CEP-8 so redelivery dedup is unaffected; the explicit-gating pending entry is cleared exactly as a failed verify would. No change when `close()` is never called. The LNbits processor now polls with `sleepWithAbort` so it wakes on abort instead of finishing its poll interval.

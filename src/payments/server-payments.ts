@@ -11,7 +11,6 @@ import type {
   ServerMiddlewareFn,
 } from './types.js';
 import { LruCache } from '../core/utils/lru-cache.js';
-import { withTimeout } from '../core/utils/utils.js';
 import { createLogger } from '../core/utils/logger.js';
 import {
   DEFAULT_PAYMENT_TTL_MS,
@@ -24,6 +23,7 @@ import {
   matchPricedCapability,
   resolveAndInitiatePayment,
   resolvePaymentProcessor,
+  verifyPaymentUnlessShutdown,
 } from './server-payments-utils.js';
 
 export interface ServerPaymentsOptions {
@@ -150,8 +150,14 @@ export function createServerPaymentsMiddleware(params: {
     requestEventId: string;
     snapshotTtlMs: number;
   }) => void;
+  /**
+   * Transport shutdown signal (see `withServerPayments`). Once aborted,
+   * in-flight verification is cancelled and a verify that still settles is
+   * not acted on: no `payment_accepted`, no forward.
+   */
+  abortSignal?: AbortSignal;
 }): ServerMiddlewareFn {
-  const { sender, options } = params;
+  const { sender, options, abortSignal } = params;
   const logger = createLogger('server-payments');
   const processorsByPmi =
     params.processorsByPmi ?? buildProcessorsByPmi(options.processors, logger);
@@ -344,17 +350,26 @@ export function createServerPaymentsMiddleware(params: {
         timeoutMs: pollingTimeoutMs,
       });
 
-      const controller = new AbortController();
-      const verified = await withTimeout(
-        processor.verifyPayment({
+      const verified = await verifyPaymentUnlessShutdown({
+        processor,
+        verifyParams: {
           pay_req: paymentRequired.pay_req,
           requestEventId,
           clientPubkey: ctx.clientPubkey,
-          abortSignal: controller.signal,
-        }),
-        pollingTimeoutMs,
-        'verifyPayment timed out',
-      ).finally(() => controller.abort());
+        },
+        timeoutMs: pollingTimeoutMs,
+        shutdownSignal: abortSignal,
+      });
+
+      // Transport closed mid-verification: the invoice stays pending until
+      // TTL (same as any post-invoice outcome), but nothing is forwarded.
+      if (verified === undefined) {
+        logger.info('transport closed during payment verification', {
+          requestEventId,
+          pmi: paymentRequired.pmi,
+        });
+        return;
+      }
 
       logger.info('payment accepted', {
         requestEventId,

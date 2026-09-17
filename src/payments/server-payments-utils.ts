@@ -1,11 +1,13 @@
 import type { JSONRPCRequest } from '@contextvm/mcp-sdk/types.js';
 import { type Logger } from '../core/utils/logger.js';
+import { withTimeout } from '../core/utils/utils.js';
 import type {
   PricedCapability,
   ResolvePriceRejection,
   ResolvePriceWaiver,
   ResolvePriceResult,
   PaymentProcessor,
+  PaymentProcessorVerifyParams,
   PaymentRequired,
 } from './types.js';
 
@@ -196,4 +198,50 @@ export async function resolveAndInitiatePayment(params: {
     mergedMeta,
     verifyTimeoutMs,
   };
+}
+
+/**
+ * Runs `processor.verifyPayment` under `timeoutMs` with a per-request abort
+ * controller, chained to the transport's shutdown signal so `close()` stops
+ * the processor poll immediately instead of letting it run to its timeout.
+ *
+ * Resolves `undefined` once shutdown has begun, whether the poll was cut short
+ * or happened to settle during the race, so callers skip every
+ * post-verification side effect (forward, `payment_accepted`, grant). Any other
+ * failure propagates unchanged.
+ */
+export async function verifyPaymentUnlessShutdown(params: {
+  processor: PaymentProcessor;
+  verifyParams: Omit<PaymentProcessorVerifyParams, 'abortSignal'>;
+  timeoutMs: number;
+  shutdownSignal?: AbortSignal;
+}): Promise<{ _meta?: Record<string, unknown> } | undefined> {
+  const { shutdownSignal } = params;
+  if (shutdownSignal?.aborted) {
+    return undefined;
+  }
+
+  const controller = new AbortController();
+  const onShutdown = (): void => controller.abort();
+  shutdownSignal?.addEventListener('abort', onShutdown, { once: true });
+
+  try {
+    const verified = await withTimeout(
+      params.processor.verifyPayment({
+        ...params.verifyParams,
+        abortSignal: controller.signal,
+      }),
+      params.timeoutMs,
+      'verifyPayment timed out',
+    );
+    return shutdownSignal?.aborted ? undefined : verified;
+  } catch (err) {
+    if (shutdownSignal?.aborted) {
+      return undefined;
+    }
+    throw err;
+  } finally {
+    shutdownSignal?.removeEventListener('abort', onShutdown);
+    controller.abort();
+  }
 }

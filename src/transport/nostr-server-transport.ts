@@ -196,6 +196,8 @@ export class NostrServerTransport
       }) => void | Promise<void>)
     | undefined;
   private readonly inboundMiddlewares: InboundMiddlewareFn[] = [];
+  /** Aborted at the top of `close()`; see `closeSignal`. */
+  private readonly closeController = new AbortController();
   private readonly listToolsResultTransformers: ListToolsResultTransformer[] =
     [];
   private readonly listToolsAnnouncementTagsProducers: ListToolsAnnouncementTagsProducer[] =
@@ -484,6 +486,18 @@ export class NostrServerTransport
   }
 
   /**
+   * Signal aborted as soon as `close()` begins, before any teardown runs.
+   *
+   * Transport-owned, so it cannot be disarmed by consumers reassigning
+   * `onclose`. Middleware uses it to cancel detached work such as in-flight
+   * payment verification; it plugs straight into the `abortSignal` that
+   * payment processors already accept.
+   */
+  public get closeSignal(): AbortSignal {
+    return this.closeController.signal;
+  }
+
+  /**
    * Adds a transformer for `tools/list` results emitted by the server.
    *
    * Transformers are applied to direct responses and public announcement payloads.
@@ -560,6 +574,10 @@ export class NostrServerTransport
    */
   public async close(): Promise<void> {
     try {
+      // Signal shutdown before any await: a payment verification that settles
+      // during teardown must not forward, publish, or grant.
+      this.closeController.abort();
+
       // Shutdown the task queue to prevent new tasks from being queued
       // and clear pending tasks to avoid operating on stale state
       await this.taskQueue.shutdown();

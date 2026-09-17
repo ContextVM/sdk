@@ -8,9 +8,9 @@ import {
   buildProcessorsByPmi,
   matchPricedCapability,
   resolveAndInitiatePayment,
+  verifyPaymentUnlessShutdown,
 } from './server-payments-utils.js';
 import { createLogger } from '../core/utils/logger.js';
-import { withTimeout } from '../core/utils/utils.js';
 import {
   PAYMENT_CAPACITY_ERROR_CODE,
   PAYMENT_PENDING_ERROR_CODE,
@@ -27,12 +27,18 @@ export interface ExplicitGatingMiddlewareParams {
   ) => Promise<void>;
   /** Pre-built PMI → processor map. Built locally when omitted (standalone use). */
   processorsByPmi?: Map<string, PaymentProcessor>;
+  /**
+   * Transport shutdown signal (see `withServerPayments`). Once aborted,
+   * in-flight verification is cancelled and a verify that still settles is
+   * not granted; the pending entry is cleared instead.
+   */
+  abortSignal?: AbortSignal;
 }
 
 export function createExplicitGatingMiddleware(
   params: ExplicitGatingMiddlewareParams,
 ): ServerMiddlewareFn {
-  const { options, authorizationStore, sendResponse } = params;
+  const { options, authorizationStore, sendResponse, abortSignal } = params;
   const logger = createLogger('server-explicit-gating');
   const processorsByPmi =
     params.processorsByPmi ?? buildProcessorsByPmi(options.processors, logger);
@@ -233,7 +239,6 @@ export function createExplicitGatingMiddleware(
       // Start async verification
       // Do not await this, we must let the middleware chain return the error response.
       (async () => {
-        const controller = new AbortController();
         try {
           logger.debug('verifying explicit payment', {
             requestEventId,
@@ -241,16 +246,30 @@ export function createExplicitGatingMiddleware(
             timeoutMs: pollingTimeoutMs,
           });
 
-          await withTimeout(
-            processor.verifyPayment({
+          const verified = await verifyPaymentUnlessShutdown({
+            processor,
+            verifyParams: {
               pay_req: paymentRequired.pay_req,
               requestEventId,
               clientPubkey: ctx.clientPubkey,
-              abortSignal: controller.signal,
-            }),
-            pollingTimeoutMs,
-            'verifyPayment timed out',
-          );
+            },
+            timeoutMs: pollingTimeoutMs,
+            shutdownSignal: abortSignal,
+          });
+
+          // Transport closed mid-verification: nobody will read a grant, so
+          // clear the pending entry like any other failed verification.
+          if (verified === undefined) {
+            logger.info(
+              'transport closed during explicit payment verification',
+              {
+                requestEventId,
+                pmi: paymentRequired.pmi,
+              },
+            );
+            authorizationStore.clearPending(identity);
+            return;
+          }
 
           logger.info('explicit payment accepted, granting authorization', {
             requestEventId,
@@ -265,8 +284,6 @@ export function createExplicitGatingMiddleware(
             error: err instanceof Error ? err.message : String(err),
           });
           authorizationStore.clearPending(identity);
-        } finally {
-          controller.abort();
         }
       })().catch((err) => {
         // Belt-and-suspenders: if clearPending/grant itself threw inside the
