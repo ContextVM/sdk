@@ -90,13 +90,10 @@ describe('ClientOpenStreamFactory', () => {
   });
 
   test('a failed start publish terminates the session instead of leaking it', async () => {
-    let failPublish = true;
     const factory = new ClientOpenStreamFactory({
       openStreamEnabled: true,
       send: async (): Promise<void> => {
-        if (failPublish) {
-          throw new Error('relay unavailable');
-        }
+        throw new Error('relay unavailable');
       },
       logger: createLogger('test', { level: 'silent' }),
     });
