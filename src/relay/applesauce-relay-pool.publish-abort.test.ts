@@ -2,8 +2,54 @@ import { describe, expect, test } from 'bun:test';
 import { ApplesauceRelayPool } from './applesauce-relay-pool.js';
 import type { NostrEvent } from 'nostr-tools';
 
+type PublishCallOptions = {
+  timeout?: number | boolean;
+  retries?: boolean | number;
+};
+
+type FakeRelayPublish = (
+  event: NostrEvent,
+  opts?: PublishCallOptions,
+) => Promise<{ ok: boolean; message?: string }>;
+
+/** Error shaped like the rxjs TimeoutError thrown by relay publish ladders. */
+function ladderTimeoutError(): Error {
+  const error = new Error('Timeout has occurred');
+  error.name = 'TimeoutError';
+  return error;
+}
+
+function makeEvent(idPrefix: string): NostrEvent {
+  return {
+    id: idPrefix.repeat(64),
+    pubkey: 'p'.repeat(64),
+    created_at: Math.floor(Date.now() / 1000),
+    kind: 1,
+    tags: [],
+    content: 'test',
+    sig: 's'.repeat(128),
+  } as unknown as NostrEvent;
+}
+
+/** Replaces the pool's relays with fakes exposing per-relay publish(). */
+function injectFakeRelays(
+  pool: ApplesauceRelayPool,
+  publishes: FakeRelayPublish[],
+  connected = true,
+): void {
+  (
+    pool as unknown as {
+      relays: unknown[];
+    }
+  ).relays = publishes.map((publish, index) => ({
+    url: `ws://relay-${index}.test`,
+    connected,
+    publish,
+  }));
+}
+
 describe('ApplesauceRelayPool publish cancellation (regression)', () => {
-  test('publish() forwards configured publishOptions to RelayGroup.publish()', async () => {
+  test('publish() forwards configured publishOptions to each relay.publish()', async () => {
     const pool = new ApplesauceRelayPool(['ws://example.invalid'], {
       publishOptions: {
         timeout: 1_234,
@@ -11,41 +57,23 @@ describe('ApplesauceRelayPool publish cancellation (regression)', () => {
       },
     });
 
-    let receivedOptions:
-      | {
-          timeout?: number | boolean;
-          retries?: boolean | number | object;
-        }
-      | undefined;
-
-    (
-      pool as unknown as {
-        relayGroup: {
-          publish: (
-            event: NostrEvent,
-            opts?: { timeout?: number | boolean; retries?: boolean | number },
-          ) => Promise<Array<{ ok: boolean }>>;
-        };
-      }
-    ).relayGroup = {
-      publish: async (_event: NostrEvent, opts) => {
-        receivedOptions = opts;
-        return [{ ok: true }];
+    const received: Array<PublishCallOptions | undefined> = [];
+    injectFakeRelays(pool, [
+      async (_event, opts) => {
+        received.push(opts);
+        return { ok: true };
       },
-    };
+      async (_event, opts) => {
+        received.push(opts);
+        return { ok: true };
+      },
+    ]);
 
-    const event = {
-      id: 'f'.repeat(64),
-      pubkey: 'p'.repeat(64),
-      created_at: Math.floor(Date.now() / 1000),
-      kind: 1,
-      tags: [],
-      content: 'test',
-      sig: 's'.repeat(128),
-    } as unknown as NostrEvent;
-
-    await expect(pool.publish(event)).resolves.toBeUndefined();
-    expect(receivedOptions).toEqual({ timeout: 1_234, retries: 2 });
+    await expect(pool.publish(makeEvent('f'))).resolves.toBeUndefined();
+    expect(received).toEqual([
+      { timeout: 1_234, retries: 2 },
+      { timeout: 1_234, retries: 2 },
+    ]);
   });
 
   test('publish() stops retrying after abortSignal is aborted (prevents zombie loops)', async () => {
@@ -53,30 +81,13 @@ describe('ApplesauceRelayPool publish cancellation (regression)', () => {
 
     let publishAttemptCount = 0;
 
-    // Inject a relayGroup implementation that always fails quickly.
-    // This forces ApplesauceRelayPool.publish() into its retry loop.
-    (
-      pool as unknown as {
-        relayGroup: {
-          publish: (event: NostrEvent) => Promise<Array<{ ok: boolean }>>;
-        };
-      }
-    ).relayGroup = {
-      publish: async (_event: NostrEvent) => {
+    // Relays whose ladders time out (no answer) force publish() into its retry loop.
+    injectFakeRelays(pool, [
+      () => {
         publishAttemptCount += 1;
-        throw new Error('simulated publish failure');
+        return Promise.reject(ladderTimeoutError());
       },
-    };
-
-    const event = {
-      id: 'e'.repeat(64),
-      pubkey: 'p'.repeat(64),
-      created_at: Math.floor(Date.now() / 1000),
-      kind: 1,
-      tags: [],
-      content: 'test',
-      sig: 's'.repeat(128),
-    } as unknown as NostrEvent;
+    ]);
 
     const controller = new AbortController();
 
@@ -85,7 +96,7 @@ describe('ApplesauceRelayPool publish cancellation (regression)', () => {
 
     const startMs = Date.now();
     await expect(
-      pool.publish(event, { abortSignal: controller.signal }),
+      pool.publish(makeEvent('e'), { abortSignal: controller.signal }),
     ).rejects.toThrow(/aborted/i);
     const elapsedMs = Date.now() - startMs;
 
@@ -104,30 +115,14 @@ describe('ApplesauceRelayPool publish cancellation (regression)', () => {
 
     let publishAttemptCount = 0;
 
-    (
-      pool as unknown as {
-        relayGroup: {
-          publish: (event: NostrEvent) => Promise<Array<{ ok: boolean }>>;
-        };
-      }
-    ).relayGroup = {
-      publish: async (_event: NostrEvent) => {
+    injectFakeRelays(pool, [
+      () => {
         publishAttemptCount += 1;
-        throw new Error('simulated publish failure');
+        return Promise.reject(ladderTimeoutError());
       },
-    };
+    ]);
 
-    const event = {
-      id: 'd'.repeat(64),
-      pubkey: 'p'.repeat(64),
-      created_at: Math.floor(Date.now() / 1000),
-      kind: 1,
-      tags: [],
-      content: 'test',
-      sig: 's'.repeat(128),
-    } as unknown as NostrEvent;
-
-    const pending = pool.publish(event);
+    const pending = pool.publish(makeEvent('d'));
     setTimeout(() => void pool.disconnect(), 10);
 
     await expect(pending).rejects.toThrow(/aborted/i);
@@ -150,18 +145,12 @@ describe('ApplesauceRelayPool publish cancellation (regression)', () => {
       };
     });
 
-    (
-      pool as unknown as {
-        relayGeneration: number;
-        rebuildInFlight?: Promise<void>;
-        relayGroup: {
-          publish: (event: NostrEvent) => Promise<Array<{ ok: boolean }>>;
-        };
-      }
-    ).relayGroup = {
-      publish: async (_event: NostrEvent) => {
+    injectFakeRelays(pool, [
+      () => {
         publishAttemptCount += 1;
         if (publishAttemptCount === 1) {
+          // Simulate a rebuild starting mid-attempt: the attempt observes no
+          // explicit relay answer at all.
           (
             pool as unknown as {
               relayGeneration: number;
@@ -180,69 +169,35 @@ describe('ApplesauceRelayPool publish cancellation (regression)', () => {
             ).rebuildInFlight = undefined;
             resolveRebuild();
           }, 20);
-          return [];
+          return Promise.reject(ladderTimeoutError());
         }
 
-        return [{ ok: true }];
+        return Promise.resolve({ ok: true });
       },
-    };
+    ]);
 
-    const event = {
-      id: 'a'.repeat(64),
-      pubkey: 'p'.repeat(64),
-      created_at: Math.floor(Date.now() / 1000),
-      kind: 1,
-      tags: [],
-      content: 'test',
-      sig: 's'.repeat(128),
-    } as unknown as NostrEvent;
-
-    await expect(pool.publish(event)).resolves.toBeUndefined();
+    await expect(pool.publish(makeEvent('a'))).resolves.toBeUndefined();
     expect(rebuildResolved).toBe(true);
     expect(publishAttemptCount).toBe(2);
   });
 
   test('publish() does not retry duplicate relay responses once a relay answered', async () => {
     const pool = new ApplesauceRelayPool(['ws://example.invalid']);
-
     let publishAttemptCount = 0;
 
-    (
-      pool as unknown as {
-        relays: Array<{ url: string; connected: boolean }>;
-      }
-    ).relays = [{ url: 'ws://example.invalid', connected: true }];
-
-    (
-      pool as unknown as {
-        relayGroup: {
-          publish: (event: NostrEvent) => Promise<Array<{ ok: boolean }>>;
-        };
-      }
-    ).relayGroup = {
-      publish: async (_event: NostrEvent) => {
+    injectFakeRelays(pool, [
+      () => {
         publishAttemptCount += 1;
-        return [
-          {
-            ok: false,
-            from: 'ws://example.invalid',
-            message: 'duplicate: already have this event',
-          },
-        ];
+        return Promise.resolve({
+          ok: false,
+          message: 'duplicate: already have this event',
+        });
       },
-    };
+    ]);
 
-    const event = {
-      id: 'b'.repeat(64),
-      pubkey: 'p'.repeat(64),
-      created_at: Math.floor(Date.now() / 1000),
-      kind: 1,
-      tags: [],
-      content: 'test',
-      sig: 's'.repeat(128),
-    } as unknown as NostrEvent;
-
-    await expect(pool.publish(event)).rejects.toThrow('Relay rejected publish');
+    await expect(pool.publish(makeEvent('b'))).rejects.toThrow(
+      'Relay rejected publish',
+    );
     expect(publishAttemptCount).toBe(1);
   });
 
@@ -250,45 +205,20 @@ describe('ApplesauceRelayPool publish cancellation (regression)', () => {
     const pool = new ApplesauceRelayPool(['ws://example.invalid']);
     let publishAttemptCount = 0;
 
-    (
-      pool as unknown as {
-        relays: Array<{ url: string; connected: boolean }>;
-      }
-    ).relays = [{ url: 'ws://example.invalid', connected: true }];
-
-    (
-      pool as unknown as {
-        relayGroup: {
-          publish: (
-            event: NostrEvent,
-          ) => Promise<Array<{ ok: boolean; message?: string }>>;
-        };
-      }
-    ).relayGroup = {
-      publish: async (_event: NostrEvent) => {
+    injectFakeRelays(pool, [
+      () => {
         publishAttemptCount += 1;
-        return [
-          {
-            ok: false,
-            from: 'ws://example.invalid',
-            message:
-              'mute: no one was listening to your ephemeral event and it was ignored',
-          },
-        ];
+        return Promise.resolve({
+          ok: false,
+          message:
+            'mute: no one was listening to your ephemeral event and it was ignored',
+        });
       },
-    };
+    ]);
 
-    const event = {
-      id: 'd'.repeat(64),
-      pubkey: 'p'.repeat(64),
-      created_at: Math.floor(Date.now() / 1000),
-      kind: 1,
-      tags: [],
-      content: 'test',
-      sig: 's'.repeat(128),
-    } as unknown as NostrEvent;
-
-    await expect(pool.publish(event)).rejects.toThrow('Relay rejected publish');
+    await expect(pool.publish(makeEvent('d'))).rejects.toThrow(
+      'Relay rejected publish',
+    );
     expect(publishAttemptCount).toBe(1);
   });
 
@@ -296,44 +226,19 @@ describe('ApplesauceRelayPool publish cancellation (regression)', () => {
     const pool = new ApplesauceRelayPool(['ws://example.invalid']);
     let publishAttemptCount = 0;
 
-    (
-      pool as unknown as {
-        relays: Array<{ url: string; connected: boolean }>;
-      }
-    ).relays = [{ url: 'ws://example.invalid', connected: true }];
-
-    (
-      pool as unknown as {
-        relayGroup: {
-          publish: (
-            event: NostrEvent,
-          ) => Promise<Array<{ ok: boolean; message?: string }>>;
-        };
-      }
-    ).relayGroup = {
-      publish: async (_event: NostrEvent) => {
+    injectFakeRelays(pool, [
+      () => {
         publishAttemptCount += 1;
-        return [
-          {
-            ok: false,
-            from: 'ws://example.invalid',
-            message: 'temporarily unavailable',
-          },
-        ];
+        return Promise.resolve({
+          ok: false,
+          message: 'temporarily unavailable',
+        });
       },
-    };
+    ]);
 
-    const event = {
-      id: 'e'.repeat(64),
-      pubkey: 'p'.repeat(64),
-      created_at: Math.floor(Date.now() / 1000),
-      kind: 1,
-      tags: [],
-      content: 'test',
-      sig: 's'.repeat(128),
-    } as unknown as NostrEvent;
-
-    await expect(pool.publish(event)).rejects.toThrow('Relay rejected publish');
+    await expect(pool.publish(makeEvent('e'))).rejects.toThrow(
+      'Relay rejected publish',
+    );
     expect(publishAttemptCount).toBe(1);
   });
 
@@ -342,34 +247,181 @@ describe('ApplesauceRelayPool publish cancellation (regression)', () => {
 
     let publishAttemptCount = 0;
 
-    (
-      pool as unknown as {
-        relayGroup: {
-          publish: (event: NostrEvent) => Promise<Array<{ ok: boolean }>>;
-        };
-      }
-    ).relayGroup = {
-      publish: async (_event: NostrEvent) => {
+    injectFakeRelays(pool, [
+      () => {
         publishAttemptCount += 1;
         if (publishAttemptCount === 1) {
-          return [];
+          return Promise.reject(ladderTimeoutError());
         }
 
-        return [{ ok: true }];
+        return Promise.resolve({ ok: true });
       },
-    };
+    ]);
 
-    const event = {
-      id: 'c'.repeat(64),
-      pubkey: 'p'.repeat(64),
-      created_at: Math.floor(Date.now() / 1000),
-      kind: 1,
-      tags: [],
-      content: 'test',
-      sig: 's'.repeat(128),
-    } as unknown as NostrEvent;
-
-    await expect(pool.publish(event)).resolves.toBeUndefined();
+    await expect(pool.publish(makeEvent('c'))).resolves.toBeUndefined();
     expect(publishAttemptCount).toBe(2);
   });
+});
+
+describe('ApplesauceRelayPool publish acknowledgement modes', () => {
+  test('first-ack (default) resolves on the first accepted OK without waiting for stragglers', async () => {
+    const pool = new ApplesauceRelayPool([
+      'ws://healthy.test',
+      'ws://zombie.test',
+    ]);
+
+    let healthyAcks = 0;
+    injectFakeRelays(pool, [
+      () => {
+        healthyAcks += 1;
+        return Promise.resolve({ ok: true });
+      },
+      // Zombie relay: ladder never settles within the test window.
+      () => new Promise(() => {}),
+    ]);
+
+    // Wait-for-all would hang forever on the never-settling relay.
+    const startMs = Date.now();
+    await expect(pool.publish(makeEvent('1'))).resolves.toBeUndefined();
+    expect(Date.now() - startMs).toBeLessThan(1_000);
+    expect(healthyAcks).toBe(1);
+  });
+
+  test("ackMode 'all' waits for every relay ladder to settle", async () => {
+    const pool = new ApplesauceRelayPool(
+      ['ws://healthy.test', 'ws://zombie.test'],
+      {
+        publishOptions: { ackMode: 'all' },
+      },
+    );
+
+    let zombieSettledAt = 0;
+    injectFakeRelays(pool, [
+      () => Promise.resolve({ ok: true }),
+      () =>
+        new Promise((_resolve, reject) => {
+          setTimeout(() => {
+            zombieSettledAt = Date.now();
+            reject(ladderTimeoutError());
+          }, 150);
+        }),
+    ]);
+
+    // 'all' mode must not resolve on the instant ack alone: it only settles
+    // after the straggler's ladder completed (accepted > 0 wins, as before).
+    const startMs = Date.now();
+    await expect(pool.publish(makeEvent('2'))).resolves.toBeUndefined();
+    expect(zombieSettledAt).toBeGreaterThan(0);
+    expect(Date.now() - startMs).toBeGreaterThanOrEqual(140);
+  });
+
+  test('a zombie-only pool retries without misreporting relay rejection', async () => {
+    const pool = new ApplesauceRelayPool([
+      'ws://zombie-1.test',
+      'ws://zombie-2.test',
+    ]);
+
+    let publishAttemptCount = 0;
+    const controller = new AbortController();
+    injectFakeRelays(pool, [
+      () => {
+        publishAttemptCount += 1;
+        // Abort from inside the second attempt so the loop exits deterministically.
+        if (publishAttemptCount >= 2) controller.abort();
+        return Promise.reject(ladderTimeoutError());
+      },
+      () => Promise.reject(ladderTimeoutError()),
+    ]);
+
+    // Regression pin: timeouts are "no answer", never a fatal relay rejection.
+    await expect(
+      pool.publish(makeEvent('3'), { abortSignal: controller.signal }),
+    ).rejects.toThrow(/aborted/i);
+    expect(publishAttemptCount).toBe(2);
+  }, 10_000);
+
+  test('explicit rejection from one relay is terminal even when the other relay never answered', async () => {
+    const pool = new ApplesauceRelayPool([
+      'ws://rejecting.test',
+      'ws://zombie.test',
+    ]);
+
+    let publishAttemptCount = 0;
+    injectFakeRelays(pool, [
+      () => {
+        publishAttemptCount += 1;
+        return Promise.resolve({ ok: false, message: 'blocked: pubkey' });
+      },
+      // Zombie: ladder times out without ever answering (half-open socket).
+      // The rejection must not finish early — but once the ladder settles, the
+      // explicit rejection wins without a retry.
+      () =>
+        new Promise((_resolve, reject) => {
+          setTimeout(() => reject(ladderTimeoutError()), 100);
+        }),
+    ]);
+
+    await expect(pool.publish(makeEvent('4'))).rejects.toThrow(
+      'Relay rejected publish',
+    );
+    expect(publishAttemptCount).toBe(1);
+  });
+
+  test('non-timeout errors on a connected relay are terminal rejections', async () => {
+    const pool = new ApplesauceRelayPool(['ws://example.invalid']);
+    let publishAttemptCount = 0;
+
+    injectFakeRelays(pool, [
+      () => {
+        publishAttemptCount += 1;
+        return Promise.reject(
+          new Error('auth-required: we need you to authenticate'),
+        );
+      },
+    ]);
+
+    await expect(pool.publish(makeEvent('5'))).rejects.toThrow(
+      'Relay rejected publish',
+    );
+    expect(publishAttemptCount).toBe(1);
+  });
+
+  test('non-timeout errors on a disconnected relay are retried, not terminal', async () => {
+    const pool = new ApplesauceRelayPool(['ws://example.invalid']);
+
+    let publishAttemptCount = 0;
+    injectFakeRelays(
+      pool,
+      [
+        () => {
+          publishAttemptCount += 1;
+          if (publishAttemptCount === 1) {
+            return Promise.reject(new Error('socket error'));
+          }
+          return Promise.resolve({ ok: true });
+        },
+      ],
+      false, // relay reports disconnected
+    );
+
+    await expect(pool.publish(makeEvent('6'))).resolves.toBeUndefined();
+    expect(publishAttemptCount).toBe(2);
+  });
+
+  test('an empty relay set is retried as no-answer rather than hanging', async () => {
+    const pool = new ApplesauceRelayPool(['ws://example.invalid']);
+
+    (
+      pool as unknown as {
+        relays: unknown[];
+      }
+    ).relays = [];
+
+    // Relays appear before the first retry interval elapses (500ms).
+    setTimeout(() => {
+      injectFakeRelays(pool, [() => Promise.resolve({ ok: true })]);
+    }, 10);
+
+    await expect(pool.publish(makeEvent('7'))).resolves.toBeUndefined();
+  }, 10_000);
 });

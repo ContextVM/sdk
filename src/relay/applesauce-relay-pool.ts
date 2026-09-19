@@ -43,6 +43,26 @@ type SubscriptionState = SubscriptionDescriptor & {
   unsubscribe?: () => void;
 };
 
+/** How one relay's per-attempt publish ladder settled. */
+type RelayPublishSettlement =
+  /** Relay explicitly accepted the event (OK: true). */
+  | { kind: 'accepted'; url: string }
+  /** Relay explicitly rejected the event (OK: false), or failed non-timeout while connected. */
+  | { kind: 'rejected'; url: string; message?: string }
+  /** No answer: ladder timed out (e.g. half-open socket) or relay dropped while disconnected. */
+  | { kind: 'no-answer'; url: string };
+
+/** Aggregated outcome of one publish attempt across all relays. */
+type RelayPublishOutcome = {
+  acceptedCount: number;
+  rejectedCount: number;
+  /** Settlements that produced an explicit relay answer (accepted + rejected). */
+  responseCount: number;
+  status: 'acknowledged' | 'rejected' | 'no-answer';
+  /** Per-relay settlements observed by the time the attempt resolved. */
+  settlements: RelayPublishSettlement[];
+};
+
 /** Configuration options for ApplesauceRelayPool */
 export interface ApplesauceRelayPoolOptions {
   pingFrequencyMs?: number;
@@ -57,8 +77,19 @@ export interface ApplesauceRelayPoolOptions {
     RelayOptions,
     'keepAlive' | 'enablePing' | 'pingFrequency' | 'pingTimeout'
   >;
-  /** Per-attempt publish options passed to RelayGroup.publish(). */
-  publishOptions?: Pick<PublishOptions, 'timeout' | 'retries'>;
+  /**
+   * Per-attempt publish options.
+   *
+   * `ackMode` controls when `publish()` resolves:
+   * - `'first-ack'` (default): the first accepted `OK` wins. Every relay
+   *   receives the EVENT frame up front; slower relays are never waited on
+   *   (their acknowledgements are discarded), so one half-open relay cannot
+   *   set the latency floor for the pool.
+   * - `'all'`: wait for every relay to settle (pre-0.14 semantics).
+   */
+  publishOptions?: Pick<PublishOptions, 'timeout' | 'retries'> & {
+    ackMode?: 'first-ack' | 'all';
+  };
 }
 
 /**
@@ -88,6 +119,7 @@ export class ApplesauceRelayPool implements RelayHandler {
   private readonly pingTimeoutMs: number;
   private readonly relayOptions?: ApplesauceRelayPoolOptions['relayOptions'];
   private readonly publishOptions: Pick<PublishOptions, 'timeout' | 'retries'>;
+  private readonly publishAckMode: 'first-ack' | 'all';
 
   private static readonly DISCONNECT_CLOSE_TIMEOUT_MS = 2_000;
 
@@ -95,6 +127,8 @@ export class ApplesauceRelayPool implements RelayHandler {
   private pingSubscription?: Subscription;
   private readonly destroy$ = new Subject<void>();
   private rebuildInFlight?: Promise<void>;
+  /** Single-flight for {@link probe}: concurrent callers share one probe. */
+  private probeInFlight?: Promise<boolean>;
   private relayObservers: Subscription[] = [];
   private relays: Relay[] = [];
 
@@ -181,6 +215,7 @@ export class ApplesauceRelayPool implements RelayHandler {
         opts?.publishOptions?.retries ??
         ApplesauceRelayPool.DEFAULT_PUBLISH_ATTEMPT_RETRIES,
     };
+    this.publishAckMode = opts?.publishOptions?.ackMode ?? 'first-ack';
 
     this.relays = relayUrls.map((url) => this.createRelay(url));
     this.relayGroup = new RelayGroup(this.relays);
@@ -207,6 +242,16 @@ export class ApplesauceRelayPool implements RelayHandler {
 
   /**
    * Publishes a Nostr event to the relay group.
+   *
+   * In the default `'first-ack'` mode every relay receives the EVENT frame up
+   * front, and the publish resolves as soon as the first relay accepts —
+   * slower relays are never waited on; their acknowledgements are simply
+   * discarded whenever they arrive. In `'all'` mode the publish waits for
+   * every relay to settle instead. Either way an attempt with no acceptance
+   * is retried indefinitely (MCP round-trips cannot complete otherwise),
+   * while an explicit rejection (`OK: false`) from a connected relay is
+   * terminal.
+   *
    * @param event - The Nostr event to publish.
    */
   async publish(
@@ -227,38 +272,17 @@ export class ApplesauceRelayPool implements RelayHandler {
       attempt += 1;
       const publishGeneration = this.relayGeneration;
       try {
-        const responses = await this.relayGroup.publish(
-          event,
-          this.publishOptions,
-        );
-
-        const connectedRelayUrls = new Set(
-          this.relays
-            .filter((relay) => relay.connected)
-            .map((relay) => relay.url),
-        );
-        let acceptedCount = 0;
-        let connectedFailureCount = 0;
-        for (const response of responses) {
-          if (response.ok) {
-            acceptedCount += 1;
-          } else if (
-            response.from === undefined ||
-            connectedRelayUrls.has(response.from)
-          ) {
-            connectedFailureCount += 1;
-          }
-        }
+        const outcome = await this.publishToRelays(event);
 
         logger.debug('Publish attempt completed', {
           eventId: event.id,
           kind: event.kind,
           attempt,
-          responseCount: responses.length,
-          acceptedCount,
-          connectedFailureCount,
-          connectedRelayUrls: Array.from(connectedRelayUrls),
-          responses,
+          ackMode: this.publishAckMode,
+          acceptedCount: outcome.acceptedCount,
+          rejectedCount: outcome.rejectedCount,
+          responseCount: outcome.responseCount,
+          settlements: outcome.settlements,
         });
 
         const rebuildDisruptedAttempt =
@@ -266,8 +290,8 @@ export class ApplesauceRelayPool implements RelayHandler {
           this.rebuildInFlight !== undefined;
 
         if (
-          acceptedCount === 0 &&
-          responses.length === 0 &&
+          outcome.status === 'no-answer' &&
+          outcome.responseCount === 0 &&
           rebuildDisruptedAttempt
         ) {
           logger.warn(
@@ -289,19 +313,17 @@ export class ApplesauceRelayPool implements RelayHandler {
           continue;
         }
 
-        if (responses.length > 0) {
-          if (acceptedCount > 0) {
-            logger.debug('Event published successfully', {
-              eventId: event.id,
-              acceptedCount,
-              connectedFailureCount,
-            });
-            return;
-          }
+        if (outcome.status === 'acknowledged') {
+          logger.debug('Event published successfully', {
+            eventId: event.id,
+            acceptedCount: outcome.acceptedCount,
+            rejectedCount: outcome.rejectedCount,
+          });
+          return;
+        }
 
-          if (connectedFailureCount > 0) {
-            throw new Error(RELAY_REJECTED_PUBLISH_ERROR);
-          }
+        if (outcome.status === 'rejected') {
+          throw new Error(RELAY_REJECTED_PUBLISH_ERROR);
         }
 
         throw new Error('Failed to publish event');
@@ -330,6 +352,112 @@ export class ApplesauceRelayPool implements RelayHandler {
         await sleep(ApplesauceRelayPool.PUBLISH_RETRY_INTERVAL_MS);
       }
     }
+  }
+
+  /**
+   * Runs one publish attempt across all relays and resolves with the
+   * aggregated outcome. The EVENT frame is sent to every relay eagerly; in
+   * `'first-ack'` mode the attempt settles at the first acceptance and later
+   * settlements are ignored (delivery still completes per relay in the
+   * background), while `'all'` mode waits for every relay's ladder to
+   * settle.
+   */
+  private publishToRelays(event: NostrEvent): Promise<RelayPublishOutcome> {
+    const relays = this.relays;
+    if (relays.length === 0) {
+      return Promise.resolve({
+        acceptedCount: 0,
+        rejectedCount: 0,
+        responseCount: 0,
+        status: 'no-answer',
+        settlements: [],
+      });
+    }
+
+    return new Promise<RelayPublishOutcome>((resolve) => {
+      const settlements: RelayPublishSettlement[] = [];
+      let pending = relays.length;
+      let finished = false;
+
+      const finish = (): void => {
+        if (finished) return;
+        finished = true;
+        const acceptedCount = settlements.filter(
+          (s) => s.kind === 'accepted',
+        ).length;
+        const rejectedCount = settlements.filter(
+          (s) => s.kind === 'rejected',
+        ).length;
+        resolve({
+          acceptedCount,
+          rejectedCount,
+          responseCount: acceptedCount + rejectedCount,
+          status:
+            acceptedCount > 0
+              ? 'acknowledged'
+              : rejectedCount > 0
+                ? 'rejected'
+                : 'no-answer',
+          settlements,
+        });
+      };
+
+      const record = (settlement: RelayPublishSettlement): void => {
+        if (finished) return;
+        settlements.push(settlement);
+        pending -= 1;
+
+        if (
+          this.publishAckMode === 'first-ack' &&
+          settlement.kind === 'accepted'
+        ) {
+          // Stop waiting at the first acceptance. Rejections never finish
+          // early: another relay may still accept, so they classify only when
+          // every ladder has settled (matching wait-for-all semantics).
+          finish();
+          return;
+        }
+
+        if (pending === 0) finish();
+      };
+
+      for (const relay of relays) {
+        relay
+          .publish(event, {
+            timeout: this.publishOptions.timeout,
+            retries: this.publishOptions.retries,
+          })
+          .then((response) => {
+            record(
+              response.ok
+                ? { kind: 'accepted', url: relay.url }
+                : {
+                    kind: 'rejected',
+                    url: relay.url,
+                    message: response.message,
+                  },
+            );
+          })
+          .catch((error: unknown) => {
+            // A ladder timeout means "no answer yet" (e.g. a half-open socket)
+            // and must never be classified as a relay rejection; ditto any
+            // error on a relay that is no longer connected. Everything else
+            // counts as an explicit negative answer from a connected relay.
+            const timedOut =
+              error instanceof Error && error.name === 'TimeoutError';
+            record(
+              timedOut || !relay.connected
+                ? { kind: 'no-answer', url: relay.url }
+                : {
+                    kind: 'rejected',
+                    url: relay.url,
+                    message:
+                      error instanceof Error ? error.message : String(error),
+                  },
+            );
+          });
+      }
+    });
   }
 
   /**
@@ -539,14 +667,22 @@ export class ApplesauceRelayPool implements RelayHandler {
       });
   }
 
-  /** Performs a liveness check and triggers rebuild on timeout */
-  private async checkLiveness(): Promise<void> {
+  /**
+   * Performs a liveness check and triggers rebuild on failure.
+   * @param timeoutMs - Per-relay probe timeout (default: configured pingTimeoutMs).
+   * @returns true when every connected relay answered (or the check was
+   * skipped because no subscriptions are active); false when a rebuild was
+   * triggered.
+   */
+  private async checkLiveness(
+    timeoutMs: number = this.pingTimeoutMs,
+  ): Promise<boolean> {
     // If there are no active subscriptions, don't perform liveness checks.
     // applesauce-relay may legitimately close sockets after `keepAlive` when
     // nothing is subscribed, and that should not trigger a rebuild.
     if (this.subscriptions.size === 0) {
       logger.debug('Skipping liveness check: no active subscriptions');
-      return;
+      return true;
     }
 
     logger.debug('Running liveness check', {
@@ -560,7 +696,7 @@ export class ApplesauceRelayPool implements RelayHandler {
     if (relays.length === 0) {
       logger.warn('No relays in group, triggering rebuild');
       this.rebuild('no-relays');
-      return;
+      return false;
     }
 
     const connectedRelays = relays.filter((relay) => relay.connected);
@@ -575,7 +711,7 @@ export class ApplesauceRelayPool implements RelayHandler {
         })),
       });
       void this.rebuild('no-connected-relays');
-      return;
+      return false;
     }
 
     try {
@@ -595,7 +731,7 @@ export class ApplesauceRelayPool implements RelayHandler {
                     msg[1] === pingId,
                 ),
                 take(1),
-                timeout(this.pingTimeoutMs),
+                timeout(timeoutMs),
               ),
             );
           } finally {
@@ -607,16 +743,63 @@ export class ApplesauceRelayPool implements RelayHandler {
           }
         }),
       );
+      return true;
     } catch (error) {
       if (error instanceof Error && error.name === 'TimeoutError') {
         logger.warn('Liveness check timed out - no response from relays', {
-          pingTimeoutMs: this.pingTimeoutMs,
+          pingTimeoutMs: timeoutMs,
           connectedRelays: connectedRelays.length,
         });
       } else {
         logger.warn('Liveness check failed, triggering rebuild', { error });
       }
       this.rebuild('liveness-timeout');
+      return false;
+    }
+  }
+
+  /**
+   * Probes pool liveness on demand: every connected relay must answer a
+   * PING_FILTER round-trip within {@link timeoutMs}. Any failure triggers a
+   * rebuild (subscriptions are replayed; in-flight publishes ride the
+   * ambiguous-rebuild retry path). Read-only when healthy; safe alongside
+   * in-flight calls and the periodic liveness monitor.
+   *
+   * Resolves `false` (never throws) so callers can count failures, and only
+   * resolves after a triggered rebuild has completed, so the caller's next
+   * call lands on fresh sockets. Resolves `true` when healthy — including the
+   * vacuous case of no active subscriptions (an idle pool legitimately has no
+   * live sockets). Always resolves `false` after {@link disconnect}.
+   *
+   * Typical use: fire on app "attention events" (visibilitychange, resume)
+   * to convert a post-suspend 8-20s first-RPC failure into a
+   * `pingTimeoutMs`-bounded background heal.
+   *
+   * @param timeoutMs - Per-relay probe timeout (default: configured pingTimeoutMs).
+   */
+  async probe(timeoutMs: number = this.pingTimeoutMs): Promise<boolean> {
+    if (this.lifecycle.signal.aborted) return false;
+    if (this.rebuildInFlight) {
+      await this.rebuildInFlight.catch(() => undefined);
+    }
+    if (this.probeInFlight) return this.probeInFlight;
+
+    const run = (async (): Promise<boolean> => {
+      const healthy = await this.checkLiveness(timeoutMs);
+      if (!healthy) {
+        // Heal before reporting failure so the caller's next call lands on
+        // fresh sockets rather than the ambiguous-rebuild retry path.
+        const rebuild = this.rebuildInFlight;
+        if (rebuild) await rebuild.catch(() => undefined);
+      }
+      return healthy;
+    })();
+
+    this.probeInFlight = run;
+    try {
+      return await run;
+    } finally {
+      this.probeInFlight = undefined;
     }
   }
 

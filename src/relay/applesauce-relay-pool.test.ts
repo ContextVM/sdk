@@ -1051,3 +1051,200 @@ describe('ApplesauceRelayPool terminal lifecycle', () => {
     expect(internals.pingSubscription).toBeUndefined(); // no immortal monitor
   }, 10_000);
 });
+
+/** Fake relay for probe tests: controllable EOSE responses via message$. */
+function createProbeFakeRelay(options?: {
+  respondToPings?: boolean;
+  connected?: boolean;
+}): {
+  relay: {
+    url: string;
+    connected: boolean;
+    send: (msg: unknown) => void;
+    close: () => void;
+    message$: Subject<unknown>;
+    connected$: Subject<boolean>;
+    error$: Subject<unknown>;
+  };
+  sentMessages: unknown[];
+} {
+  const sentMessages: unknown[] = [];
+  const message$ = new Subject<unknown>();
+  const respondToPings = options?.respondToPings ?? true;
+  const relay = {
+    url: 'wss://relay.example',
+    connected: options?.connected ?? true,
+    send: (msg: unknown): void => {
+      sentMessages.push(msg);
+      if (respondToPings && Array.isArray(msg) && msg[0] === 'REQ') {
+        // Answer asynchronously like a real relay: checkLiveness subscribes to
+        // message$ after send(), so a synchronous emission would be lost.
+        queueMicrotask(() => message$.next(['EOSE', msg[1]]));
+      }
+    },
+    close: (): void => {},
+    message$,
+    connected$: new Subject<boolean>(),
+    error$: new Subject<unknown>(),
+  };
+  return { relay, sentMessages };
+}
+
+/** Registers a subscription entry so liveness probes are not skipped. */
+function registerProbeSubscription(pool: ApplesauceRelayPool): void {
+  const testPool = pool as unknown as TestableApplesauceRelayPool;
+  testPool.subscriptions.set('probe-test-sub', {
+    id: 'probe-test-sub',
+    filters: [],
+    onEvent: () => {},
+  });
+}
+
+describe('ApplesauceRelayPool.probe', () => {
+  test('resolves true and sends no rebuild when all connected relays answer', async () => {
+    const pool = new ApplesauceRelayPool(['wss://relay.example'], {
+      pingTimeoutMs: 1_000,
+    });
+    const { relay, sentMessages } = createProbeFakeRelay();
+    (pool as unknown as { relays: unknown[] }).relays = [relay];
+    registerProbeSubscription(pool);
+    const rebuildTracker = trackRebuildCalls(pool);
+
+    await expect(pool.probe()).resolves.toBe(true);
+
+    // REQ ping sent and answered, CLOSE cleanup issued, no rebuild.
+    const pings = sentMessages.filter(
+      (msg) => Array.isArray(msg) && msg[0] === 'REQ',
+    );
+    expect(pings.length).toBe(1);
+    expect(rebuildTracker.calls.length).toBe(0);
+
+    rebuildTracker.restore();
+  });
+
+  test('resolves false and awaits the triggered rebuild on timeout', async () => {
+    const pool = new ApplesauceRelayPool(['wss://relay.example'], {
+      pingTimeoutMs: 50,
+    });
+    // Relay accepts the ping REQ but never answers (half-open socket).
+    const { relay } = createProbeFakeRelay({ respondToPings: false });
+    (pool as unknown as { relays: unknown[] }).relays = [relay];
+    registerProbeSubscription(pool);
+    const rebuildTracker = trackRebuildCalls(pool);
+
+    await expect(pool.probe(50)).resolves.toBe(false);
+
+    // Rebuild was triggered by the failed probe and completed before resolve.
+    expect(rebuildTracker.calls.length).toBeGreaterThan(0);
+    expect(
+      (pool as unknown as TestableApplesauceRelayPool).rebuildInFlight,
+    ).toBeUndefined();
+
+    rebuildTracker.restore();
+  }, 10_000);
+
+  test('resolves true without probing when there are no active subscriptions', async () => {
+    const pool = new ApplesauceRelayPool(['wss://relay.example'], {
+      pingTimeoutMs: 1_000,
+    });
+    const { relay, sentMessages } = createProbeFakeRelay();
+    (pool as unknown as { relays: unknown[] }).relays = [relay];
+    // No subscription registered: the pool is idle by design.
+
+    await expect(pool.probe()).resolves.toBe(true);
+    expect(sentMessages.length).toBe(0);
+  });
+
+  test('resolves false after disconnect() and never resurrects', async () => {
+    const pool = new ApplesauceRelayPool(['wss://relay.example'], {
+      pingTimeoutMs: 1_000,
+    });
+    const { relay } = createProbeFakeRelay();
+    (pool as unknown as { relays: unknown[] }).relays = [relay];
+    registerProbeSubscription(pool);
+
+    await pool.disconnect();
+    await expect(pool.probe()).resolves.toBe(false);
+
+    const internals = pool as unknown as { relays: unknown[] };
+    expect(internals.relays).toHaveLength(0);
+  });
+
+  test('concurrent probes share a single in-flight probe', async () => {
+    const pool = new ApplesauceRelayPool(['wss://relay.example'], {
+      pingTimeoutMs: 1_000,
+    });
+    const { relay } = createProbeFakeRelay();
+    (pool as unknown as { relays: unknown[] }).relays = [relay];
+    registerProbeSubscription(pool);
+
+    let checkLivenessCalls = 0;
+    const testPool = pool as unknown as {
+      checkLiveness: (timeoutMs?: number) => Promise<boolean>;
+    };
+    const original = testPool.checkLiveness.bind(pool);
+    testPool.checkLiveness = (timeoutMs?: number): Promise<boolean> => {
+      checkLivenessCalls += 1;
+      return original(timeoutMs);
+    };
+
+    const [first, second] = await Promise.all([pool.probe(), pool.probe()]);
+
+    expect(first).toBe(true);
+    expect(second).toBe(true);
+    expect(checkLivenessCalls).toBe(1);
+  });
+});
+
+describe('ApplesauceRelayPool.probe (integration)', () => {
+  test.serial(
+    'probe() detects a half-open relay, triggers rebuild, and recovers',
+    async () => {
+      const unresponsiveRelaySpawn = await spawnMockRelayWithEnv({
+        UNRESPONSIVE: 'true',
+      });
+      const stopUnresponsiveRelay = unresponsiveRelaySpawn.stop;
+
+      const relayPool = new ApplesauceRelayPool(
+        [unresponsiveRelaySpawn.relayUrl],
+        {
+          pingFrequencyMs: 600_000, // keep the periodic monitor out of the way
+          pingTimeoutMs: 20_000,
+        },
+      );
+      await relayPool.connect();
+
+      const rebuildTracker = trackRebuildCalls(relayPool);
+      relayPool.subscribe([{ kinds: [1] }], () => {});
+
+      // Half-open socket: connected but never answers the ping round-trip.
+      await expect(relayPool.probe(500)).resolves.toBe(false);
+      expect(rebuildTracker.calls.length).toBeGreaterThan(0);
+
+      // The same server starts answering; the rebuilt relay reconnects to it.
+      unresponsiveRelaySpawn.relay.setUnresponsive(false);
+      const internals = relayPool as unknown as {
+        relays: Array<{ connected: boolean }>;
+      };
+      const deadline = Date.now() + 5_000;
+      while (
+        Date.now() < deadline &&
+        !(
+          internals.relays.length > 0 &&
+          internals.relays.every((r) => r.connected)
+        )
+      ) {
+        await sleep(100);
+      }
+      expect(internals.relays.every((r) => r.connected)).toBe(true);
+
+      await expect(relayPool.probe(2_000)).resolves.toBe(true);
+
+      rebuildTracker.restore();
+      relayPool.unsubscribe();
+      await relayPool.disconnect();
+      stopUnresponsiveRelay();
+    },
+    15_000,
+  );
+});
