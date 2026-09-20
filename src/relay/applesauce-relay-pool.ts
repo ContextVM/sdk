@@ -846,8 +846,15 @@ export class ApplesauceRelayPool implements RelayHandler {
 
       // Resume ping monitor
       this.startPingMonitor();
-    })().finally(() => {
-      this.rebuildInFlight = undefined;
-    });
+    })()
+      .catch((error: unknown) => {
+        // Rebuild is fire-and-forget at every call site; a throw from relay
+        // or subscription reconstruction must not escape as an unhandled
+        // rejection and kill the host process.
+        logger.error('Relay pool rebuild failed', { reason, error });
+      })
+      .finally(() => {
+        this.rebuildInFlight = undefined;
+      });
   }
 }

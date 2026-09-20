@@ -255,7 +255,7 @@ export class OpenStreamWriter {
 
     this.clearIdleTimer();
     this.idleTimer = setTimeout(() => {
-      void this.handleIdleTimeout();
+      this.handleIdleTimeout().catch(() => undefined);
     }, this.idleTimeoutMs);
   }
 
@@ -301,7 +301,7 @@ export class OpenStreamWriter {
     // A racing ackProbe/abort reconciles via the nonce check and clearKeepalive.
     this.clearProbeTimer();
     this.probeTimer = setTimeout(() => {
-      void this.handleProbeTimeout(nonce);
+      this.handleProbeTimeout(nonce).catch(() => undefined);
     }, this.probeTimeoutMs ?? DEFAULT_OPEN_STREAM_PROBE_TIMEOUT_MS);
 
     try {
@@ -316,12 +316,16 @@ export class OpenStreamWriter {
         }),
       );
     } catch {
-      if (!this.active) {
-        return; // probe timeout may have already finalized
+      // A matching ackProbe already reconciled this probe (or a newer probe
+      // superseded it): a late publish rejection must not abort a stream
+      // with proven liveness. Mirrors OpenStreamSession.handleIdleTimeout.
+      if (!this.active || this.pendingProbeNonce !== nonce) {
+        return;
       }
-      this.pendingProbeNonce = undefined;
-      this.clearProbeTimer();
-      this.armIdle();
+      // Undeliverable ping (evicted session, relays rejecting the event,
+      // transport closing): the relay pool already retries transient
+      // failures internally, so retrying here would loop forever. Tear down.
+      await this.abort('Failed to send keepalive ping');
     }
   }
 
