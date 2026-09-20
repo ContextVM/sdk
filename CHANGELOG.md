@@ -1,5 +1,19 @@
 # @contextvm/sdk
 
+## 0.14.0
+
+### Minor Changes
+
+- 2f3ed05: Add pool-level liveness probing and first-ack publish to `ApplesauceRelayPool`.
+
+  - **New public `probe(timeoutMs?): Promise<boolean>`** — runs the same PING_FILTER round-trip the periodic liveness monitor uses, on demand. Any failing relay triggers a rebuild (subscriptions replayed) that completes before `false` resolves, so the caller's next call lands on fresh sockets. Resolves `true` when healthy (vacuously when no subscriptions are active), `false` on failure or after `disconnect()`, never throws, and shares a single in-flight probe across concurrent callers. Intended for app "attention events" (visibilitychange / resume) to convert post-suspend first-RPC failures into a `pingTimeoutMs`-bounded background heal — no more guarded casts to the private `checkLiveness` that silently fail open on SDK renames.
+  - **`publish()` now resolves on the first accepted `OK` (first-ack)** instead of waiting for every relay to settle. Every relay still receives the `EVENT` frame up front; slower relays are never waited on — their deliveries complete in the background and their acknowledgements are discarded — so one half-open relay can no longer set the latency floor for every RPC on the pool (matches nostr-tools semantics). Restore the previous wait-for-all behavior with `publishOptions: { ackMode: 'all' }`.
+  - **Behavior fix in both modes:** a publish-ladder timeout ("no answer", e.g. a half-open socket) is no longer misclassified as a relay rejection. Previously, when all connected relays timed out, `publish()` could throw a fatal, never-retried `'Relay rejected publish'` for a pure liveness problem. Timeouts now retry; only an explicit `OK: false` (or non-timeout error) from a connected relay is terminal, exactly as before when relays explicitly rejected.
+
+### Patch Changes
+
+- ab0d479: Cancel in-flight payment verification on `NostrServerTransport.close()`. The transport now exposes a `closeSignal: AbortSignal` getter, aborted at the top of `close()` before any teardown, and `withServerPayments` passes it to both payment middlewares as an `abortSignal` factory option. Each request bridges it to its own per-verify controller (listener added on start, removed once the verify settles), so `processor.verifyPayment` polls stop immediately instead of running to `verifyTimeoutMs`, and a verify that settles after shutdown no longer forwards the tool call, publishes `payment_accepted`, or grants explicit-gating authorization. Cancel-not-drain: the transparent pending entry is left to expire on its own TTL per CEP-8 so redelivery dedup is unaffected; the explicit-gating pending entry is cleared exactly as a failed verify would. No change when `close()` is never called. The LNbits processor now polls with `sleepWithAbort` so it wakes on abort instead of finishing its poll interval.
+
 ## 0.13.17
 
 ### Patch Changes
