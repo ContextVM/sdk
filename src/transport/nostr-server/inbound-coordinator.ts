@@ -10,6 +10,7 @@ import { type Logger } from '../../core/utils/logger.js';
 import { type SessionStore, type ClientSession } from './session-store.js';
 import { NOSTR_TAGS } from '../../core/constants.js';
 import { type CorrelationStore } from './correlation-store.js';
+import { type SubscriptionStore } from './subscription-store.js';
 import { type AuthorizationPolicy } from './authorization-policy.js';
 import { type ServerOpenStreamFactory } from './open-stream-factory.js';
 import { type InboundNotificationDispatcher } from './inbound-notification-dispatcher.js';
@@ -38,6 +39,7 @@ import type {
 export interface ServerInboundCoordinatorDeps {
   sessionStore: SessionStore;
   correlationStore: CorrelationStore;
+  subscriptionStore: SubscriptionStore;
   authorizationPolicy: AuthorizationPolicy;
   openStreamFactory: ServerOpenStreamFactory;
   inboundMiddlewares: InboundMiddlewareFn[];
@@ -366,6 +368,15 @@ export class ServerInboundCoordinator {
     clientPubkey: string,
     wrapKind?: number,
   ): void {
+    const resourceUri = request.params?.uri;
+    if (typeof resourceUri === 'string') {
+      if (request.method === 'resources/subscribe') {
+        this.deps.subscriptionStore.subscribe(clientPubkey, resourceUri);
+      } else if (request.method === 'resources/unsubscribe') {
+        this.deps.subscriptionStore.unsubscribe(clientPubkey, resourceUri);
+      }
+    }
+
     const originalRequestId = request.id;
     request.id = eventId;
 

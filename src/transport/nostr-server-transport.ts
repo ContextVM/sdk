@@ -22,6 +22,7 @@ import { NostrEvent } from 'nostr-tools';
 import { LogLevel } from '../core/utils/logger.js';
 import { withTimeout } from '../core/utils/utils.js';
 import { CorrelationStore } from './nostr-server/correlation-store.js';
+import { SubscriptionStore } from './nostr-server/subscription-store.js';
 import { ClientSession, SessionStore } from './nostr-server/session-store.js';
 import { LruCache } from '../core/utils/lru-cache.js';
 import { ApplesauceRelayPool } from '../relay/applesauce-relay-pool.js';
@@ -185,6 +186,7 @@ export class NostrServerTransport
 
   private readonly sessionStore: SessionStore;
   private readonly correlationStore: CorrelationStore;
+  private readonly subscriptionStore: SubscriptionStore;
   private readonly authorizationPolicy: AuthorizationPolicy;
   private readonly announcementManager: AnnouncementManager;
   private readonly injectClientPubkey: boolean;
@@ -246,6 +248,8 @@ export class NostrServerTransport
       isAnnouncedServer: options.isAnnouncedServer ?? options.isPublicServer,
     });
 
+    this.subscriptionStore = new SubscriptionStore();
+
     // Initialize session store with eviction callback for correlation cleanup
     this.sessionStore = new SessionStore({
       maxSessions: options.maxSessions ?? 1000,
@@ -257,6 +261,7 @@ export class NostrServerTransport
         // callback would also corrupt the cache's capacity accounting.)
         const removedCount =
           this.correlationStore.removeRoutesForClient(clientPubkey);
+        this.subscriptionStore.removeForClient(clientPubkey);
         this.logger.info(
           `Evicted session for ${clientPubkey} (removed ${removedCount} routes)`,
         );
@@ -359,6 +364,7 @@ export class NostrServerTransport
     this.inboundCoordinator = new ServerInboundCoordinator({
       sessionStore: this.sessionStore,
       correlationStore: this.correlationStore,
+      subscriptionStore: this.subscriptionStore,
       authorizationPolicy: this.authorizationPolicy,
       openStreamFactory: this.openStreamFactory,
       inboundMiddlewares: this.inboundMiddlewares,
@@ -442,6 +448,7 @@ export class NostrServerTransport
     this.outboundNotificationBroadcaster = new OutboundNotificationBroadcaster({
       correlationStore: this.correlationStore,
       sessionStore: this.sessionStore,
+      subscriptionStore: this.subscriptionStore,
       sendNotification: this.sendNotification.bind(this),
       enqueueTask: this.taskQueue.add.bind(this.taskQueue),
       logger: this.logger,
@@ -586,6 +593,7 @@ export class NostrServerTransport
       await this.disconnect();
       this.sessionStore.clear();
       this.correlationStore.clear();
+      this.subscriptionStore.clear();
       this.seenEventIds.clear();
       this.oversizedReceiver.clear();
       this.openStreamFactory.getReceiver().clear();
