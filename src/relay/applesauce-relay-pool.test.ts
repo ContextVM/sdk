@@ -1248,3 +1248,37 @@ describe('ApplesauceRelayPool.probe (integration)', () => {
     15_000,
   );
 });
+
+describe('ApplesauceRelayPool rebuild failure containment', () => {
+  test('a failing rebuild is logged, not surfaced as an unhandled rejection', async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on('unhandledRejection', onUnhandled);
+
+    const pool = new ApplesauceRelayPool(['wss://relay.invalid.example']);
+    const testPool = pool as unknown as TestableApplesauceRelayPool;
+    const originalCreateRelay = testPool.createRelay.bind(testPool);
+    testPool.createRelay = (): Relay => {
+      throw new Error('relay construction failed');
+    };
+
+    try {
+      testPool.rebuild('test-rebuild-failure');
+
+      const deadline = Date.now() + 5_000;
+      while (testPool.rebuildInFlight && Date.now() < deadline) {
+        await sleep(10);
+      }
+      expect(testPool.rebuildInFlight).toBeUndefined();
+      // Give any would-be unhandled rejection a macrotask to surface.
+      await sleep(50);
+      expect(unhandled).toEqual([]);
+    } finally {
+      testPool.createRelay = originalCreateRelay;
+      process.off('unhandledRejection', onUnhandled);
+      await pool.disconnect();
+    }
+  }, 10_000);
+});

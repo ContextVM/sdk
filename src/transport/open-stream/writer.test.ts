@@ -512,6 +512,133 @@ describe('OpenStreamWriter keepalive', () => {
     await new Promise((resolve) => setTimeout(resolve, 60));
     expect(frames.map((frame) => frame.cvm.frameType)).not.toContain('abort');
   });
+
+  test('probe-timeout abort tolerates an already-evicted session', async () => {
+    // Regression (production crash): a sibling writer's probe-timeout
+    // teardown evicted the client session between our ping and our abort;
+    // the abort publish rejected and the discarded timer promise killed
+    // the process with an unhandled rejection.
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      const frames: OpenStreamProgress[] = [];
+      const aborts: Array<string | undefined> = [];
+      const writer = new OpenStreamWriter({
+        progressToken: 'token-probe-evicted-session',
+        publishFrame: (frame): Promise<string | undefined> => {
+          frames.push(frame);
+          if (frame.cvm.frameType === 'abort') {
+            return Promise.reject(
+              new Error('No active session found for client: deadpubkey'),
+            );
+          }
+          return Promise.resolve(undefined);
+        },
+        onAbort: async (reason?: string): Promise<void> => {
+          aborts.push(reason);
+        },
+        idleTimeoutMs: 10,
+        probeTimeoutMs: 10,
+      });
+
+      await writer.start();
+      await waitFor(() => !writer.isActive);
+      // Let any would-be unhandled rejection surface before asserting.
+      await new Promise((resolve) => setTimeout(resolve, 30));
+
+      expect(aborts).toEqual(['Probe timeout']);
+      expect(frames.some((frame) => frame.cvm.frameType === 'abort')).toBe(
+        true,
+      );
+      expect(writer.signal.aborted).toBe(true);
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+  });
+
+  test('tears down the stream when keepalive pings are undeliverable', async () => {
+    // Regression (livelock): once the session is evicted every ping publish
+    // rejects; the old catch re-armed idle forever, so neither the stream
+    // nor its deferred response ever completed.
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      const aborts: Array<string | undefined> = [];
+      const writer = new OpenStreamWriter({
+        progressToken: 'token-undeliverable-ping',
+        publishFrame: (frame): Promise<string | undefined> => {
+          if (
+            frame.cvm.frameType === 'ping' ||
+            frame.cvm.frameType === 'abort'
+          ) {
+            return Promise.reject(
+              new Error('No active session found for client: deadpubkey'),
+            );
+          }
+          return Promise.resolve(undefined);
+        },
+        onAbort: async (reason?: string): Promise<void> => {
+          aborts.push(reason);
+        },
+        idleTimeoutMs: 10,
+        probeTimeoutMs: 10,
+      });
+
+      await writer.start();
+      await waitFor(() => !writer.isActive);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+
+      expect(aborts).toEqual(['Failed to send keepalive ping']);
+      expect(writer.signal.aborted).toBe(true);
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+  });
+
+  test('keeps the stream alive when a ping publish rejects after the peer acked', async () => {
+    // Mirrors OpenStreamSession: a late rejection for a probe the peer
+    // already acked must not abort a stream with proven liveness.
+    const aborts: Array<string | undefined> = [];
+    let pingCount = 0;
+    const writer = new OpenStreamWriter({
+      progressToken: 'token-late-reject-after-ack',
+      publishFrame: (frame): Promise<string | undefined> => {
+        if (frame.cvm.frameType === 'ping') {
+          pingCount += 1;
+          // Peer acks inside the publish window; the first publish then
+          // fails late — keepalive must recover on the next idle cycle.
+          writer.ackProbe(frame.cvm.nonce);
+          if (pingCount === 1) {
+            return Promise.reject(
+              new Error('No active session found for client: deadpubkey'),
+            );
+          }
+        }
+        return Promise.resolve(undefined);
+      },
+      onAbort: async (reason?: string): Promise<void> => {
+        aborts.push(reason);
+      },
+      idleTimeoutMs: 10,
+      probeTimeoutMs: 10,
+    });
+
+    await writer.start();
+    await waitFor(() => pingCount >= 2);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    expect(writer.isActive).toBe(true);
+    expect(aborts).toEqual([]);
+    writer.dispose();
+  });
 });
 
 describe('OpenStreamWriter signal', () => {
