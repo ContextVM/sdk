@@ -4,8 +4,11 @@ import type {
   JSONRPCResponse,
 } from '@contextvm/mcp-sdk/types.js';
 import type { Logger } from '../../core/utils/logger.js';
-import type { CorrelationStore } from './correlation-store.js';
-import type { ClientSession, SessionStore } from './session-store.js';
+import { CorrelationStore as CorrelationStoreImpl } from './correlation-store.js';
+import { type CorrelationStore } from './correlation-store.js';
+import { type ClientSession, SessionStore } from './session-store.js';
+import { SubscriptionStore } from './subscription-store.js';
+import { OutboundNotificationBroadcaster } from './outbound-notification-broadcaster.js';
 import { ServerOpenStreamFactory } from './open-stream-factory.js';
 
 /** Polls `condition` until it returns true or `timeoutMs` elapses. */
@@ -40,6 +43,7 @@ const sessionStore = {
   getSession: () => undefined,
   removeSession: () => false,
 } as unknown as SessionStore;
+const subscriptionStore = new SubscriptionStore();
 
 function createFactory(options?: { openStreamEnabled?: boolean }): {
   factory: ServerOpenStreamFactory;
@@ -62,6 +66,7 @@ function createFactory(options?: { openStreamEnabled?: boolean }): {
     handleResponse: async (response) => {
       routedResponses.push(response);
     },
+    subscriptionStore,
     logger: testLogger,
   });
 
@@ -176,6 +181,7 @@ describe('ServerOpenStreamFactory.releaseUnusedWriter', () => {
         notifications.push({ clientPubkey, notification });
       },
       handleResponse: async () => undefined,
+      subscriptionStore: new SubscriptionStore(),
       policy: { idleTimeoutMs: 10, probeTimeoutMs: 10 },
       logger: testLogger,
     });
@@ -237,33 +243,24 @@ describe('ServerOpenStreamFactory.getOpenStreams', () => {
     expect(factory.getOpenStreams()).toHaveLength(0);
   });
 
-  test('keepalive probe timeout evicts the session and removes the writer without a manual abort', async () => {
-    const session: ClientSession = {
-      isInitialized: true,
-      isEncrypted: false,
-      hasSentCommonTags: true,
-      supportsEncryption: false,
-      supportsEphemeralEncryption: false,
-      supportsOversizedTransfer: false,
-      supportsOpenStream: true,
-    };
-    const sessions = new Map<string, ClientSession>([['pk-1', session]]);
+  test('probe timeout clears subscriptions until the client subscribes again', async () => {
+    const clientPubkey = 'pk-1';
+    const resourceUri = 'resource://alpha';
     const evicted: string[] = [];
-    const localSessionStore = {
-      getSession: (pk: string): ClientSession | undefined => sessions.get(pk),
-      removeSession: (pk: string): boolean => {
-        const had = sessions.has(pk);
-        sessions.delete(pk);
-        return had;
-      },
-    } as unknown as SessionStore;
+    const localSessionStore = new SessionStore();
+    localSessionStore.getOrCreateSession(clientPubkey, false);
+    localSessionStore.markInitialized(clientPubkey);
+    const localSubscriptionStore = new SubscriptionStore();
+    const localCorrelationStore = new CorrelationStoreImpl();
+    localSubscriptionStore.subscribe(clientPubkey, resourceUri);
 
     const factory = new ServerOpenStreamFactory({
       openStreamEnabled: true,
       sessionStore: localSessionStore,
-      correlationStore,
+      correlationStore: localCorrelationStore,
       sendNotification: async () => undefined,
       handleResponse: async () => undefined,
+      subscriptionStore: localSubscriptionStore,
       onClientSessionEvicted: async ({ clientPubkey }): Promise<void> => {
         evicted.push(clientPubkey);
       },
@@ -271,7 +268,11 @@ describe('ServerOpenStreamFactory.getOpenStreams', () => {
       logger: testLogger,
     });
 
-    const writer = factory.createWriterIfEnabled('evt-pt', 'pk-1', 'token-pt');
+    const writer = factory.createWriterIfEnabled(
+      'evt-pt',
+      clientPubkey,
+      'token-pt',
+    );
     await writer!.start();
 
     // No manual abort, no ackProbe: the writer's own keepalive must drive the
@@ -279,10 +280,47 @@ describe('ServerOpenStreamFactory.getOpenStreams', () => {
     await waitFor(() => !writer!.isActive);
 
     expect(writer!.isActive).toBe(false);
-    expect(sessions.has('pk-1')).toBe(false);
-    expect(evicted).toEqual(['pk-1']);
+    expect(localSessionStore.hasSession(clientPubkey)).toBe(false);
+    expect(localSubscriptionStore.getSubscribers(resourceUri)).toEqual(
+      new Set(),
+    );
+    expect(evicted).toEqual([clientPubkey]);
     expect(factory.getWriter('evt-pt')).toBeUndefined();
     expect(factory.getOpenStreams()).toHaveLength(0);
+
+    localSessionStore.getOrCreateSession(clientPubkey, false);
+    localSessionStore.markInitialized(clientPubkey);
+    const notifications: string[] = [];
+    const tasks: Promise<void>[] = [];
+    const broadcaster = new OutboundNotificationBroadcaster({
+      correlationStore: localCorrelationStore,
+      sessionStore: localSessionStore,
+      subscriptionStore: localSubscriptionStore,
+      sendNotification: async (recipient) => {
+        notifications.push(recipient);
+      },
+      enqueueTask: (task) => {
+        tasks.push(task());
+      },
+      logger: testLogger,
+    });
+
+    await broadcaster.broadcast({
+      jsonrpc: '2.0',
+      method: 'notifications/resources/updated',
+      params: { uri: resourceUri },
+    });
+    await Promise.all(tasks);
+    expect(notifications).toEqual([]);
+
+    localSubscriptionStore.subscribe(clientPubkey, resourceUri);
+    await broadcaster.broadcast({
+      jsonrpc: '2.0',
+      method: 'notifications/resources/updated',
+      params: { uri: resourceUri },
+    });
+    await Promise.all(tasks);
+    expect(notifications).toEqual([clientPubkey]);
   });
 
   test('createWriterIfEnabled reuses the existing writer for the same event id', () => {

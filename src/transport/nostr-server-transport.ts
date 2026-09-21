@@ -355,6 +355,7 @@ export class NostrServerTransport
         await this.outboundResponseRouter.route(response);
       },
       sessionStore: this.sessionStore,
+      subscriptionStore: this.subscriptionStore,
       onClientSessionEvicted: this.onClientSessionEvicted,
       correlationStore: this.correlationStore,
       policy: options.openStream?.policy,
