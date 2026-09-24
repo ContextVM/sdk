@@ -111,6 +111,9 @@ export class ServerInboundCoordinator {
       );
 
       if (!authDecision.allowed) {
+        // A denied pubkey is a revocation: drop its subscriptions now instead
+        // of letting it keep receiving resource updates until session eviction.
+        this.deps.subscriptionStore.removeForClient(event.pubkey);
         this.deps.logger.error(
           `Unauthorized message from ${event.pubkey}, message: ${JSON.stringify(mcpMessage)}. Ignoring.`,
         );
@@ -290,7 +293,11 @@ export class ServerInboundCoordinator {
       ): Promise<boolean> => {
         const mw = middlewares[index];
         if (!mw) {
-          return await this.deps.forwardMessage(msg, event.pubkey);
+          const forwarded = await this.deps.forwardMessage(msg, event.pubkey);
+          if (forwarded) {
+            this.trackSubscription(msg, event.pubkey);
+          }
+          return forwarded;
         }
         let forwarded = false;
         await mw(msg, ctx, async (nextMsg) => {
@@ -368,15 +375,6 @@ export class ServerInboundCoordinator {
     clientPubkey: string,
     wrapKind?: number,
   ): void {
-    const resourceUri = request.params?.uri;
-    if (typeof resourceUri === 'string') {
-      if (request.method === 'resources/subscribe') {
-        this.deps.subscriptionStore.subscribe(clientPubkey, resourceUri);
-      } else if (request.method === 'resources/unsubscribe') {
-        this.deps.subscriptionStore.unsubscribe(clientPubkey, resourceUri);
-      }
-    }
-
     const originalRequestId = request.id;
     request.id = eventId;
 
@@ -420,10 +418,35 @@ export class ServerInboundCoordinator {
         (meta as { stream?: OpenStreamWriter }).stream = openStreamWriter;
       }
       if (inputStream) {
-        (meta as {
-          inputStream?: AsyncIterable<{ value: string; chunkIndex: number }>;
-        }).inputStream = inputStream;
+        (
+          meta as {
+            inputStream?: AsyncIterable<{ value: string; chunkIndex: number }>;
+          }
+        ).inputStream = inputStream;
       }
+    }
+  }
+
+  /**
+   * Records a resource subscription for a request that actually reached the
+   * server. Requests swallowed by middleware never get here, so a dropped
+   * subscribe/unsubscribe cannot leave phantom subscription state behind.
+   */
+  private trackSubscription(
+    message: JSONRPCMessage,
+    clientPubkey: string,
+  ): void {
+    if (!isJSONRPCRequest(message)) {
+      return;
+    }
+    const resourceUri = message.params?.uri;
+    if (typeof resourceUri !== 'string') {
+      return;
+    }
+    if (message.method === 'resources/subscribe') {
+      this.deps.subscriptionStore.subscribe(clientPubkey, resourceUri);
+    } else if (message.method === 'resources/unsubscribe') {
+      this.deps.subscriptionStore.unsubscribe(clientPubkey, resourceUri);
     }
   }
 
