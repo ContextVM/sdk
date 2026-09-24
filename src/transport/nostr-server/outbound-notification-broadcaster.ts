@@ -5,10 +5,16 @@ import {
 import { type Logger } from '../../core/utils/logger.js';
 import { type CorrelationStore } from './correlation-store.js';
 import { type SessionStore } from './session-store.js';
+import {
+  type ResourceSubscriptionMatcher,
+  type SubscriptionStore,
+} from './subscription-store.js';
 
 export interface OutboundNotificationBroadcasterDeps {
   correlationStore: CorrelationStore;
   sessionStore: SessionStore;
+  subscriptionStore: SubscriptionStore;
+  matchesSubResource?: ResourceSubscriptionMatcher;
   sendNotification: (
     clientPubkey: string,
     notification: JSONRPCMessage,
@@ -30,8 +36,44 @@ export class OutboundNotificationBroadcaster {
    */
   public async broadcast(notification: JSONRPCMessage): Promise<void> {
     try {
+      if (
+        isJSONRPCNotification(notification) &&
+        notification.method === 'notifications/resources/updated'
+      ) {
+        const resourceUri = notification.params?.uri;
+        if (typeof resourceUri !== 'string') {
+          this.deps.logger.warn('Resource update missing resource URI');
+          return;
+        }
+
+        const subscribers = this.deps.subscriptionStore.getSubscribersForUpdate(
+          resourceUri,
+          this.deps.matchesSubResource,
+        );
+        if (subscribers.size === 0) {
+          this.deps.logger.warn('No clients subscribed to resource update', {
+            uri: resourceUri,
+          });
+          return;
+        }
+
+        for (const clientPubkey of subscribers) {
+          this.deps.enqueueTask(async () => {
+            try {
+              await this.deps.sendNotification(clientPubkey, notification);
+            } catch (error) {
+              this.deps.logger.error('Error sending resource update', {
+                error: error instanceof Error ? error.message : String(error),
+                clientPubkey,
+                uri: resourceUri,
+              });
+            }
+          });
+        }
+        return;
+      }
+
       // Special handling for progress notifications
-      // TODO: Add handling for `notifications/resources/updated`, as they need to be associated with an id
       if (
         isJSONRPCNotification(notification) &&
         notification.method === 'notifications/progress' &&
