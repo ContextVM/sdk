@@ -236,6 +236,96 @@ describe.serial('NostrServerTransport duplicate response prevention', () => {
     ).toBe(1);
   });
 
+  function makeUnencryptedRequest(
+    id: number,
+    clientSk: Uint8Array = generateSecretKey(),
+    createdAt = 1,
+  ): NostrEvent {
+    const serverPubkey = getPublicKey(
+      Uint8Array.from(Buffer.from('1'.repeat(64), 'hex')),
+    );
+    return finalizeEvent(
+      {
+        kind: 25910,
+        created_at: createdAt,
+        tags: [['p', serverPubkey]],
+        content: JSON.stringify({
+          jsonrpc: '2.0',
+          id,
+          method: 'tools/list',
+          params: {},
+        }),
+      },
+      clientSk,
+    );
+  }
+
+  // A relay delivers a fresh JSON object; a spread copy would also carry
+  // nostr-tools' cached verification flag.
+  const asDeliveredByRelay = (event: NostrEvent): NostrEvent =>
+    JSON.parse(JSON.stringify(event)) as NostrEvent;
+
+  it('processes an unencrypted request only once when several relays deliver it', async () => {
+    const transport = new NostrServerTransport({
+      signer: new PrivateKeySigner('1'.repeat(64)),
+      relayHandler: makeCountingRelayHandler({ publishCalls: 0 }),
+      encryptionMode: EncryptionMode.OPTIONAL,
+    });
+    const onmessage = mock(() => {});
+    transport.onmessage = onmessage;
+    const request = makeUnencryptedRequest(1);
+
+    for (let relay = 0; relay < 3; relay += 1) {
+      await transport['processIncomingEvent'](asDeliveredByRelay(request));
+    }
+
+    expect(onmessage).toHaveBeenCalledTimes(1);
+    expect(
+      transport.getInternalStateForTesting().correlationStore.eventRouteCount,
+    ).toBe(1);
+  });
+
+  it('does not let a bad-signature copy suppress the genuine unencrypted request', async () => {
+    const transport = new NostrServerTransport({
+      signer: new PrivateKeySigner('1'.repeat(64)),
+      relayHandler: makeCountingRelayHandler({ publishCalls: 0 }),
+      encryptionMode: EncryptionMode.DISABLED,
+    });
+    const onmessage = mock(() => {});
+    transport.onmessage = onmessage;
+    const request = makeUnencryptedRequest(1);
+
+    await transport['processIncomingEvent']({
+      ...asDeliveredByRelay(request),
+      sig: '0'.repeat(128),
+    });
+    expect(onmessage).not.toHaveBeenCalled();
+
+    await transport['processIncomingEvent'](asDeliveredByRelay(request));
+    expect(onmessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('still processes distinct unencrypted requests with identical payloads', async () => {
+    const transport = new NostrServerTransport({
+      signer: new PrivateKeySigner('1'.repeat(64)),
+      relayHandler: makeCountingRelayHandler({ publishCalls: 0 }),
+      encryptionMode: EncryptionMode.DISABLED,
+    });
+    const onmessage = mock(() => {});
+    transport.onmessage = onmessage;
+
+    // Same client, same JSON-RPC payload, new signed event (e.g. a retry).
+    const clientSk = generateSecretKey();
+    await transport['processIncomingEvent'](
+      asDeliveredByRelay(makeUnencryptedRequest(1, clientSk)),
+    );
+    await transport['processIncomingEvent'](
+      asDeliveredByRelay(makeUnencryptedRequest(1, clientSk, 2)),
+    );
+
+    expect(onmessage).toHaveBeenCalledTimes(2);
+  });
+
   it('accepts ephemeral gift wrap envelopes (21059) when encryption is required', async () => {
     const counter = { publishCalls: 0 };
 
