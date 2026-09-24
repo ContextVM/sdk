@@ -75,4 +75,47 @@ describe('SubscriptionStore', () => {
       new Set(['client-a']),
     );
   });
+
+  it('matches only exact URIs when no sub-resource matcher is provided', () => {
+    const store = new SubscriptionStore();
+    store.subscribe('client-a', 'resource://repo');
+
+    expect(store.getSubscribersForUpdate('resource://repo')).toEqual(
+      new Set(['client-a']),
+    );
+    expect(store.getSubscribersForUpdate('resource://repo/child')).toEqual(
+      new Set(),
+    );
+  });
+
+  it('uses server-defined sub-resource matching and sends once per client', () => {
+    const store = new SubscriptionStore();
+    store.subscribe('client-a', 'resource://repo');
+    store.subscribe('client-a', 'resource://repo/child');
+    store.subscribe('client-b', 'resource://other');
+    const matchesSubResource = (subscribedUri: string, updatedUri: string) =>
+      updatedUri.startsWith(`${subscribedUri}/`);
+
+    expect(
+      store.getSubscribersForUpdate(
+        'resource://repo/child',
+        matchesSubResource,
+      ),
+    ).toEqual(new Set(['client-a']));
+    expect(
+      store.getSubscribersForUpdate(
+        'resource://repository',
+        matchesSubResource,
+      ),
+    ).toEqual(new Set());
+
+    store.unsubscribe('client-a', 'resource://repo');
+    store.unsubscribe('client-a', 'resource://repo/child');
+    expect(
+      store.getSubscribersForUpdate(
+        'resource://repo/child',
+        matchesSubResource,
+      ),
+    ).toEqual(new Set());
+  });
 });

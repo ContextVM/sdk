@@ -5,12 +5,16 @@ import {
 import { type Logger } from '../../core/utils/logger.js';
 import { type CorrelationStore } from './correlation-store.js';
 import { type SessionStore } from './session-store.js';
-import { type SubscriptionStore } from './subscription-store.js';
+import {
+  type ResourceSubscriptionMatcher,
+  type SubscriptionStore,
+} from './subscription-store.js';
 
 export interface OutboundNotificationBroadcasterDeps {
   correlationStore: CorrelationStore;
   sessionStore: SessionStore;
   subscriptionStore: SubscriptionStore;
+  matchesSubResource?: ResourceSubscriptionMatcher;
   sendNotification: (
     clientPubkey: string,
     notification: JSONRPCMessage,
@@ -42,8 +46,10 @@ export class OutboundNotificationBroadcaster {
           return;
         }
 
-        const subscribers =
-          this.deps.subscriptionStore.getSubscribers(resourceUri);
+        const subscribers = this.deps.subscriptionStore.getSubscribersForUpdate(
+          resourceUri,
+          this.deps.matchesSubResource,
+        );
         if (subscribers.size === 0) {
           this.deps.logger.warn('No clients subscribed to resource update', {
             uri: resourceUri,

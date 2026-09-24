@@ -22,7 +22,10 @@ import { NostrEvent } from 'nostr-tools';
 import { LogLevel } from '../core/utils/logger.js';
 import { withTimeout } from '../core/utils/utils.js';
 import { CorrelationStore } from './nostr-server/correlation-store.js';
-import { SubscriptionStore } from './nostr-server/subscription-store.js';
+import {
+  SubscriptionStore,
+  type ResourceSubscriptionMatcher,
+} from './nostr-server/subscription-store.js';
 import { ClientSession, SessionStore } from './nostr-server/session-store.js';
 import { LruCache } from '../core/utils/lru-cache.js';
 import { ApplesauceRelayPool } from '../relay/applesauce-relay-pool.js';
@@ -59,6 +62,7 @@ import type { InboundMiddlewareFn } from './middleware.js';
 import type { PaymentInteractionPolicy } from '../payments/types.js';
 
 export type { InboundMiddlewareFn } from './middleware.js';
+export type { ResourceSubscriptionMatcher } from './nostr-server/subscription-store.js';
 /**
  * Options for configuring the NostrServerTransport.
  */
@@ -96,6 +100,12 @@ export interface NostrServerTransportOptions extends BaseNostrTransportOptions {
   logLevel?: LogLevel;
   /** Maximum number of client sessions to keep in memory. @default 1000 */
   maxSessions?: number;
+  /**
+   * Resolve server-defined parent/sub-resource relationships for resource updates.
+   * Exact URI subscriptions always match, even when this callback is omitted.
+   * The callback is only called for different subscribed and updated URIs.
+   */
+  matchesSubResource?: ResourceSubscriptionMatcher;
   /**
    * Whether to inject the client's public key into the _meta field of incoming messages.
    * @default false
@@ -450,6 +460,7 @@ export class NostrServerTransport
       correlationStore: this.correlationStore,
       sessionStore: this.sessionStore,
       subscriptionStore: this.subscriptionStore,
+      matchesSubResource: options.matchesSubResource,
       sendNotification: this.sendNotification.bind(this),
       enqueueTask: this.taskQueue.add.bind(this.taskQueue),
       logger: this.logger,

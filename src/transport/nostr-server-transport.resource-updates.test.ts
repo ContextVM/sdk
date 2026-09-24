@@ -32,6 +32,8 @@ test('routes resources/updated only to clients subscribed to that resource', asy
   const serverTransport = new NostrServerTransport({
     signer: new PrivateKeySigner(serverPrivateKey),
     relayHandler: new ApplesauceRelayPool([relay.relayUrl]),
+    matchesSubResource: (subscribedUri, updatedUri) =>
+      updatedUri.startsWith(`${subscribedUri}/`),
   });
   const alphaClient = new Client({ name: 'Alpha client', version: '1.0.0' });
   const betaClient = new Client({ name: 'Beta client', version: '1.0.0' });
@@ -77,11 +79,43 @@ test('routes resources/updated only to clients subscribed to that resource', asy
     expect(alphaUpdates).toEqual(['resource://alpha']);
     expect(betaUpdates).toEqual([]);
 
+    await server.server.sendResourceUpdated({ uri: 'resource://alpha/child' });
+    await sleep(150);
+
+    expect(alphaUpdates).toEqual([
+      'resource://alpha',
+      'resource://alpha/child',
+    ]);
+    expect(betaUpdates).toEqual([]);
+
+    await server.server.sendResourceUpdated({
+      uri: 'resource://alphabet/child',
+    });
+    await sleep(150);
+
+    expect(alphaUpdates).toEqual([
+      'resource://alpha',
+      'resource://alpha/child',
+    ]);
+    expect(betaUpdates).toEqual([]);
+
     await alphaClient.unsubscribeResource({ uri: 'resource://alpha' });
     await server.server.sendResourceUpdated({ uri: 'resource://alpha' });
     await sleep(150);
 
-    expect(alphaUpdates).toEqual(['resource://alpha']);
+    expect(alphaUpdates).toEqual([
+      'resource://alpha',
+      'resource://alpha/child',
+    ]);
+    expect(betaUpdates).toEqual([]);
+
+    await server.server.sendResourceUpdated({ uri: 'resource://alpha/child' });
+    await sleep(150);
+
+    expect(alphaUpdates).toEqual([
+      'resource://alpha',
+      'resource://alpha/child',
+    ]);
     expect(betaUpdates).toEqual([]);
   } finally {
     await alphaClient.close().catch(() => undefined);

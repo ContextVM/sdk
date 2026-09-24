@@ -1,3 +1,9 @@
+/** Decides whether an updated resource is a sub-resource of a subscribed URI. */
+export type ResourceSubscriptionMatcher = (
+  subscribedUri: string,
+  updatedUri: string,
+) => boolean;
+
 /**
  * Tracks resource subscriptions independently from transient request routes.
  */
@@ -55,6 +61,27 @@ export class SubscriptionStore {
     // sessions can be evicted, and a cast at a call site must not be able to
     // mutate subscription state.
     return new Set(this.uriToClients.get(uri));
+  }
+
+  /** Finds subscribers to an update, including server-defined sub-resources. */
+  public getSubscribersForUpdate(
+    updatedUri: string,
+    matchesSubResource?: ResourceSubscriptionMatcher,
+  ): ReadonlySet<string> {
+    const subscribers = new Set(this.uriToClients.get(updatedUri));
+    if (matchesSubResource) {
+      for (const [subscribedUri, clients] of this.uriToClients) {
+        if (
+          subscribedUri !== updatedUri &&
+          matchesSubResource(subscribedUri, updatedUri)
+        ) {
+          for (const clientPubkey of clients) {
+            subscribers.add(clientPubkey);
+          }
+        }
+      }
+    }
+    return subscribers;
   }
 
   public clear(): void {
