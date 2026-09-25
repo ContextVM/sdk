@@ -1,5 +1,15 @@
 # @contextvm/sdk
 
+## 0.14.2
+
+### Patch Changes
+
+- fb54b36: `NostrClientTransport` records an unencrypted inbound event id only after its signature verifies, matching the server pipeline and the client's own encrypted path. Previously a copy with a corrupted signature that arrived first would mark the id, and the genuine copy would then be dropped as a duplicate.
+- 892fcfa: De-duplicate unencrypted inbound events by id on `NostrServerTransport`, as gift-wrapped events already were. The relay pool deliberately forwards every copy, so a plaintext request published to N relays was processed N times, and a non-idempotent tool ran N times for one call. The id is recorded only after the signature check, so a copy with a bad signature cannot suppress the genuine request. Retries that sign a new event in a later second get a new id and are unaffected; a byte-identical repeat of a request within the same second is dropped, the same edge case encrypted requests already had. The same dedup also protects against re-delivery on relay reconnects: subscriptions keep their original `since`, so resubscribes replay events the transport has already processed.
+- 6a59bb3: Floor the explicit-gating `-32042` payment retry at `minRetryDelayMs` (default 1s), mirroring the `-32043` retry. An instantly-satisfied payment callback could retry within the same second as the original request, producing a byte-identical Nostr event that servers de-duplicate by id, leaving the paid request unexecuted.
+- a1bb655: Tighten the resource-subscription lifecycle on `NostrServerTransport`. `resources/subscribe`/`resources/unsubscribe` are now recorded only after the request is actually forwarded to the server, so middleware-dropped requests can no longer leave phantom subscription state behind (and a dropped unsubscribe can never re-add a subscription that never existed). A client's subscriptions are also cleared as soon as the authorization policy rejects it, so a revoked client stops receiving resource updates immediately instead of lingering until session eviction.
+- f2146be: Route `notifications/resources/updated` only to clients subscribed to the matching resource URI. Servers can configure matching for parent/sub-resource relationships.
+
 ## 0.14.1
 
 ### Patch Changes
