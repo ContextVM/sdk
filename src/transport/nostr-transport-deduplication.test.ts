@@ -207,6 +207,51 @@ describe('gift-wrap pre-decrypt deduplication', () => {
     expect(received).toHaveLength(1);
   });
 
+  test('client: does not let a bad-signature copy suppress the genuine plain event', async () => {
+    const serverSk = generateSecretKey();
+    const serverPubkey = getPublicKey(serverSk);
+    const clientPriv = '1'.repeat(64);
+
+    const transport = new NostrClientTransport({
+      signer: new PrivateKeySigner(clientPriv),
+      relayHandler: makeNoopRelayHandler(),
+      serverPubkey,
+      encryptionMode: EncryptionMode.DISABLED,
+    });
+
+    const received: unknown[] = [];
+    transport.onmessage = (msg) => received.push(msg);
+
+    const plainEvent = finalizeEvent(
+      {
+        kind: 25910,
+        created_at: 1,
+        tags: [
+          ['p', getPublicKey(Uint8Array.from(Buffer.from(clientPriv, 'hex')))],
+        ],
+        content: JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'notifications/test',
+        }),
+      },
+      serverSk,
+    );
+
+    // A relay delivers a fresh JSON object; a spread copy would also carry
+    // nostr-tools' cached verification flag.
+    const asDeliveredByRelay = (event: NostrEvent): NostrEvent =>
+      JSON.parse(JSON.stringify(event)) as NostrEvent;
+
+    await transport['processIncomingEvent']({
+      ...asDeliveredByRelay(plainEvent),
+      sig: '0'.repeat(128),
+    });
+    expect(received).toHaveLength(0);
+
+    await transport['processIncomingEvent'](asDeliveredByRelay(plainEvent));
+    expect(received).toHaveLength(1);
+  });
+
   test('client: processes a decrypted inner event only once even if delivered in multiple gift-wrap envelopes', async () => {
     decryptCallCount = 0;
 
