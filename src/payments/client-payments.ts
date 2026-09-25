@@ -22,6 +22,7 @@ import type {
 } from './types.js';
 import { LruCache } from '../core/utils/lru-cache.js';
 import { createLogger } from '../core/utils/logger.js';
+import { sleep } from '../core/utils/utils.js';
 import type {
   OriginalRequestContext,
   PendingRequest,
@@ -427,6 +428,10 @@ export function withClientPayments(
             requestEventId,
             method: rawRequest.method,
           });
+          // Same floor as the -32043 retry: a sub-second retry can produce a
+          // byte-identical Nostr event (created_at has second resolution),
+          // which servers de-duplicate by event id.
+          await sleep(minRetryDelayMs);
           await transport.send(rawRequest);
           return;
         }
