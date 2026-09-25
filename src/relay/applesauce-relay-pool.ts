@@ -480,13 +480,14 @@ export class ApplesauceRelayPool implements RelayHandler {
     // We deliberately subscribe to the raw `RelayGroup.req()` message stream
     // and forward EVERY event without deduplication. Dedup is intentionally NOT
     // performed at the relay layer:
-    //   - The transport layer already deduplicates gift-wrap envelopes and
-    //     decrypted inner events via its own `seenEventIds` cache, with
-    //     protocol-aware semantics.
-    //   - The explicit-gating payment flow republishes the SAME request event
-    //     id after payment and relies on the server re-observing it. Relay-
-    //     layer dedup by event id (whether applesauce 6.0.3's `distinct()` or a
-    //     local `Set`) silently swallows that retry and deadlocks the flow.
+    //   - The transport layer already deduplicates gift-wrap envelopes,
+    //     decrypted inner events and unencrypted events via its own
+    //     `seenEventIds` cache, with protocol-aware semantics.
+    //   - Payment retries re-sign the request (floored at `minRetryDelayMs` in
+    //     `client-payments` so a sub-second retry never reuses an event id),
+    //     and rely on the server re-observing it. Relay-layer dedup by event id
+    //     (whether applesauce 6.0.3's `distinct()` or a local `Set`) silently
+    //     swallows that retry and deadlocks the flow.
     const sub = this.relayGroup
       .req(filters, { reconnect: Infinity, resubscribe: Infinity })
       .subscribe({
