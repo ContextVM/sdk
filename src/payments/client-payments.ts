@@ -22,6 +22,7 @@ import type {
 } from './types.js';
 import { LruCache } from '../core/utils/lru-cache.js';
 import { createLogger } from '../core/utils/logger.js';
+import { sleep } from '../core/utils/utils.js';
 import type {
   OriginalRequestContext,
   PendingRequest,
@@ -68,8 +69,9 @@ export interface ClientPaymentsOptions {
    */
   defaultPaymentTtlMs?: number;
   /**
-   * Minimum delay before a `-32043` Payment Pending retry is re-sent
-   * (milliseconds), applied after the server-provided `retry_after` backoff.
+   * Minimum delay before an explicit-gating retry (`-32042` after a satisfied
+   * payment, or a `-32043` Payment Pending retry) is re-sent (milliseconds).
+   * For `-32043` it is applied after the server-provided `retry_after` backoff.
    *
    * Guards against `retry_after: 0`: an immediate retry within the same second
    * can produce a byte-identical Nostr event (same content, same tags, same
@@ -427,6 +429,10 @@ export function withClientPayments(
             requestEventId,
             method: rawRequest.method,
           });
+          // Same floor as the -32043 retry: a sub-second retry can produce a
+          // byte-identical Nostr event (created_at has second resolution),
+          // which servers de-duplicate by event id.
+          await sleep(minRetryDelayMs);
           await transport.send(rawRequest);
           return;
         }

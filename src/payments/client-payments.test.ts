@@ -854,6 +854,7 @@ describe('withClientPayments()', () => {
       handlers: [{ pmi: 'fake', async handle(): Promise<void> {} }],
       paymentInteraction: 'explicit_gating',
       onPaymentRequired: async () => ({ paid: true }),
+      minRetryDelayMs: 1,
     });
     paid.onmessage = (msg) => observed.push(msg);
     await paid.start();
@@ -883,8 +884,8 @@ describe('withClientPayments()', () => {
       { eventId: 'evt4', correlatedEventId: 'req-event-id-3' },
     );
 
-    // Wait for async processing
-    await new Promise((r) => setTimeout(r, 0));
+    // Wait for async processing (retry is floored at minRetryDelayMs)
+    await new Promise((r) => setTimeout(r, 25));
 
     // Error should not be delivered to caller
     expect(observed).toHaveLength(0);

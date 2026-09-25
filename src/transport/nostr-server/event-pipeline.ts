@@ -169,6 +169,17 @@ export class ServerEventPipeline {
       );
       return null;
     }
+
+    // Each relay delivers its own copy of a request. Mark only after the
+    // signature check so a bad-signature copy cannot suppress the real one.
+    if (this.deps.seenEventIds.has(event.id)) {
+      this.deps.logger.debug('Skipping duplicate unencrypted event', {
+        eventId: event.id,
+      });
+      return null;
+    }
+    this.deps.seenEventIds.set(event.id, true);
+
     return { event, isEncrypted: false };
   }
 }
