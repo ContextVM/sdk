@@ -69,8 +69,9 @@ export interface ClientPaymentsOptions {
    */
   defaultPaymentTtlMs?: number;
   /**
-   * Minimum delay before a `-32043` Payment Pending retry is re-sent
-   * (milliseconds), applied after the server-provided `retry_after` backoff.
+   * Minimum delay before an explicit-gating retry (`-32042` after a satisfied
+   * payment, or a `-32043` Payment Pending retry) is re-sent (milliseconds).
+   * For `-32043` it is applied after the server-provided `retry_after` backoff.
    *
    * Guards against `retry_after: 0`: an immediate retry within the same second
    * can produce a byte-identical Nostr event (same content, same tags, same

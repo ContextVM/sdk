@@ -885,7 +885,7 @@ describe('withClientPayments()', () => {
     );
 
     // Wait for async processing (retry is floored at minRetryDelayMs)
-    await new Promise((r) => setTimeout(r, 10));
+    await new Promise((r) => setTimeout(r, 25));
 
     // Error should not be delivered to caller
     expect(observed).toHaveLength(0);
