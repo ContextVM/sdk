@@ -1245,6 +1245,47 @@ describe('NostrClientTransport instance shape', () => {
     ]);
   });
 
+  test('getOperationalRelayUrls returns configured URLs before start and resolved hints after', async () => {
+    const configuredUrl = 'wss://configured.example.com';
+    const relayHintUrl = 'wss://relay.example.com';
+    const transport = new NostrClientTransport({
+      serverPubkey: nip19.nprofileEncode({
+        pubkey: 'b'.repeat(64),
+        relays: [relayHintUrl],
+      }),
+      signer: new PrivateKeySigner('a'.repeat(64)),
+      relayHandler: [configuredUrl],
+    });
+
+    expect(transport.getOperationalRelayUrls()).toEqual([configuredUrl]);
+
+    await transport['resolveOperationalRelayHandler']();
+
+    // Configured URLs win: resolution must not swap a configured handler.
+    expect(transport.getOperationalRelayUrls()).toEqual([configuredUrl]);
+  });
+
+  test('getOperationalRelayUrls returns resolved URLs after resolution swaps the handler', async () => {
+    const relayHintUrl = 'wss://relay.example.com';
+    const transport = new NostrClientTransport({
+      serverPubkey: nip19.nprofileEncode({
+        pubkey: 'b'.repeat(64),
+        relays: [relayHintUrl],
+      }),
+      signer: new PrivateKeySigner('a'.repeat(64)),
+      relayHandler: [],
+    });
+
+    expect(transport.getOperationalRelayUrls()).toEqual([]);
+
+    await transport['resolveOperationalRelayHandler']();
+
+    expect(transport.getOperationalRelayUrls()).toEqual([relayHintUrl]);
+    // Second resolution is a no-op: the set is stable after the first one.
+    await transport['resolveOperationalRelayHandler']();
+    expect(transport.getOperationalRelayUrls()).toEqual([relayHintUrl]);
+  });
+
   test('uses bootstrap discovery relays by default when none are provided', () => {
     const transport = new NostrClientTransport({
       serverPubkey: 'b'.repeat(64),
