@@ -560,6 +560,17 @@ export class NostrClientTransport
   }
 
   /**
+   * Gets the transport's current operational relay URLs.
+   *
+   * Returns configured URLs before `start()`; once `start()` resolves, the
+   * final set after relay resolution (hints, kind-10002 discovery, fallback
+   * probe) — stable for the transport's lifetime.
+   */
+  public getOperationalRelayUrls(): string[] {
+    return this.relayHandler.getRelayUrls?.() ?? [];
+  }
+
+  /**
    * Gets the server's initialize event if received.
    * @returns The server initialize event or undefined
    */
