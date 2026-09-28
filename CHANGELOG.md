@@ -1,5 +1,11 @@
 # @contextvm/sdk
 
+## 0.14.3
+
+### Patch Changes
+
+- 3383631: `NostrClientTransport` now exposes `getOperationalRelayUrls()`, returning the current handler's relay URLs: configured URLs before `start()`, and the final set after relay resolution (server-identity hints, kind-10002 discovery, fallback probe) once `start()` resolves. Callers can read the resolved set once and persist it, so future sessions construct a plain configured client without re-paying discovery.
+
 ## 0.14.2
 
 ### Patch Changes
