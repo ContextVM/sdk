@@ -129,6 +129,14 @@ export const NOSTR_TAGS = {
 export const DEFAULT_LRU_SIZE = 5000;
 
 /**
+ * Capacity of the transports' `seenEventIds` dedup caches. Sized to cover the
+ * 30-minute reconnect replay window (see `RESUBSCRIBE_SINCE_GUARD_SECONDS`):
+ * each encrypted request consumes two entries (gift-wrap envelope + decrypted
+ * inner event), so 40,000 entries hold ~20,000 encrypted requests.
+ */
+export const DEFAULT_DEDUP_CACHE_SIZE = 40_000;
+
+/**
  * Default timeout for network/relay operations (30 seconds).
  */
 export const DEFAULT_TIMEOUT_MS = 30_000;

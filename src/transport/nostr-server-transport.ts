@@ -16,7 +16,7 @@ import {
   CTXVM_MESSAGES_KIND,
   DEFAULT_TIMEOUT_MS,
   NOSTR_TAGS,
-  DEFAULT_LRU_SIZE,
+  DEFAULT_DEDUP_CACHE_SIZE,
 } from '../core/index.js';
 import { NostrEvent } from 'nostr-tools';
 import { LogLevel } from '../core/utils/logger.js';
@@ -220,7 +220,7 @@ export class NostrServerTransport
    *
    * Used for gift-wrap envelopes (outer event ids) and decrypted inner events.
    */
-  private readonly seenEventIds = new LruCache<true>(DEFAULT_LRU_SIZE);
+  private readonly seenEventIds = new LruCache<true>(DEFAULT_DEDUP_CACHE_SIZE);
 
   /** Receives inbound oversized-transfer frames from clients (client→server requests). */
   private readonly oversizedReceiver: OversizedTransferReceiver;

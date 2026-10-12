@@ -10,6 +10,7 @@ import type { Transport } from '@contextvm/mcp-sdk/shared/transport';
 import {
   DEFAULT_BOOTSTRAP_RELAY_URLS,
   DEFAULT_TIMEOUT_MS,
+  DEFAULT_DEDUP_CACHE_SIZE,
   DEFAULT_LRU_SIZE,
   INITIALIZE_METHOD,
 } from '../core/index.js';
@@ -191,7 +192,7 @@ export class NostrClientTransport
    *
    * Used for gift-wrap envelopes (outer event ids). Kept as a bounded LRU.
    */
-  private readonly seenEventIds = new LruCache<true>(DEFAULT_LRU_SIZE);
+  private readonly seenEventIds = new LruCache<true>(DEFAULT_DEDUP_CACHE_SIZE);
 
   /**
    * Creates a new NostrClientTransport instance.

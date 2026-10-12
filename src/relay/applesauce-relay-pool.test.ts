@@ -10,7 +10,11 @@ import {
   type UnsignedEvent,
 } from 'nostr-tools';
 import { PrivateKeySigner } from '../signer/private-key-signer.js';
-import { ApplesauceRelayPool, PING_FILTER } from './applesauce-relay-pool.js';
+import {
+  ApplesauceRelayPool,
+  PING_FILTER,
+  RESUBSCRIBE_SINCE_GUARD_SECONDS,
+} from './applesauce-relay-pool.js';
 import { Relay, RelayGroup } from 'applesauce-relay';
 import { DEFAULT_TIMEOUT_MS } from '../core/constants.js';
 import {
@@ -30,6 +34,7 @@ type TestableApplesauceRelayPool = Omit<ApplesauceRelayPool, 'relayGroup'> & {
       onEvent: (event: NostrEvent) => void;
       onEose?: () => void;
       unsubscribe?: () => void;
+      resumeWatermark?: number;
     }
   >;
   rebuildInFlight?: Promise<void>;
@@ -712,31 +717,31 @@ describe('ApplesauceRelayPool Integration', () => {
 
       // Temporarily disable applesauce's auto-recovery for this test
       const testPool = relayPool as unknown as {
-        createSubscription: (
-          filters: Filter[],
-          onEvent: (event: NostrEvent) => void,
-          onEose?: () => void,
-        ) => () => void;
+        createSubscription: (state: {
+          filters: Filter[];
+          onEvent: (event: NostrEvent) => void;
+          onEose?: () => void;
+        }) => () => void;
         relayGroup: RelayGroup;
       };
-      testPool.createSubscription = function (filters, onEvent, onEose) {
+      testPool.createSubscription = function (state) {
         // Mirror production shape: subscribe to the raw req() message stream so
         // the test override exercises the same dispatch path as the pool. No
         // dedup (see production createSubscription for rationale).
         const sub = testPool.relayGroup
-          .req(filters, {
+          .req(state.filters, {
             reconnect: false, // Disable applesauce recovery
             resubscribe: false, // Disable applesauce recovery
           })
           .subscribe({
             next: (message) => {
               if (message.type === 'EOSE') {
-                onEose?.();
+                state.onEose?.();
                 return;
               }
 
               if (message.type === 'EVENT') {
-                onEvent(message.event);
+                state.onEvent(message.event);
               }
             },
             error: () => {},
@@ -1281,4 +1286,219 @@ describe('ApplesauceRelayPool rebuild failure containment', () => {
       await pool.disconnect();
     }
   }, 10_000);
+});
+
+describe('ApplesauceRelayPool reconnect resume', () => {
+  let stopRelay: (() => void) | undefined;
+  let relayUrl: string;
+
+  beforeAll(async () => {
+    const relay = await spawnMockRelayWithEnv({ DISABLE_MOCK_RESPONSES: 'true' });
+    stopRelay = relay.stop;
+    relayUrl = relay.relayUrl;
+  });
+
+  afterAll(() => {
+    stopRelay?.();
+  });
+
+  /** Signs a kind-1 event with a pinned created_at and a unique tag. */
+  async function signTaggedEvent(
+    signer: PrivateKeySigner,
+    pubkey: string,
+    tag: string,
+    createdAt: number,
+    content: string,
+  ): Promise<NostrEvent> {
+    return signer.signEvent({
+      kind: 1,
+      pubkey,
+      created_at: createdAt,
+      tags: [['t', tag]],
+      content,
+    });
+  }
+
+  /** Polls until the condition holds or the deadline passes. */
+  async function waitFor(
+    condition: () => boolean,
+    timeoutMs: number,
+  ): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (!condition() && Date.now() < deadline) {
+      await sleep(10);
+    }
+  }
+
+  test.serial(
+    'restored subscriptions re-request only the guard window instead of the whole session',
+    async () => {
+      const now = Math.floor(Date.now() / 1000);
+      const privateKey = generateSecretKey();
+      const signer = new PrivateKeySigner(bytesToHex(privateKey));
+      const pubkey = getPublicKey(privateKey);
+      const tag = `resume-window-${Date.now()}`;
+      const oldEvent = await signTaggedEvent(
+        signer,
+        pubkey,
+        tag,
+        now - RESUBSCRIBE_SINCE_GUARD_SECONDS * 2,
+        'old',
+      );
+      const newEvent = await signTaggedEvent(signer, pubkey, tag, now, 'new');
+
+      const pool = new ApplesauceRelayPool([relayUrl]);
+      await pool.connect();
+      await pool.publish(oldEvent);
+      await pool.publish(newEvent);
+
+      const received: NostrEvent[] = [];
+      let eoseCount = 0;
+      await pool.subscribe(
+        [
+          {
+            kinds: [1],
+            '#t': [tag],
+            since: now - RESUBSCRIBE_SINCE_GUARD_SECONDS * 4,
+          },
+        ],
+        (event) => {
+          received.push(event);
+        },
+        () => {
+          eoseCount += 1;
+        },
+      );
+      await waitFor(() => received.length >= 2, 5_000);
+      expect(received.map((e) => e.id).sort()).toEqual(
+        [oldEvent.id, newEvent.id].sort(),
+      );
+
+      const testPool = pool as unknown as TestableApplesauceRelayPool;
+      testPool.rebuild('test-resume-window');
+      await testPool.rebuildInFlight;
+
+      // The restored subscription ends its replay with an EOSE of its own.
+      await waitFor(() => eoseCount >= 2, 5_000);
+      expect(eoseCount).toBeGreaterThanOrEqual(2);
+
+      // Only events inside the guard window are re-requested after the
+      // restore; the older event must not be replayed (and thus not
+      // re-dispatched).
+      expect(received.slice(2).map((e) => e.id)).toEqual([newEvent.id]);
+
+      await pool.disconnect();
+    },
+    15_000,
+  );
+
+  test.serial(
+    'future-dated events do not advance the restore point',
+    async () => {
+      const now = Math.floor(Date.now() / 1000);
+      const privateKey = generateSecretKey();
+      const signer = new PrivateKeySigner(bytesToHex(privateKey));
+      const pubkey = getPublicKey(privateKey);
+      const tag = `resume-clamp-${Date.now()}`;
+      const oldEvent = await signTaggedEvent(
+        signer,
+        pubkey,
+        tag,
+        now - RESUBSCRIBE_SINCE_GUARD_SECONDS * 2,
+        'old',
+      );
+      // Junk with a far-future created_at must not push `since` past real
+      // traffic: if it did, the restore would drop everything and the old
+      // event would not be replayed below.
+      const futureEvent = await signTaggedEvent(
+        signer,
+        pubkey,
+        tag,
+        now + RESUBSCRIBE_SINCE_GUARD_SECONDS * 48,
+        'future',
+      );
+
+      const pool = new ApplesauceRelayPool([relayUrl]);
+      await pool.connect();
+      await pool.publish(oldEvent);
+      await pool.publish(futureEvent);
+
+      const received: NostrEvent[] = [];
+      let eoseCount = 0;
+      await pool.subscribe(
+        [
+          {
+            kinds: [1],
+            '#t': [tag],
+            since: now - RESUBSCRIBE_SINCE_GUARD_SECONDS * 4,
+          },
+        ],
+        (event) => {
+          received.push(event);
+        },
+        () => {
+          eoseCount += 1;
+        },
+      );
+      await waitFor(() => received.length >= 2, 5_000);
+
+      const testPool = pool as unknown as TestableApplesauceRelayPool;
+      testPool.rebuild('test-resume-clamp');
+      await testPool.rebuildInFlight;
+      await waitFor(() => eoseCount >= 2, 5_000);
+
+      const replayed = received.slice(2).map((e) => e.id);
+      expect(replayed).toContain(oldEvent.id);
+      expect(replayed).toContain(futureEvent.id);
+
+      await pool.disconnect();
+    },
+    15_000,
+  );
+
+  test.serial(
+    'history-seeking filters without since are restored unchanged',
+    async () => {
+      const now = Math.floor(Date.now() / 1000);
+      const privateKey = generateSecretKey();
+      const signer = new PrivateKeySigner(bytesToHex(privateKey));
+      const pubkey = getPublicKey(privateKey);
+      const tag = `resume-nosince-${Date.now()}`;
+      const oldEvent = await signTaggedEvent(
+        signer,
+        pubkey,
+        tag,
+        now - RESUBSCRIBE_SINCE_GUARD_SECONDS * 2,
+        'old',
+      );
+
+      const pool = new ApplesauceRelayPool([relayUrl]);
+      await pool.connect();
+      await pool.publish(oldEvent);
+
+      const received: NostrEvent[] = [];
+      let eoseCount = 0;
+      await pool.subscribe(
+        [{ kinds: [1], '#t': [tag] }],
+        (event) => {
+          received.push(event);
+        },
+        () => {
+          eoseCount += 1;
+        },
+      );
+      await waitFor(() => received.length >= 1, 5_000);
+
+      const testPool = pool as unknown as TestableApplesauceRelayPool;
+      testPool.rebuild('test-resume-nosince');
+      await testPool.rebuildInFlight;
+      await waitFor(() => eoseCount >= 2, 5_000);
+
+      // A since-less filter seeks history: the whole store must replay again.
+      expect(received.map((e) => e.id)).toEqual([oldEvent.id, oldEvent.id]);
+
+      await pool.disconnect();
+    },
+    15_000,
+  );
 });
