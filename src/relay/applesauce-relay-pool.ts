@@ -10,7 +10,11 @@ import { createLogger } from '../core/utils/logger.js';
 import { sleep } from '../core/utils/utils.js';
 import { ensureWebSocket } from '../core/utils/websocket.js';
 import {
+  defer,
   lastValueFrom,
+  merge,
+  NEVER,
+  of,
   Subscription,
   takeUntil,
   timer,
@@ -522,10 +526,11 @@ export class ApplesauceRelayPool implements RelayHandler {
     //     (whether applesauce 6.0.3's `distinct()` or a local `Set`) silently
     //     swallows that retry and deadlocks the flow.
     const trackResumeWatermark = (event: NostrEvent): void => {
-      // Future-dated junk must not move the restore point past real traffic;
-      // its created_at says nothing about how far the relay's stream advanced.
+      // Only timestamps at or below the local clock advance the watermark:
+      // a rejected envelope with a near-future created_at must not push the
+      // restore point past unseen requests from slower clocks.
       const now = Math.floor(Date.now() / 1000);
-      if (event.created_at <= now + RESUBSCRIBE_SINCE_GUARD_SECONDS) {
+      if (event.created_at <= now) {
         state.resumeWatermark = Math.max(
           state.resumeWatermark ?? 0,
           event.created_at,
@@ -534,11 +539,20 @@ export class ApplesauceRelayPool implements RelayHandler {
       state.onEvent(event);
     };
 
+    // Deferred filter stream: applesauce-relay evaluates a filter function
+    // once at req() construction and connection retries reuse that result, so
+    // each REQ (re)send — initial, retry after a connection drop, resubscribe
+    // after CLOSED, rebuild — re-subscribes this input and picks up the
+    // current resume point.
+    const filtersInput = merge(
+      defer(() =>
+        of(buildResumeFilters(state.filters, state.resumeWatermark)),
+      ),
+      NEVER,
+    );
+
     const sub = this.relayGroup
-      .req(
-        () => buildResumeFilters(state.filters, state.resumeWatermark),
-        { reconnect: Infinity, resubscribe: Infinity },
-      )
+      .req(filtersInput, { reconnect: Infinity, resubscribe: Infinity })
       .subscribe({
         next: (message) => {
           if (message.type === 'EOSE') {

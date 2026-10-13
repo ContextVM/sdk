@@ -1393,13 +1393,13 @@ describe('ApplesauceRelayPool reconnect resume', () => {
   );
 
   test.serial(
-    'future-dated events do not advance the restore point',
+    'automatic recovery after a connection drop re-requests only the guard window',
     async () => {
       const now = Math.floor(Date.now() / 1000);
       const privateKey = generateSecretKey();
       const signer = new PrivateKeySigner(bytesToHex(privateKey));
       const pubkey = getPublicKey(privateKey);
-      const tag = `resume-clamp-${Date.now()}`;
+      const tag = `resume-auto-${Date.now()}`;
       const oldEvent = await signTaggedEvent(
         signer,
         pubkey,
@@ -1407,21 +1407,87 @@ describe('ApplesauceRelayPool reconnect resume', () => {
         now - RESUBSCRIBE_SINCE_GUARD_SECONDS * 2,
         'old',
       );
-      // Junk with a far-future created_at must not push `since` past real
-      // traffic: if it did, the restore would drop everything and the old
-      // event would not be replayed below.
-      const futureEvent = await signTaggedEvent(
+      const newEvent = await signTaggedEvent(signer, pubkey, tag, now, 'new');
+
+      const relay = await spawnMockRelayWithEnv({ DISABLE_MOCK_RESPONSES: 'true' });
+      try {
+        // Fast reconnect backoff; liveness pings disabled so only applesauce's
+        // automatic recovery can restore the subscription — no rebuild().
+        const pool = new ApplesauceRelayPool([relay.relayUrl], {
+          reconnectBaseDelayMs: 200,
+          reconnectMaxDelayMs: 500,
+          pingFrequencyMs: 300_000,
+        });
+        await pool.connect();
+        await pool.publish(oldEvent);
+        await pool.publish(newEvent);
+
+        const received: NostrEvent[] = [];
+        let eoseCount = 0;
+        await pool.subscribe(
+          [
+            {
+              kinds: [1],
+              '#t': [tag],
+              since: now - RESUBSCRIBE_SINCE_GUARD_SECONDS * 4,
+            },
+          ],
+          (event) => {
+            received.push(event);
+          },
+          () => {
+            eoseCount += 1;
+          },
+        );
+        await waitFor(() => received.length >= 2, 5_000);
+
+        // Unclean drop: applesauce's reconnect retry re-sends the REQ
+        // without any pool rebuild.
+        relay.relay.pause();
+        await sleep(300);
+        relay.relay.resume();
+
+        // The re-sent REQ replays stored events and ends with its own EOSE.
+        await waitFor(() => eoseCount >= 2, 10_000);
+        expect(eoseCount).toBeGreaterThanOrEqual(2);
+
+        // The recovered subscription must not re-request the old event...
+        expect(received.filter((e) => e.id === oldEvent.id).length).toBe(1);
+        // ...while the recent one is replayed (proves recovery actually ran).
+        expect(
+          received.filter((e) => e.id === newEvent.id).length,
+        ).toBeGreaterThanOrEqual(2);
+
+        await pool.disconnect();
+      } finally {
+        relay.stop();
+      }
+    },
+    20_000,
+  );
+
+  test.serial(
+    'a near-future envelope cannot push the restore point past unseen requests',
+    async () => {
+      const now = Math.floor(Date.now() / 1000);
+      const privateKey = generateSecretKey();
+      const signer = new PrivateKeySigner(bytesToHex(privateKey));
+      const pubkey = getPublicKey(privateKey);
+      const tag = `resume-clamp-${Date.now()}`;
+      // Just inside the future-time allowance the watermark used to accept:
+      // the transport rejects such envelopes, yet they must not move the
+      // restore point past requests from slower clocks.
+      const junkEvent = await signTaggedEvent(
         signer,
         pubkey,
         tag,
-        now + RESUBSCRIBE_SINCE_GUARD_SECONDS * 48,
-        'future',
+        now + RESUBSCRIBE_SINCE_GUARD_SECONDS - 10,
+        'junk',
       );
 
       const pool = new ApplesauceRelayPool([relayUrl]);
       await pool.connect();
-      await pool.publish(oldEvent);
-      await pool.publish(futureEvent);
+      await pool.publish(junkEvent);
 
       const received: NostrEvent[] = [];
       let eoseCount = 0;
@@ -1440,16 +1506,28 @@ describe('ApplesauceRelayPool reconnect resume', () => {
           eoseCount += 1;
         },
       );
-      await waitFor(() => received.length >= 2, 5_000);
+      await waitFor(() => received.length >= 1, 5_000);
 
       const testPool = pool as unknown as TestableApplesauceRelayPool;
       testPool.rebuild('test-resume-clamp');
       await testPool.rebuildInFlight;
       await waitFor(() => eoseCount >= 2, 5_000);
 
-      const replayed = received.slice(2).map((e) => e.id);
-      expect(replayed).toContain(oldEvent.id);
-      expect(replayed).toContain(futureEvent.id);
+      // A request from a slower clock, published after the restore, must
+      // still match the restored filter (live delivery applies it too).
+      const slowEvent = await signTaggedEvent(
+        signer,
+        pubkey,
+        tag,
+        now - 60,
+        'slow',
+      );
+      await pool.publish(slowEvent);
+      await waitFor(
+        () => received.some((e) => e.id === slowEvent.id),
+        5_000,
+      );
+      expect(received.some((e) => e.id === slowEvent.id)).toBe(true);
 
       await pool.disconnect();
     },
