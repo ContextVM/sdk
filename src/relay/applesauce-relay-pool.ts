@@ -10,7 +10,11 @@ import { createLogger } from '../core/utils/logger.js';
 import { sleep } from '../core/utils/utils.js';
 import { ensureWebSocket } from '../core/utils/websocket.js';
 import {
+  defer,
   lastValueFrom,
+  merge,
+  NEVER,
+  of,
   Subscription,
   takeUntil,
   timer,
@@ -30,6 +34,42 @@ export const PING_FILTER: Filter = {
   limit: 0,
 };
 
+/**
+ * How far back a restored subscription re-requests stored events, measured
+ * from the newest `created_at` observed on it. Sits well above the payment
+ * TTLs documented in CEP-8 (600s examples) so same-event retries of the
+ * transparent lifecycle (CEP-8 idempotency) stay deliverable across
+ * reconnects.
+ */
+export const RESUBSCRIBE_SINCE_GUARD_SECONDS = 1800;
+
+/**
+ * Advances `since` on filters that already carry one so a restored
+ * subscription re-requests only the guard window instead of the whole
+ * session (whole-session relay replay after reconnect re-dispatched every
+ * stored request past the transport dedup horizon — issue #105). Filters
+ * without `since` are history-seeking and pass through unchanged.
+ */
+function buildResumeFilters(
+  filters: Filter[],
+  resumeWatermark: number | undefined,
+): Filter[] {
+  if (resumeWatermark === undefined) {
+    return filters;
+  }
+  return filters.map((filter) =>
+    filter.since === undefined
+      ? filter
+      : {
+          ...filter,
+          since: Math.max(
+            filter.since,
+            resumeWatermark - RESUBSCRIBE_SINCE_GUARD_SECONDS,
+          ),
+        },
+  );
+}
+
 /** Subscription intent stored for replay after rebuild */
 type SubscriptionDescriptor = {
   id: string;
@@ -41,6 +81,8 @@ type SubscriptionDescriptor = {
 type SubscriptionState = SubscriptionDescriptor & {
   /** Runtime unsubscribe handle for the currently active RxJS subscription (if started). */
   unsubscribe?: () => void;
+  /** Newest `created_at` at or below the local clock; drives the `since` used on restore. */
+  resumeWatermark?: number;
 };
 
 /** How one relay's per-attempt publish ladder settled. */
@@ -462,17 +504,12 @@ export class ApplesauceRelayPool implements RelayHandler {
 
   /**
    * Creates a subscription wrapper around the RelayGroup's subscription method.
-   * @param filters - Array of filters to subscribe to.
-   * @param onEvent - Callback function for received events.
-   * @param onEose - Optional callback function for end-of-stream events.
+   * @param state - Subscription descriptor; its filters are re-evaluated on
+   * every REQ send so restores pick up the advanced `since`.
    * @returns Object with unsubscribe method.
    */
-  private createSubscription(
-    filters: Filter[],
-    onEvent: (event: NostrEvent) => void,
-    onEose?: () => void,
-  ): () => void {
-    logger.debug('Creating subscription', { filters });
+  private createSubscription(state: SubscriptionState): () => void {
+    logger.debug('Creating subscription', { filters: state.filters });
 
     // NOTE: applesauce-relay 6.0.3 changed `RelayGroup.subscription()` to emit
     // only deduplicated NostrEvents and no longer surfaces EOSE markers.
@@ -488,14 +525,40 @@ export class ApplesauceRelayPool implements RelayHandler {
     //     and rely on the server re-observing it. Relay-layer dedup by event id
     //     (whether applesauce 6.0.3's `distinct()` or a local `Set`) silently
     //     swallows that retry and deadlocks the flow.
+    const trackResumeWatermark = (event: NostrEvent): void => {
+      // Only timestamps at or below the local clock advance the watermark:
+      // a rejected envelope with a near-future created_at must not push the
+      // restore point past unseen requests from slower clocks.
+      const now = Math.floor(Date.now() / 1000);
+      if (event.created_at <= now) {
+        state.resumeWatermark = Math.max(
+          state.resumeWatermark ?? 0,
+          event.created_at,
+        );
+      }
+      state.onEvent(event);
+    };
+
+    // Deferred filter stream: applesauce-relay evaluates a filter function
+    // once at req() construction and connection retries reuse that result, so
+    // each REQ (re)send — initial, retry after a connection drop, resubscribe
+    // after CLOSED, rebuild — re-subscribes this input and picks up the
+    // current resume point.
+    const filtersInput = merge(
+      defer(() =>
+        of(buildResumeFilters(state.filters, state.resumeWatermark)),
+      ),
+      NEVER,
+    );
+
     const sub = this.relayGroup
-      .req(filters, { reconnect: Infinity, resubscribe: Infinity })
+      .req(filtersInput, { reconnect: Infinity, resubscribe: Infinity })
       .subscribe({
         next: (message) => {
           if (message.type === 'EOSE') {
-            onEose?.();
+            state.onEose?.();
           } else if (message.type === 'EVENT') {
-            onEvent(message.event);
+            trackResumeWatermark(message.event);
           }
           // OPEN / CLOSED / ERROR are intentionally ignored; the old
           // `subscription()` filtered them out as well.
@@ -528,7 +591,7 @@ export class ApplesauceRelayPool implements RelayHandler {
     const id = `sub:${Date.now()}:${Math.random().toString(16).slice(2)}`;
 
     const state: SubscriptionState = { id, filters, onEvent, onEose };
-    state.unsubscribe = this.createSubscription(filters, onEvent, onEose);
+    state.unsubscribe = this.createSubscription(state);
     this.subscriptions.set(id, state);
 
     // Start ping monitor lazily on first subscription
@@ -836,11 +899,7 @@ export class ApplesauceRelayPool implements RelayHandler {
       // Replay all stored subscription descriptors
       // Note: New subscriptions added during rebuild will be replayed after this completes
       for (const sub of this.subscriptions.values()) {
-        sub.unsubscribe = this.createSubscription(
-          sub.filters,
-          sub.onEvent,
-          sub.onEose,
-        );
+        sub.unsubscribe = this.createSubscription(sub);
       }
 
       logger.info('Relay pool rebuilt successfully');
