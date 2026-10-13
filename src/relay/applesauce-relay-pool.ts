@@ -81,7 +81,7 @@ type SubscriptionDescriptor = {
 type SubscriptionState = SubscriptionDescriptor & {
   /** Runtime unsubscribe handle for the currently active RxJS subscription (if started). */
   unsubscribe?: () => void;
-  /** Newest sane `created_at` observed; drives the `since` used on restore. */
+  /** Newest `created_at` at or below the local clock; drives the `since` used on restore. */
   resumeWatermark?: number;
 };
 

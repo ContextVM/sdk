@@ -34,7 +34,6 @@ type TestableApplesauceRelayPool = Omit<ApplesauceRelayPool, 'relayGroup'> & {
       onEvent: (event: NostrEvent) => void;
       onEose?: () => void;
       unsubscribe?: () => void;
-      resumeWatermark?: number;
     }
   >;
   rebuildInFlight?: Promise<void>;
