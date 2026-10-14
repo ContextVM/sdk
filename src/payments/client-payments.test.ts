@@ -858,6 +858,7 @@ describe('withClientPayments()', () => {
       handlers: [{ pmi: 'fake', async handle(): Promise<void> {} }],
       paymentInteraction: 'explicit_gating',
       onPaymentRequired: async () => ({ paid: true }),
+      minRetryDelayMs: 1,
     });
     paid.onmessage = (msg) => observed.push(msg);
     await paid.start();

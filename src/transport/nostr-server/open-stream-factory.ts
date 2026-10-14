@@ -17,6 +17,7 @@ import { type OpenStreamRegistryOptions } from '../open-stream/registry.js';
 import { type Logger } from '../../core/utils/logger.js';
 import { type CorrelationStore } from './correlation-store.js';
 import { type ClientSession, type SessionStore } from './session-store.js';
+import { type SubscriptionStore } from './subscription-store.js';
 import {
   type JSONRPCMessage,
   type JSONRPCResponse,
@@ -33,6 +34,7 @@ export interface ServerOpenStreamFactoryDeps {
   ) => Promise<void>;
   handleResponse: (response: JSONRPCResponse) => Promise<void>;
   sessionStore: SessionStore;
+  subscriptionStore: SubscriptionStore;
   onClientSessionEvicted?: (ctx: {
     clientPubkey: string;
     session: ClientSession;
@@ -595,6 +597,9 @@ export class ServerOpenStreamFactory {
     const removed = this.deps.sessionStore.removeSession(clientPubkey);
     if (!removed && !session) {
       return;
+    }
+    if (removed) {
+      this.deps.subscriptionStore.removeForClient(clientPubkey);
     }
 
     this.deps.logger.info('Removed session after open-stream probe timeout', {

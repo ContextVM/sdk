@@ -22,6 +22,10 @@ import { NostrEvent } from 'nostr-tools';
 import { LogLevel } from '../core/utils/logger.js';
 import { withTimeout } from '../core/utils/utils.js';
 import { CorrelationStore } from './nostr-server/correlation-store.js';
+import {
+  SubscriptionStore,
+  type ResourceSubscriptionMatcher,
+} from './nostr-server/subscription-store.js';
 import { ClientSession, SessionStore } from './nostr-server/session-store.js';
 import { LruCache } from '../core/utils/lru-cache.js';
 import { ApplesauceRelayPool } from '../relay/applesauce-relay-pool.js';
@@ -58,6 +62,7 @@ import type { InboundMiddlewareFn } from './middleware.js';
 import type { PaymentInteractionPolicy } from '../payments/types.js';
 
 export type { InboundMiddlewareFn } from './middleware.js';
+export type { ResourceSubscriptionMatcher } from './nostr-server/subscription-store.js';
 /**
  * Options for configuring the NostrServerTransport.
  */
@@ -95,6 +100,12 @@ export interface NostrServerTransportOptions extends BaseNostrTransportOptions {
   logLevel?: LogLevel;
   /** Maximum number of client sessions to keep in memory. @default 1000 */
   maxSessions?: number;
+  /**
+   * Resolve server-defined parent/sub-resource relationships for resource updates.
+   * Exact URI subscriptions always match, even when this callback is omitted.
+   * The callback is only called for different subscribed and updated URIs.
+   */
+  matchesSubResource?: ResourceSubscriptionMatcher;
   /**
    * Whether to inject the client's public key into the _meta field of incoming messages.
    * @default false
@@ -185,6 +196,7 @@ export class NostrServerTransport
 
   private readonly sessionStore: SessionStore;
   private readonly correlationStore: CorrelationStore;
+  private readonly subscriptionStore: SubscriptionStore;
   private readonly authorizationPolicy: AuthorizationPolicy;
   private readonly announcementManager: AnnouncementManager;
   private readonly injectClientPubkey: boolean;
@@ -246,6 +258,8 @@ export class NostrServerTransport
       isAnnouncedServer: options.isAnnouncedServer ?? options.isPublicServer,
     });
 
+    this.subscriptionStore = new SubscriptionStore();
+
     // Initialize session store with eviction callback for correlation cleanup
     this.sessionStore = new SessionStore({
       maxSessions: options.maxSessions ?? 1000,
@@ -257,6 +271,7 @@ export class NostrServerTransport
         // callback would also corrupt the cache's capacity accounting.)
         const removedCount =
           this.correlationStore.removeRoutesForClient(clientPubkey);
+        this.subscriptionStore.removeForClient(clientPubkey);
         this.logger.info(
           `Evicted session for ${clientPubkey} (removed ${removedCount} routes)`,
         );
@@ -350,6 +365,7 @@ export class NostrServerTransport
         await this.outboundResponseRouter.route(response);
       },
       sessionStore: this.sessionStore,
+      subscriptionStore: this.subscriptionStore,
       onClientSessionEvicted: this.onClientSessionEvicted,
       correlationStore: this.correlationStore,
       policy: options.openStream?.policy,
@@ -359,6 +375,7 @@ export class NostrServerTransport
     this.inboundCoordinator = new ServerInboundCoordinator({
       sessionStore: this.sessionStore,
       correlationStore: this.correlationStore,
+      subscriptionStore: this.subscriptionStore,
       authorizationPolicy: this.authorizationPolicy,
       openStreamFactory: this.openStreamFactory,
       inboundMiddlewares: this.inboundMiddlewares,
@@ -442,6 +459,8 @@ export class NostrServerTransport
     this.outboundNotificationBroadcaster = new OutboundNotificationBroadcaster({
       correlationStore: this.correlationStore,
       sessionStore: this.sessionStore,
+      subscriptionStore: this.subscriptionStore,
+      matchesSubResource: options.matchesSubResource,
       sendNotification: this.sendNotification.bind(this),
       enqueueTask: this.taskQueue.add.bind(this.taskQueue),
       logger: this.logger,
@@ -586,6 +605,7 @@ export class NostrServerTransport
       await this.disconnect();
       this.sessionStore.clear();
       this.correlationStore.clear();
+      this.subscriptionStore.clear();
       this.seenEventIds.clear();
       this.oversizedReceiver.clear();
       this.openStreamFactory.getReceiver().clear();

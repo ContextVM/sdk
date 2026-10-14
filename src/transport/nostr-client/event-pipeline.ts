@@ -147,15 +147,6 @@ export class ClientEventPipeline {
   private handleUnencryptedEvent(
     event: NostrEvent,
   ): UnwrappedClientEvent | null {
-    // Deduplicate plain inbound deliveries before dispatch.
-    if (this.deps.seenEventIds.has(event.id)) {
-      this.deps.logger.debug('Skipping duplicate inbound event', {
-        eventId: event.id,
-      });
-      return null;
-    }
-    this.deps.seenEventIds.set(event.id, true);
-
     if (!this.isFromExpectedServer(event)) return null;
 
     if (!verifyEvent(event)) {
@@ -168,6 +159,18 @@ export class ClientEventPipeline {
       );
       return null;
     }
+
+    // Deduplicate plain inbound deliveries before dispatch. The id is marked
+    // only after the signature check so a bad-signature copy delivered first
+    // cannot suppress the genuine event (same ordering as the server).
+    if (this.deps.seenEventIds.has(event.id)) {
+      this.deps.logger.debug('Skipping duplicate inbound event', {
+        eventId: event.id,
+      });
+      return null;
+    }
+    this.deps.seenEventIds.set(event.id, true);
+
     return { event };
   }
 
