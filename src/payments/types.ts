@@ -158,6 +158,8 @@ export interface PaymentHandlerRequest {
   /** Transparency metadata from the server's `payment_required._meta`. */
   _meta?: Record<string, unknown>;
   requestEventId: string;
+  /** Aborted when the invocation ends; check before starting an awaited wallet action. */
+  abortSignal?: AbortSignal;
 }
 
 /**

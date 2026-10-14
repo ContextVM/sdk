@@ -90,13 +90,8 @@ async function captureNextCtxvmEvent(params: {
 }
 
 /**
- * Nostr event ids are derived from (content, author, created_at, tags) at
- * second granularity. An explicit-gating retry republishes the same JSON-RPC
- * request; if it lands in the same second as the original, the identical event
- * id is deduplicated by relay subscriptions and the server never sees the
- * retry. Sleep past the current second boundary so the retry's event id
- * differs. Real-world payment flows naturally take >1s (wallet interaction,
- * settlement); this only affects instant-pay tests.
+ * Separates intentional test invocations at Nostr second granularity.
+ * Automatic payment retries are delayed by the client payment lifecycle.
  */
 async function sleepPastSecondBoundary(): Promise<void> {
   const waitMs = 1000 - (Date.now() % 1000) + 10;
@@ -217,11 +212,11 @@ describe.serial('payments fake flow (transport-level)', () => {
     );
 
     const processorB = new FakePaymentProcessor({
-      pmi: 'pmi:B',
+      pmi: 'pmi-b',
       verifyDelayMs: 1,
     });
     const processorC = new FakePaymentProcessor({
-      pmi: 'pmi:C',
+      pmi: 'pmi-c',
       verifyDelayMs: 1,
     });
     const pricedCapabilities = [
@@ -252,8 +247,8 @@ describe.serial('payments fake flow (transport-level)', () => {
     const clientPrivateKey = bytesToHex(clientSK);
     const clientPubkey = getPublicKey(clientSK);
     const handlers = [
-      new FakePaymentHandler({ pmi: 'pmi:A', delayMs: 1 }),
-      new FakePaymentHandler({ pmi: 'pmi:B', delayMs: 1 }),
+      new FakePaymentHandler({ pmi: 'pmi-a', delayMs: 1 }),
+      new FakePaymentHandler({ pmi: 'pmi-b', delayMs: 1 }),
     ];
 
     const clientTransport = new NostrClientTransport({
@@ -271,7 +266,7 @@ describe.serial('payments fake flow (transport-level)', () => {
         if (!event.content.includes('"method":"initialize"')) {
           return false;
         }
-        return event.tags.some((t) => t[0] === 'pmi' && t[1] === 'pmi:A');
+        return event.tags.some((t) => t[0] === 'pmi' && t[1] === 'pmi-a');
       },
     });
 
@@ -285,8 +280,8 @@ describe.serial('payments fake flow (transport-level)', () => {
     const initializeEvent = await initializeEventPromise;
     const pmiTags = initializeEvent.tags.filter((t) => t[0] === 'pmi');
     expect(pmiTags).toEqual([
-      ['pmi', 'pmi:A'],
-      ['pmi', 'pmi:B'],
+      ['pmi', 'pmi-a'],
+      ['pmi', 'pmi-b'],
     ]);
 
     const originalOnMessage = paidClientTransport.onmessage;
@@ -300,7 +295,7 @@ describe.serial('payments fake flow (transport-level)', () => {
       arguments: { a: 1, b: 2 },
     });
 
-    expect(observedPaymentPmi).toBe('pmi:B');
+    expect(observedPaymentPmi).toBe('pmi-b');
 
     await client.close();
     await mcpServer.close();
@@ -352,7 +347,7 @@ describe.serial('payments fake flow (transport-level)', () => {
     const clientSK = generateSecretKey();
     const clientPrivateKey = bytesToHex(clientSK);
     const clientPubkey = getPublicKey(clientSK);
-    const handlers = [new FakePaymentHandler({ pmi: 'pmi:A', delayMs: 1 })];
+    const handlers = [new FakePaymentHandler({ pmi: 'pmi-a', delayMs: 1 })];
 
     const clientTransport = new NostrClientTransport({
       signer: new PrivateKeySigner(clientPrivateKey),
@@ -374,7 +369,7 @@ describe.serial('payments fake flow (transport-level)', () => {
         if (!event.content.includes('"method":"tools/call"')) {
           return false;
         }
-        return event.tags.some((t) => t[0] === 'pmi' && t[1] === 'pmi:A');
+        return event.tags.some((t) => t[0] === 'pmi' && t[1] === 'pmi-a');
       },
       timeoutMs: 4000,
     });
@@ -388,7 +383,7 @@ describe.serial('payments fake flow (transport-level)', () => {
 
     const callEvent = await callEventPromise;
     const pmiTags = callEvent.tags.filter((t) => t[0] === 'pmi');
-    expect(pmiTags).toEqual([['pmi', 'pmi:A']]);
+    expect(pmiTags).toEqual([['pmi', 'pmi-a']]);
 
     await client.close();
     await mcpServer.close();
@@ -413,11 +408,11 @@ describe.serial('payments fake flow (transport-level)', () => {
     );
 
     const processorB = new FakePaymentProcessor({
-      pmi: 'pmi:B',
+      pmi: 'pmi-b',
       verifyDelayMs: 1,
     });
     const processorC = new FakePaymentProcessor({
-      pmi: 'pmi:C',
+      pmi: 'pmi-c',
       verifyDelayMs: 1,
     });
     const pricedCapabilities = [
@@ -445,7 +440,7 @@ describe.serial('payments fake flow (transport-level)', () => {
     await mcpServer.connect(serverTransport);
 
     const clientPrivateKey = bytesToHex(generateSecretKey());
-    const handlers = [new FakePaymentHandler({ pmi: 'pmi:A', delayMs: 1 })];
+    const handlers = [new FakePaymentHandler({ pmi: 'pmi-a', delayMs: 1 })];
 
     const clientTransport = new NostrClientTransport({
       signer: new PrivateKeySigner(clientPrivateKey),
@@ -472,7 +467,7 @@ describe.serial('payments fake flow (transport-level)', () => {
       arguments: { a: 1, b: 2 },
     });
 
-    expect(observedPaymentPmi).toBe('pmi:B');
+    expect(observedPaymentPmi).toBe('pmi-b');
 
     await client.close();
     await mcpServer.close();
@@ -497,11 +492,11 @@ describe.serial('payments fake flow (transport-level)', () => {
     );
 
     const processorB = new FakePaymentProcessor({
-      pmi: 'pmi:B',
+      pmi: 'pmi-b',
       verifyDelayMs: 1,
     });
     const processorC = new FakePaymentProcessor({
-      pmi: 'pmi:C',
+      pmi: 'pmi-c',
       verifyDelayMs: 1,
     });
     const pricedCapabilities = [
@@ -553,7 +548,7 @@ describe.serial('payments fake flow (transport-level)', () => {
       arguments: { a: 1, b: 2 },
     });
 
-    expect(observedPaymentPmi).toBe('pmi:B');
+    expect(observedPaymentPmi).toBe('pmi-b');
 
     await client.close();
     await mcpServer.close();
@@ -1091,7 +1086,6 @@ describe.serial('payments fake flow (transport-level)', () => {
       handlers: [],
       paymentInteraction: 'explicit_gating',
       onPaymentRequired: async () => {
-        await sleepPastSecondBoundary();
         explicitPaymentHandled = true;
         return { paid: true };
       },
@@ -1268,7 +1262,6 @@ describe.serial('payments fake flow (transport-level)', () => {
       handlers: [],
       paymentInteraction: 'explicit_gating',
       onPaymentRequired: async () => {
-        await sleepPastSecondBoundary();
         return { paid: true };
       },
     });
@@ -1548,7 +1541,6 @@ describe.serial('payments fake flow (transport-level)', () => {
       handlers: [],
       paymentInteraction: 'explicit_gating',
       onPaymentRequired: async () => {
-        await sleepPastSecondBoundary();
         return { paid: true };
       },
     });
@@ -1646,7 +1638,6 @@ describe.serial('payments fake flow (transport-level)', () => {
       handlers: [],
       paymentInteraction: 'explicit_gating',
       onPaymentRequired: async () => {
-        await sleepPastSecondBoundary();
         return { paid: true };
       },
     });
@@ -1976,7 +1967,6 @@ describe.serial('payments fake flow (transport-level)', () => {
       handlers: [],
       paymentInteraction: 'explicit_gating',
       onPaymentRequired: async () => {
-        await sleepPastSecondBoundary();
         explicitHandled = true;
         return { paid: true };
       },
@@ -2082,7 +2072,6 @@ describe.serial('payments fake flow (transport-level)', () => {
       handlers: [],
       paymentInteraction: 'explicit_gating',
       onPaymentRequired: async () => {
-        await sleepPastSecondBoundary();
         explicitHandled = true;
         return { paid: true };
       },
@@ -2273,7 +2262,6 @@ describe.serial('payments fake flow (transport-level)', () => {
       handlers: [],
       paymentInteraction: 'explicit_gating',
       onPaymentRequired: async () => {
-        await sleepPastSecondBoundary();
         return { paid: true };
       },
     });
@@ -2413,7 +2401,6 @@ describe.serial('payments fake flow (transport-level)', () => {
       handlers: [],
       paymentInteraction: 'explicit_gating',
       onPaymentRequired: async () => {
-        await sleepPastSecondBoundary();
         explicitHandled = true;
         return { paid: true };
       },
