@@ -74,6 +74,27 @@ describe('ClientCorrelationStore', () => {
     });
   });
 
+  it('releases all retries of a terminal request while preserving typed id isolation', () => {
+    const store = new ClientCorrelationStore();
+    store.registerRequest('numeric-first', {
+      originalRequestId: 0,
+      isInitialize: false,
+    });
+    store.registerRequest('numeric-retry', {
+      originalRequestId: 0,
+      isInitialize: false,
+    });
+    store.registerRequest('string', {
+      originalRequestId: '0',
+      isInitialize: false,
+    });
+    store.removeRequestsForRequestId(0);
+    expect(store.hasPendingRequest('numeric-first')).toBe(false);
+    expect(store.hasPendingRequest('numeric-retry')).toBe(false);
+    expect(store.hasPendingRequest('string')).toBe(true);
+    expect(store.pendingRequestCount).toBe(1);
+  });
+
   describe('clear', () => {
     it('removes all pending requests', () => {
       const store = new ClientCorrelationStore();

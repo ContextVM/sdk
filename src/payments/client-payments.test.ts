@@ -66,6 +66,7 @@ describe('withClientPayments()', () => {
       pmi: 'fake',
       description: undefined,
       requestEventId: 'req-id',
+      abortSignal: expect.any(AbortSignal),
     });
   });
 
@@ -396,6 +397,7 @@ describe('withClientPayments()', () => {
       amount: 1,
       method: 'tools/call',
       capability: 'tool:add',
+      reason: 'payment_declined',
     });
   });
 
@@ -457,6 +459,7 @@ describe('withClientPayments()', () => {
       amount: 2,
       method: 'prompts/get',
       capability: 'prompt:hi',
+      reason: 'payment_declined',
     });
   });
 
@@ -525,6 +528,7 @@ describe('withClientPayments()', () => {
       amount: 1,
       method: 'tools/call',
       capability: 'tool:paid',
+      reason: 'payment_negotiation_failed',
     });
   });
 
@@ -883,8 +887,8 @@ describe('withClientPayments()', () => {
       { eventId: 'evt4', correlatedEventId: 'req-event-id-3' },
     );
 
-    // Wait for async processing
-    await new Promise((r) => setTimeout(r, 0));
+    // Wait for the Nostr retry floor.
+    await new Promise((r) => setTimeout(r, 1100));
 
     // Error should not be delivered to caller
     expect(observed).toHaveLength(0);
@@ -1019,8 +1023,8 @@ describe('withClientPayments()', () => {
     expect(observed).toHaveLength(0);
     expect(sentMessage).toBeUndefined();
 
-    // Wait for retry_after timer to fire
-    await new Promise((r) => setTimeout(r, 60));
+    // Nostr transport enforces a one-second floor despite a shorter hint.
+    await new Promise((r) => setTimeout(r, 1100));
 
     // Error should not be delivered to caller
     expect(observed).toHaveLength(0);
@@ -1148,11 +1152,11 @@ describe('withClientPayments()', () => {
 
     // First two: intercepted and retried (not observed by caller).
     deliverPending();
-    await new Promise((r) => setTimeout(r, 20));
+    await new Promise((r) => setTimeout(r, 1100));
     expect(observed).toHaveLength(0);
 
     deliverPending();
-    await new Promise((r) => setTimeout(r, 25));
+    await new Promise((r) => setTimeout(r, 1100));
     expect(observed).toHaveLength(0);
 
     // Third: retry budget exhausted → -32043 reaches the caller.
@@ -1230,8 +1234,8 @@ describe('withClientPayments()', () => {
     await new Promise((r) => setTimeout(r, 10));
     expect(sentMessage).toBeUndefined();
 
-    // After the floor: the original request is retried.
-    await new Promise((r) => setTimeout(r, 120));
+    // Nostr retries always wait at least one second.
+    await new Promise((r) => setTimeout(r, 1100));
     expect(sentMessage as unknown).toEqual({
       jsonrpc: '2.0',
       id: 77,
