@@ -173,6 +173,9 @@ export type ListToolsAnnouncementTagsProducer = (
  * This transport listens for incoming MCP requests via Nostr events and can send
  * responses back to the originating clients. It handles all request/response correlation
  * internally, making it a standalone MCP transport that works over Nostr.
+ * Verified inbound event IDs are retained until close() to prevent replay dispatch.
+ * Memory grows with unique verified events; this does not guarantee exactly-once
+ * side effects or persist replay protection across transport lifetimes.
  */
 export class NostrServerTransport
   extends BaseNostrTransport
@@ -215,12 +218,11 @@ export class NostrServerTransport
   private readonly listToolsAnnouncementTagsProducers: ListToolsAnnouncementTagsProducer[] =
     [];
 
-  /**
-   * Deduplicate inbound events to avoid redundant work.
-   *
-   * Used for gift-wrap envelopes (outer event ids) and decrypted inner events.
-   */
-  private readonly seenEventIds = new LruCache<true>(DEFAULT_LRU_SIZE);
+  /** Bounded envelope cache to avoid repeated decryption. */
+  private readonly seenGiftWrapIds = new LruCache<true>(DEFAULT_LRU_SIZE);
+
+  /** Retain verified inner/plain IDs until close: relays can replay the full session. */
+  private readonly seenEventIds = new Set<string>();
 
   /** Receives inbound oversized-transfer frames from clients (client→server requests). */
   private readonly oversizedReceiver: OversizedTransferReceiver;
@@ -469,6 +471,7 @@ export class NostrServerTransport
 
     this.eventPipeline = new ServerEventPipeline({
       signer: this.signer,
+      seenGiftWrapIds: this.seenGiftWrapIds,
       seenEventIds: this.seenEventIds,
       encryptionMode: this.encryptionMode,
       giftWrapMode: this.giftWrapMode,
@@ -606,6 +609,7 @@ export class NostrServerTransport
       this.sessionStore.clear();
       this.correlationStore.clear();
       this.subscriptionStore.clear();
+      this.seenGiftWrapIds.clear();
       this.seenEventIds.clear();
       this.oversizedReceiver.clear();
       this.openStreamFactory.getReceiver().clear();
