@@ -65,6 +65,14 @@ import { Proxy } from '@contextvm/sdk/proxy';
 
 Visit the [ContextVM documentation](https://contextvm.org) for information on how to use ContextVM.
 
+### Server replay protection
+
+`NostrServerTransport` retains verified plaintext and decrypted inner-event IDs until `close()`. Relay reconnects, completed responses, and client-session eviction do not erase these IDs, so replaying the same signed event cannot dispatch it again during that transport's lifetime. This also covers the same inner event delivered in a new encrypted envelope.
+
+Memory usage grows with the number of unique verified events, including notifications and transfer frames. IDs are recorded before authorization and message processing, so events subsequently rejected by those checks also remain recorded. A separate bounded envelope cache avoids repeated decryption; eviction from that cache does not remove replay protection.
+
+This protection is scoped to signed event IDs. A newly signed event with a different ID is a new request, even if its JSON-RPC ID and payload match an earlier request. Responses are not cached or replayed, and deduplication state does not survive transport closure or process restart. Tools with side effects still need application-level idempotency for retries and crash recovery; transport deduplication does not guarantee exactly-once side effects.
+
 ### Logging
 
 The SDK uses Pino for high-performance logging with structured JSON output. By default, logs are written to stderr to comply with the MCP protocol expectations.

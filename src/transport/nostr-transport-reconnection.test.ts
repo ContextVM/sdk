@@ -16,9 +16,13 @@ import { bytesToHex, hexToBytes } from 'nostr-tools/utils';
 import { ApplesauceRelayPool } from '../relay/applesauce-relay-pool.js';
 import { McpServer } from '@contextvm/mcp-sdk/server/mcp';
 import { z } from 'zod';
-import { EncryptionMode } from '../core/interfaces.js';
-import type { CallToolResult } from '@contextvm/mcp-sdk/types.js';
+import { EncryptionMode, GiftWrapMode } from '../core/interfaces.js';
+import {
+  type CallToolResult,
+  isJSONRPCRequest,
+} from '@contextvm/mcp-sdk/types.js';
 import { DEFAULT_TIMEOUT_MS } from '../core/constants.js';
+import { waitFor } from '../core/utils/test.utils.js';
 import {
   spawnMockRelay,
   restartMockRelay,
@@ -189,6 +193,178 @@ describe.serial('NostrTransport Reconnection', () => {
       expected,
     );
   };
+
+  test.serial(
+    'does not execute completed encrypted tool calls again after cache eviction and relay replay',
+    async () => {
+      const requestCount = 12;
+      const executions = new Map<number, number>();
+      const server = new McpServer({
+        name: 'Replay-Safety-Server',
+        version: '1.0.0',
+      });
+      server.registerTool(
+        'count',
+        { inputSchema: { sequence: z.number() } },
+        async ({ sequence }) => {
+          executions.set(sequence, (executions.get(sequence) ?? 0) + 1);
+          return { content: [{ type: 'text', text: String(sequence) }] };
+        },
+      );
+
+      const pool = new ApplesauceRelayPool([relayUrl], {
+        reconnectBaseDelayMs: 100,
+        reconnectMaxDelayMs: 1_000,
+      });
+      let receivedEvents = 0;
+      let processedEvents = 0;
+      let eoseCount = 0;
+      let firstEnvelopeId: string | undefined;
+      const subscribe = pool.subscribe.bind(pool);
+      pool.subscribe = (filters, onEvent, onEose) =>
+        subscribe(
+          filters,
+          (event) => {
+            receivedEvents += 1;
+            firstEnvelopeId ??= event.id;
+            onEvent(event);
+          },
+          () => {
+            eoseCount += 1;
+            onEose?.();
+          },
+        );
+
+      const serverTransport = new NostrServerTransport({
+        signer: new PrivateKeySigner(serverPrivateKey),
+        relayHandler: pool,
+        encryptionMode: EncryptionMode.REQUIRED,
+        giftWrapMode: GiftWrapMode.PERSISTENT,
+        maxSessions: 1,
+      });
+      // Exercise real eviction with a small test-only cache, keeping CI fast.
+      const envelopeCache = serverTransport['seenGiftWrapIds'];
+      envelopeCache['capacity'] = 4;
+      const processEvent =
+        serverTransport['processIncomingEvent'].bind(serverTransport);
+      serverTransport['processIncomingEvent'] = async (
+        event,
+      ): Promise<void> => {
+        try {
+          await processEvent(event);
+        } finally {
+          processedEvents += 1;
+        }
+      };
+
+      const client = new Client({
+        name: 'Replay-Safety-Client',
+        version: '1.0.0',
+      });
+      const clientTransport = new NostrClientTransport({
+        signer: new PrivateKeySigner(bytesToHex(generateSecretKey())),
+        relayHandler: new ApplesauceRelayPool([relayUrl], {
+          reconnectBaseDelayMs: 100,
+          reconnectMaxDelayMs: 1_000,
+        }),
+        serverPubkey: serverPublicKey,
+        isStateless: true,
+        encryptionMode: EncryptionMode.REQUIRED,
+        giftWrapMode: GiftWrapMode.PERSISTENT,
+      });
+      const pendingResponses = new Set<string | number>();
+      const requestEventIds = new Set<string>();
+
+      try {
+        await server.connect(serverTransport);
+        const onmessage = serverTransport.onmessage;
+        serverTransport.onmessage = (message): void => {
+          if (isJSONRPCRequest(message)) {
+            pendingResponses.add(message.id);
+            requestEventIds.add(String(message.id));
+          }
+          onmessage?.(message);
+        };
+        const send = serverTransport.send.bind(serverTransport);
+        serverTransport.send = async (message): Promise<void> => {
+          const requestId = 'id' in message ? message.id : undefined;
+          try {
+            await send(message);
+          } finally {
+            if (requestId !== undefined) {
+              pendingResponses.delete(requestId);
+            }
+          }
+        };
+        await client.connect(clientTransport);
+
+        for (let sequence = 0; sequence < requestCount; sequence += 1) {
+          const result = (await client.callTool({
+            name: 'count',
+            arguments: { sequence },
+          })) as CallToolResult;
+          expectTextResult(result, String(sequence));
+        }
+        await waitFor({
+          produce: () =>
+            eoseCount > 0 &&
+            processedEvents === receivedEvents &&
+            pendingResponses.size === 0
+              ? true
+              : undefined,
+        });
+        expect([...executions.values()]).toEqual(Array(requestCount).fill(1));
+        expect(firstEnvelopeId).toBeDefined();
+        expect(envelopeCache.has(firstEnvelopeId!)).toBe(false);
+        expect(
+          serverTransport.getInternalStateForTesting().correlationStore
+            .eventRouteCount,
+        ).toBe(0);
+        const { sessionStore } = serverTransport.getInternalStateForTesting();
+        const [clientPubkey] = [...sessionStore.getAllSessions()][0];
+        sessionStore.getOrCreateSession(
+          getPublicKey(generateSecretKey()),
+          false,
+        );
+        expect(sessionStore.hasSession(clientPubkey)).toBe(false);
+        expect(requestEventIds.size).toBe(requestCount);
+        for (const eventId of requestEventIds) {
+          expect(serverTransport['seenEventIds'].has(eventId)).toBe(true);
+        }
+        const eventsBeforeRestart = receivedEvents;
+        const eoseBeforeRestart = eoseCount;
+
+        await restartPrimaryRelay();
+
+        // EOSE can arrive while decryptions are queued or MCP responses are pending.
+        await waitFor({
+          produce: () =>
+            eoseCount > eoseBeforeRestart &&
+            receivedEvents >= eventsBeforeRestart + requestCount &&
+            processedEvents === receivedEvents &&
+            pendingResponses.size === 0
+              ? true
+              : undefined,
+          timeoutMs: 15_000,
+        });
+        expect([...executions.values()]).toEqual(Array(requestCount).fill(1));
+
+        const result = (await client.callTool({
+          name: 'count',
+          arguments: { sequence: requestCount },
+        })) as CallToolResult;
+        expectTextResult(result, String(requestCount));
+        expect(executions.get(requestCount)).toBe(1);
+        expect(executions.size).toBe(requestCount + 1);
+      } finally {
+        await client.close();
+        await server.close();
+        expect(envelopeCache.size).toBe(0);
+        expect(serverTransport['seenEventIds'].size).toBe(0);
+      }
+    },
+    30_000,
+  );
 
   test.serial(
     'should handle relay restart and continue processing requests',

@@ -18,7 +18,8 @@ import { withTimeout } from '../../core/utils/utils.js';
 /** Dependencies for the server-side event decryption and verification pipeline. */
 export interface ServerEventPipelineDeps {
   signer: NostrSigner;
-  seenEventIds: LruCache<true>;
+  seenGiftWrapIds: LruCache<true>;
+  seenEventIds: Set<string>;
   encryptionMode: EncryptionMode;
   giftWrapMode: GiftWrapMode;
   logger: Logger;
@@ -57,13 +58,13 @@ export class ServerEventPipeline {
         }
 
         // Deduplicate gift-wrap envelopes before any expensive decryption.
-        if (this.deps.seenEventIds.has(event.id)) {
+        if (this.deps.seenGiftWrapIds.has(event.id)) {
           this.deps.logger.debug('Skipping duplicate gift-wrapped event', {
             eventId: event.id,
           });
           return null;
         }
-        this.deps.seenEventIds.set(event.id, true);
+        this.deps.seenGiftWrapIds.set(event.id, true);
 
         return await this.handleEncryptedEvent(event);
       } else {
@@ -133,7 +134,7 @@ export class ServerEventPipeline {
         });
         return null;
       }
-      this.deps.seenEventIds.set(currentEvent.id, true);
+      this.deps.seenEventIds.add(currentEvent.id);
 
       return { event: currentEvent, isEncrypted: true, wrapKind: event.kind };
     } catch (error) {
@@ -178,7 +179,7 @@ export class ServerEventPipeline {
       });
       return null;
     }
-    this.deps.seenEventIds.set(event.id, true);
+    this.deps.seenEventIds.add(event.id);
 
     return { event, isEncrypted: false };
   }
