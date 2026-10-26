@@ -42,8 +42,10 @@ import { ServerMetadataStore } from './nostr-client/server-metadata-store.js';
 import { ClientOutboundSender } from './nostr-client/outbound-sender.js';
 import { ClientInboundNotificationDispatcher } from './nostr-client/inbound-notification-dispatcher.js';
 import { ClientEventPipeline } from './nostr-client/event-pipeline.js';
-import { ClientOpenStreamFactory,
-  type ClientOpenStreamHandle,} from './nostr-client/open-stream-factory.js';
+import {
+  ClientOpenStreamFactory,
+  type ClientOpenStreamHandle,
+} from './nostr-client/open-stream-factory.js';
 import {
   DEFAULT_CHUNK_SIZE,
   DEFAULT_OVERSIZED_THRESHOLD,
@@ -456,6 +458,11 @@ export class NostrClientTransport
     eventId: string,
   ): PendingRequest | undefined {
     return this.correlationStore.getPendingRequest(eventId);
+  }
+
+  /** Releases correlation for every wire retry of a terminal caller request. */
+  public forgetPendingRequestsForRequestId(requestId: string | number): void {
+    this.correlationStore.removeRequestsForRequestId(requestId);
   }
 
   /**
