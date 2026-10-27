@@ -1,3 +1,4 @@
+import { LruCache } from '../../core/utils/lru-cache.js';
 import type { Logger } from '../../core/utils/logger.js';
 import {
   DEFAULT_MAX_BUFFERED_BYTES_PER_STREAM,
@@ -73,6 +74,7 @@ export class OpenStreamRegistry {
         senderPubkey?: string,
       ) => Partial<Omit<OpenStreamSessionOptions, 'progressToken'>>)
     | undefined;
+  private readonly completed: LruCache<OpenStreamSession>;
   private readonly sessions = new Map<string, OpenStreamSession>();
 
   constructor(options: OpenStreamRegistryOptions) {
@@ -92,6 +94,7 @@ export class OpenStreamRegistry {
     this.closeGracePeriodMs =
       options.closeGracePeriodMs ?? DEFAULT_OPEN_STREAM_CLOSE_GRACE_PERIOD_MS;
     this.getSessionOptions = options.getSessionOptions;
+    this.completed = new LruCache(this.maxConcurrentStreams);
   }
 
   public static isOpenStreamProgress(
@@ -136,6 +139,7 @@ export class OpenStreamRegistry {
       );
     }
 
+    this.completed.delete(key);
     const session = new OpenStreamSession({
       progressToken,
       maxBufferedChunks:
@@ -175,6 +179,7 @@ export class OpenStreamRegistry {
           }
         } finally {
           this.sessions.delete(key);
+          this.completed.set(key, session);
         }
       },
       onAbort: async (reason?: string) => {
@@ -186,6 +191,7 @@ export class OpenStreamRegistry {
           }
         } finally {
           this.sessions.delete(key);
+          this.completed.set(key, session);
         }
       },
     });
@@ -207,6 +213,15 @@ export class OpenStreamRegistry {
     // use the same client-local token concurrently, so a sender's frames
     // only ever route to that sender's own session.
     const existingSession = this.getSession(progressToken, senderPubkey);
+
+    const completed = this.completed.get(
+      OpenStreamRegistry.sessionKey(progressToken, senderPubkey),
+    );
+    if (
+      !existingSession &&
+      completed?.isDuplicateFrame(frame.progress, frame.cvm)
+    )
+      return completed;
 
     if (!existingSession) {
       if (frame.cvm.frameType !== 'start') {
@@ -245,6 +260,7 @@ export class OpenStreamRegistry {
     }
 
     this.sessions.clear();
+    this.completed.clear();
   }
 
   public get size(): number {

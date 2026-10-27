@@ -1,8 +1,10 @@
+import type { PaymentOperationContext } from './payment-cancellation.js';
 import type {
   JSONRPCMessage,
   JSONRPCNotification,
   JSONRPCRequest,
 } from '@contextvm/mcp-sdk/types.js';
+import type { VerifiedPaymentEvent } from './payment-state-store.js';
 
 /**
  * A priced capability pattern, consistent with server-side authorization exclusions.
@@ -147,7 +149,7 @@ export type PaymentRejectedNotification = JSONRPCNotification & {
   };
 };
 
-export interface PaymentHandlerRequest {
+export interface PaymentHandlerRequest extends PaymentOperationContext {
   amount: number;
   pay_req: string;
   /** The PMI requested by the server (e.g. "bitcoin-lightning-bolt11"). */
@@ -158,6 +160,8 @@ export interface PaymentHandlerRequest {
   /** Transparency metadata from the server's `payment_required._meta`. */
   _meta?: Record<string, unknown>;
   requestEventId: string;
+  /** Aborted when the invocation ends; check before starting an awaited wallet action. */
+  abortSignal?: AbortSignal;
 }
 
 /**
@@ -172,18 +176,21 @@ export interface PaymentHandler {
   /** Optional policy check that can decline handling. */
   canHandle?(req: PaymentHandlerRequest): boolean | Promise<boolean>;
 
+  /** Dispose adapter-owned work; a local abort does not reverse a payment. */
+  dispose?(): Promise<void>;
+
   /** Execute the payment (wallet action). */
   handle(req: PaymentHandlerRequest): Promise<void>;
 }
 
-export interface PaymentProcessorCreateParams {
+export interface PaymentProcessorCreateParams extends PaymentOperationContext {
   amount: number;
   description?: string;
   requestEventId: string;
   clientPubkey: string;
 }
 
-export interface PaymentProcessorVerifyParams {
+export interface PaymentProcessorVerifyParams extends PaymentOperationContext {
   pay_req: string;
   requestEventId: string;
   clientPubkey: string;
@@ -195,6 +202,8 @@ export interface PaymentProcessorVerifyParams {
 export type ResolvePriceQuote = {
   /** Final amount to charge for this specific invocation. */
   amount: number;
+  /** When supplied, must match the advertised capability unit; no implicit conversion. */
+  currencyUnit?: string;
   /** Optional override for the payment request description. */
   description?: string;
   /** Optional transparency metadata attached to `payment_required.params._meta`. */
@@ -244,10 +253,17 @@ export function waivePrice(meta?: Record<string, unknown>): ResolvePriceWaiver {
  */
 export function quotePrice(
   amount: number,
-  options?: { description?: string; meta?: Record<string, unknown> },
+  options?: {
+    description?: string;
+    meta?: Record<string, unknown>;
+    currencyUnit?: string;
+  },
 ): ResolvePriceQuote {
   return {
     amount,
+    ...(options?.currencyUnit !== undefined && {
+      currencyUnit: options.currencyUnit,
+    }),
     ...(options?.description !== undefined && {
       description: options.description,
     }),
@@ -262,9 +278,7 @@ export function quotePrice(
  * - Return a rejection object to emit `payment_rejected` without asking for payment.
  */
 export type ResolvePriceResult =
-  | ResolvePriceQuote
-  | ResolvePriceRejection
-  | ResolvePriceWaiver;
+  ResolvePriceQuote | ResolvePriceRejection | ResolvePriceWaiver;
 
 /**
  * Server-side callback for dynamic pricing.
@@ -298,11 +312,16 @@ export interface PaymentRequired {
 export interface PaymentProcessor {
   /** The PMI this processor can issue/verify */
   readonly pmi: string;
+  /** Native amount unit. Legacy processors without this field inherit the capability unit. */
+  readonly currencyUnit?: string;
 
   /** Create a payment request for a specific capability invocation */
   createPaymentRequired(
     params: PaymentProcessorCreateParams,
   ): Promise<PaymentRequired>;
+
+  /** Dispose adapter-owned work; caller-owned connections remain usable. */
+  dispose?(): Promise<void>;
 
   /** Wait for and/or verify settlement for a previously issued pay_req */
   verifyPayment(
@@ -313,6 +332,8 @@ export interface PaymentProcessor {
 export interface ServerPaymentsContext {
   /** The client pubkey associated with the inbound request. */
   clientPubkey: string;
+  /** Immutable identity of the verified event, independent of mutable JSON-RPC IDs. */
+  requestEvent?: VerifiedPaymentEvent;
 
   /**
    * Optional list of client-advertised PMIs (ordered by client preference).

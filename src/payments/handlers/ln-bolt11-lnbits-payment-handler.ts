@@ -1,3 +1,7 @@
+import {
+  runPaymentOperation,
+  type PaymentFetch,
+} from '../payment-cancellation.js';
 import type { PaymentHandler, PaymentHandlerRequest } from '../types.js';
 import { PMI_BITCOIN_LIGHTNING_BOLT11 } from '../pmis.js';
 import { encodeBase64 } from '../../core/utils/base64.js';
@@ -5,6 +9,8 @@ import { encodeBase64 } from '../../core/utils/base64.js';
 export interface LnBolt11LnbitsPaymentHandlerOptions {
   /** LNbits instance base URL (e.g. `https://lnbits.example.com`). */
   lnbitsUrl: string;
+  /** Optional HTTP implementation for custom runtimes and fault injection. */
+  fetch?: PaymentFetch;
   /** LNbits wallet admin key (required for outgoing payments). */
   lnbitsAdminKey: string;
   /** Optional HTTP Basic Auth credentials (`user:password`) for proxied instances. */
@@ -19,11 +25,14 @@ export interface LnBolt11LnbitsPaymentHandlerOptions {
 export class LnBolt11LnbitsPaymentHandler implements PaymentHandler {
   public readonly pmi = PMI_BITCOIN_LIGHTNING_BOLT11;
 
+  private readonly shutdown = new AbortController();
+  private readonly fetch: PaymentFetch;
   private readonly lnbitsUrl: string;
   private readonly lnbitsAdminKey: string;
   private readonly lnbitsBasicAuth?: string;
 
   public constructor(options: LnBolt11LnbitsPaymentHandlerOptions) {
+    this.fetch = options.fetch ?? globalThis.fetch;
     this.lnbitsUrl = options.lnbitsUrl.replace(/\/+$/, '');
     this.lnbitsAdminKey = options.lnbitsAdminKey;
     this.lnbitsBasicAuth = options.lnbitsBasicAuth;
@@ -41,9 +50,21 @@ export class LnBolt11LnbitsPaymentHandler implements PaymentHandler {
     return headers;
   }
 
+  /** Stops this adapter's local requests; remote payment may remain uncertain. */
+  public async dispose(): Promise<void> {
+    this.shutdown.abort();
+  }
+
   public async handle(req: PaymentHandlerRequest): Promise<void> {
-    const response = await fetch(`${this.lnbitsUrl}/api/v1/payments`, {
+    return runPaymentOperation(req, 60_000, this.shutdown.signal, (signal) =>
+      this.pay({ ...req, abortSignal: signal }),
+    );
+  }
+
+  private async pay(req: PaymentHandlerRequest): Promise<void> {
+    const response = await this.fetch(`${this.lnbitsUrl}/api/v1/payments`, {
       method: 'POST',
+      signal: req.abortSignal,
       headers: this.buildHeaders(),
       body: JSON.stringify({
         out: true,
@@ -52,8 +73,7 @@ export class LnBolt11LnbitsPaymentHandler implements PaymentHandler {
     });
 
     if (!response.ok) {
-      const text = await response.text();
-      throw new Error(`LNbits pay_invoice failed: ${response.status} ${text}`);
+      throw new Error(`LNbits pay_invoice failed: ${response.status}`);
     }
 
     const result = (await response.json()) as {

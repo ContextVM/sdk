@@ -1,3 +1,4 @@
+import type { PaymentResultRecovery } from '../payments/payment-recovery.js';
 import {
   type ListToolsResult,
   isJSONRPCNotification,
@@ -210,6 +211,8 @@ export class NostrServerTransport
   private readonly inboundMiddlewares: InboundMiddlewareFn[] = [];
   /** Aborted at the top of `close()`; see `closeSignal`. */
   private readonly closeController = new AbortController();
+  private readonly closeHandlers = new Set<() => Promise<void>>();
+  private closing?: Promise<void>;
   private readonly listToolsResultTransformers: ListToolsResultTransformer[] =
     [];
   private readonly listToolsAnnouncementTagsProducers: ListToolsAnnouncementTagsProducer[] =
@@ -235,6 +238,7 @@ export class NostrServerTransport
   private readonly eventPipeline: ServerEventPipeline;
   private readonly inboundCoordinator: ServerInboundCoordinator;
   private readonly inboundNotificationDispatcher: InboundNotificationDispatcher;
+  private paymentResultRecovery?: PaymentResultRecovery;
   private readonly outboundResponseRouter: OutboundResponseRouter;
   private readonly outboundNotificationBroadcaster: OutboundNotificationBroadcaster;
 
@@ -428,6 +432,7 @@ export class NostrServerTransport
     );
 
     this.outboundResponseRouter = new OutboundResponseRouter({
+      closeSignal: this.closeSignal,
       correlationStore: this.correlationStore,
       sessionStore: this.sessionStore,
       announcementManager: this.announcementManager,
@@ -588,14 +593,39 @@ export class NostrServerTransport
     }
   }
 
-  /**
-   * Closes the transport, disconnecting from the relay.
-   */
-  public async close(): Promise<void> {
+  /** Prevents signing or queued result work from publishing after transport shutdown. */
+  protected override async publishEvent(event: NostrEvent): Promise<void> {
+    this.closeSignal.throwIfAborted();
+    await this.relayHandler.publish(event, { abortSignal: this.closeSignal });
+    this.closeSignal.throwIfAborted();
+  }
+
+  /** Registers cleanup for resources explicitly owned by a transport integration. */
+  public addCloseHandler(handler: () => Promise<void>): void {
+    if (this.closeSignal.aborted) throw new Error('Transport is closed');
+    this.closeHandlers.add(handler);
+  }
+
+  /** Closes the transport and disposes registered owned resources exactly once. */
+  public close(): Promise<void> {
+    this.closing ??= this.closeInternal();
+    return this.closing;
+  }
+
+  private async closeInternal(): Promise<void> {
     try {
       // Signal shutdown before any await: a payment verification that settles
       // during teardown must not forward, publish, or grant.
       this.closeController.abort();
+      const cleanup = await Promise.allSettled(
+        [...this.closeHandlers].map((handler) =>
+          Promise.resolve().then(handler),
+        ),
+      );
+      this.closeHandlers.clear();
+      for (const result of cleanup)
+        if (result.status === 'rejected')
+          this.onerror?.(new Error('Integration cleanup failed'));
 
       // Shutdown the task queue to prevent new tasks from being queued
       // and clear pending tasks to avoid operating on stale state
@@ -786,6 +816,29 @@ export class NostrServerTransport
    * popped by duplicate-delivery cleanup or the idle paying client's session
    * was LRU-evicted while payment settled (CEP-8).
    */
+  /** Uses the authorization store for result publication; persistence depends on that store. */
+  public setPaymentResultRecovery(recovery: PaymentResultRecovery): void {
+    this.paymentResultRecovery = recovery;
+    this.outboundResponseRouter.setPaymentResultJournal(recovery);
+  }
+
+  /** Republishes a recorded paid result without calling the application handler. */
+  public async retryPaymentResult(
+    clientPubkey: string,
+    requestEventId: string,
+  ): Promise<void> {
+    if (this.closeSignal.aborted) throw new Error('Transport is closed');
+    if (!this.paymentResultRecovery)
+      throw new Error('Payment result recovery is not configured');
+    await this.paymentResultRecovery.replay(
+      clientPubkey,
+      requestEventId,
+      (snapshot) =>
+        this.correlationStore.restoreRouteSnapshot(requestEventId, snapshot),
+      (response) => this.outboundResponseRouter.route(response),
+    );
+  }
+
   public capturePaymentRouteSnapshot(
     requestEventId: string,
     ttlMs: number,
@@ -812,19 +865,25 @@ export class NostrServerTransport
     correlatedEventId?: string,
     wrapKindHint?: number,
   ): Promise<void> {
+    const retained = correlatedEventId
+      ? this.correlationStore.peekRouteSnapshot(correlatedEventId)
+      : undefined;
+    const snapshot =
+      retained?.route.clientPubkey === clientPubkey ? retained : undefined;
     if (this.openStreamFactory.isClientEvicted(clientPubkey)) {
       // A probe-timeout eviction blacklists the pubkey until its pending
       // response routes (takePendingEviction). If the client has since
       // re-established a session, lift the blacklist instead of refusing —
       // otherwise a probe timeout whose response never routes permanently
       // breaks notification delivery (incl. payment_required) for that client.
-      if (!this.sessionStore.getSession(clientPubkey)) {
+      if (!snapshot?.session && !this.sessionStore.getSession(clientPubkey)) {
         throw new Error(`No active session found for client: ${clientPubkey}`);
       }
       this.openStreamFactory.clearClientEviction(clientPubkey);
     }
 
-    const session = this.sessionStore.getSession(clientPubkey);
+    const session =
+      snapshot?.session ?? this.sessionStore.getSession(clientPubkey);
     if (!session) {
       throw new Error(`No active session found for client: ${clientPubkey}`);
     }
@@ -846,7 +905,10 @@ export class NostrServerTransport
       fallbackWrapKind:
         wrapKindHint ??
         (correlatedEventId
-          ? this.correlationStore.getEventRoute(correlatedEventId)?.wrapKind
+          ? (
+              snapshot?.route ??
+              this.correlationStore.getEventRoute(correlatedEventId)
+            )?.wrapKind
           : undefined),
     });
 

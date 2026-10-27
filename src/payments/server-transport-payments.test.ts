@@ -9,6 +9,7 @@ describe('withServerPayments registration guard', () => {
   } {
     let inbound = 0;
     const stub = {
+      setPaymentResultRecovery: () => {},
       setAnnouncementExtraTags: () => {},
       setAnnouncementPricingTags: () => {},
       setSupportedPaymentInteraction: () => {},

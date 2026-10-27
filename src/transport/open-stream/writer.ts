@@ -63,6 +63,10 @@ export class OpenStreamWriter {
   private active = true;
   private operationQueue: Promise<void> = Promise.resolve();
   private abortPromise?: Promise<void>;
+  private pendingPublication?: {
+    frame: OpenStreamProgress;
+    committed: () => void | Promise<void>;
+  };
   private readonly abortController = new AbortController();
   private readonly externalNextProgress: (() => number) | undefined;
   private idleTimer: ReturnType<typeof setTimeout> | undefined;
@@ -121,21 +125,27 @@ export class OpenStreamWriter {
         return;
       }
 
-      await this.publishFrame(
+      if (this.pendingPublication)
+        throw new Error(
+          'Retry the pending stream frame before writing more data',
+        );
+      await this.publishRecoverable(
         buildOpenStreamChunkFrame({
           progressToken: this.progressToken,
           progress: this.nextProgress(),
           chunkIndex: this.chunkIndex,
           data,
         }),
+        () => {
+          this.chunkIndex += 1;
+        },
       );
-      this.chunkIndex += 1;
     });
   }
 
   public async ping(): Promise<void> {
     await this.enqueue(async () => {
-      if (!this.active) {
+      if (!this.active || this.pendingPublication) {
         return;
       }
 
@@ -156,6 +166,7 @@ export class OpenStreamWriter {
         return;
       }
 
+      if (this.pendingPublication) return;
       // An inbound ping means the peer is alive; refresh the keepalive idle
       // window before responding.
       this.armIdle();
@@ -176,19 +187,19 @@ export class OpenStreamWriter {
         return;
       }
 
+      if (this.pendingPublication)
+        throw new Error('Retry the pending stream frame before closing');
       this.markInactive();
-      try {
-        await this.publishFrame(
-          buildOpenStreamCloseFrame({
-            progressToken: this.progressToken,
-            progress: this.nextProgress(),
-            lastChunkIndex:
-              this.chunkIndex > 0 ? this.chunkIndex - 1 : undefined,
-          }),
-        );
-      } finally {
-        await this.onClose?.();
-      }
+      await this.publishRecoverable(
+        buildOpenStreamCloseFrame({
+          progressToken: this.progressToken,
+          progress: this.nextProgress(),
+          lastChunkIndex: this.chunkIndex > 0 ? this.chunkIndex - 1 : undefined,
+        }),
+        async () => {
+          await this.onClose?.();
+        },
+      );
     });
   }
 
@@ -202,6 +213,7 @@ export class OpenStreamWriter {
       return;
     }
 
+    this.pendingPublication = undefined;
     this.markInactive();
     const progress = this.nextProgress();
 
@@ -241,6 +253,7 @@ export class OpenStreamWriter {
    * transport teardown so armed keepalive timers do not outlive the writer.
    */
   public dispose(): void {
+    this.pendingPublication = undefined;
     this.markInactive();
   }
 
@@ -291,7 +304,11 @@ export class OpenStreamWriter {
   }
 
   private async handleIdleTimeout(): Promise<void> {
-    if (!this.active || this.pendingProbeNonce !== undefined) {
+    if (
+      !this.active ||
+      this.pendingPublication ||
+      this.pendingProbeNonce !== undefined
+    ) {
       return;
     }
 
@@ -342,15 +359,50 @@ export class OpenStreamWriter {
       return;
     }
 
-    await this.publishFrame(
+    if (this.pendingPublication?.frame.cvm.frameType === 'start') {
+      const pending = this.pendingPublication;
+      await this.publishRecoverable(pending.frame, pending.committed);
+      return;
+    }
+    if (this.pendingPublication)
+      throw new Error('Retry the pending stream frame before starting');
+    await this.publishRecoverable(
       buildOpenStreamStartFrame({
         progressToken: this.progressToken,
         progress: this.nextProgress(),
         contentType: this.contentType,
       }),
+      () => {
+        this.started = true;
+        this.armIdle();
+      },
     );
-    this.started = true;
+  }
+
+  private async publishRecoverable(
+    frame: OpenStreamProgress,
+    committed: () => void | Promise<void>,
+  ): Promise<void> {
+    this.pendingPublication = { frame, committed };
+    try {
+      await this.publishFrame(frame);
+    } catch (error) {
+      this.clearKeepalive();
+      throw error;
+    }
+    // Clear before the application callback: a callback failure must never republish a terminal frame.
+    this.pendingPublication = undefined;
+    await committed();
     this.armIdle();
+  }
+
+  /** Retransmits the identical failed frame. Does not restart a stream or rerun its producer. */
+  public async retryPendingFrame(): Promise<void> {
+    await this.enqueue(async () => {
+      const pending = this.pendingPublication;
+      if (pending)
+        await this.publishRecoverable(pending.frame, pending.committed);
+    });
   }
 
   private async enqueue(operation: () => Promise<void>): Promise<void> {

@@ -1,6 +1,14 @@
+import {
+  paymentOperation,
+  type PaymentOperationContext,
+} from './payment-cancellation.js';
 import type { JSONRPCRequest } from '@contextvm/mcp-sdk/types.js';
 import { type Logger } from '../core/utils/logger.js';
-import { withTimeout } from '../core/utils/utils.js';
+import { paymentPmiSchema } from './payment-option-schema.js';
+import {
+  validateProcessorPayment,
+  validateServerQuote,
+} from './server-payment-validation.js';
 import type {
   PricedCapability,
   ResolvePriceRejection,
@@ -10,6 +18,9 @@ import type {
   PaymentProcessorVerifyParams,
   PaymentRequired,
 } from './types.js';
+
+/** A client-visible payment-method refusal, raised before provider side effects. */
+export class PaymentMethodUnavailableError extends Error {}
 
 /** Builds the PMI → processor map, warning once on duplicate PMIs. */
 export function buildProcessorsByPmi(
@@ -93,6 +104,14 @@ export function resolvePaymentProcessor(
   processorsByPmi: Map<string, PaymentProcessor>,
   processors: readonly PaymentProcessor[],
 ): PaymentProcessor {
+  if (
+    clientPmis !== undefined &&
+    (!Array.isArray(clientPmis) ||
+      clientPmis.some((pmi) => !paymentPmiSchema.safeParse(pmi).success))
+  )
+    throw new PaymentMethodUnavailableError(
+      'Invalid client payment method identifier',
+    );
   const chosenPmi = clientPmis
     ? clientPmis.find((pmi) => processorsByPmi.has(pmi))
     : undefined;
@@ -101,14 +120,21 @@ export function resolvePaymentProcessor(
     ? processorsByPmi.get(chosenPmi)
     : processors[0];
 
+  if (clientPmis !== undefined && !chosenPmi) {
+    throw new PaymentMethodUnavailableError(
+      'No mutually supported payment method',
+    );
+  }
+
   if (!chosenProcessor) {
-    throw new Error('No payment processors configured');
+    throw new PaymentMethodUnavailableError('No payment processors configured');
   }
 
   return chosenProcessor;
 }
 
 export type InitiationResult =
+  | { kind: 'superseded' }
   | {
       kind: 'rejected';
       pmi: string;
@@ -141,26 +167,24 @@ export async function resolveAndInitiatePayment(params: {
     }) => Promise<ResolvePriceResult>;
   };
   processorsByPmi: Map<string, PaymentProcessor>;
+  context?: PaymentOperationContext;
+  /** Persists invoice-creation ownership immediately before provider I/O. */
+  beforeInvoice?: () => Promise<boolean>;
 }): Promise<InitiationResult> {
-  const processor = resolvePaymentProcessor(
-    params.clientPmis,
-    params.processorsByPmi,
-    params.options.processors,
-  );
-
-  const quote = params.options.resolvePrice
+  const rawQuote = params.options.resolvePrice
     ? await params.options.resolvePrice({
-        capability: params.priced,
-        request: params.message,
+        capability: { ...params.priced },
+        request: copyPricingRequest(params.message),
         clientPubkey: params.clientPubkey,
         requestEventId: params.requestEventId,
       })
     : { amount: params.priced.amount, description: params.priced.description };
+  const quote = validateServerQuote(rawQuote, params.priced);
 
   if (isResolvePriceRejection(quote)) {
     return {
       kind: 'rejected',
-      pmi: processor.pmi,
+      pmi: params.options.processors[0]?.pmi ?? 'unspecified',
       amount: params.priced.amount,
       message: quote.message,
       quote,
@@ -172,12 +196,41 @@ export async function resolveAndInitiatePayment(params: {
   }
 
   const resolvedQuote = quote;
-  const paymentRequired = await processor.createPaymentRequired({
-    amount: resolvedQuote.amount,
-    description: resolvedQuote.description,
-    requestEventId: params.requestEventId,
-    clientPubkey: params.clientPubkey,
-  });
+  const processor = resolvePaymentProcessor(
+    params.clientPmis,
+    params.processorsByPmi,
+    params.options.processors,
+  );
+  if (
+    processor.currencyUnit !== undefined &&
+    processor.currencyUnit !== params.priced.currencyUnit
+  )
+    throw new TypeError(
+      'Processor amount unit differs from the advertised capability unit',
+    );
+  if (params.beforeInvoice && !(await params.beforeInvoice()))
+    return { kind: 'superseded' };
+  const operation = paymentOperation(params.context, 5 * 60 * 1000);
+  let paymentRequired: PaymentRequired;
+  try {
+    operation.signal.throwIfAborted();
+    paymentRequired = validateProcessorPayment(
+      await operation.wait(
+        processor.createPaymentRequired({
+          amount: resolvedQuote.amount,
+          description: resolvedQuote.description,
+          requestEventId: params.requestEventId,
+          clientPubkey: params.clientPubkey,
+          abortSignal: operation.signal,
+          deadlineMs: params.context?.deadlineMs,
+        }),
+      ),
+      processor,
+      resolvedQuote.amount,
+    );
+  } finally {
+    operation.dispose();
+  }
 
   const mergedMeta =
     resolvedQuote.meta === undefined && paymentRequired._meta === undefined
@@ -197,6 +250,18 @@ export async function resolveAndInitiatePayment(params: {
     paymentRequired,
     mergedMeta,
     verifyTimeoutMs,
+  };
+}
+
+function copyPricingRequest(request: JSONRPCRequest): JSONRPCRequest {
+  if (!request.params) return { ...request };
+  const { _meta, ...semantic } = request.params;
+  return {
+    ...request,
+    params: {
+      ...JSON.parse(JSON.stringify(semantic)),
+      ...(_meta && { _meta: { ..._meta } }),
+    },
   };
 }
 
@@ -221,27 +286,19 @@ export async function verifyPaymentUnlessShutdown(params: {
     return undefined;
   }
 
-  const controller = new AbortController();
-  const onShutdown = (): void => controller.abort();
-  shutdownSignal?.addEventListener('abort', onShutdown, { once: true });
-
+  const operation = paymentOperation({}, params.timeoutMs, shutdownSignal);
   try {
-    const verified = await withTimeout(
+    const verified = await operation.wait(
       params.processor.verifyPayment({
         ...params.verifyParams,
-        abortSignal: controller.signal,
+        abortSignal: operation.signal,
       }),
-      params.timeoutMs,
-      'verifyPayment timed out',
     );
     return shutdownSignal?.aborted ? undefined : verified;
-  } catch (err) {
-    if (shutdownSignal?.aborted) {
-      return undefined;
-    }
-    throw err;
+  } catch (error) {
+    if (shutdownSignal?.aborted) return undefined;
+    throw error;
   } finally {
-    shutdownSignal?.removeEventListener('abort', onShutdown);
-    controller.abort();
+    operation.dispose();
   }
 }

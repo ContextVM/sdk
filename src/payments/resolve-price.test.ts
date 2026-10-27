@@ -31,6 +31,7 @@ describe('resolvePrice (server payments)', () => {
         method: 'tools/call',
         name: 'add',
         amount: 1,
+        maxAmount: 123,
         currencyUnit: 'test',
         description: 'listed',
       },
@@ -138,6 +139,7 @@ describe('resolvePrice (server payments)', () => {
         method: 'tools/call',
         name: 'add',
         amount: 1,
+        maxAmount: 123,
         currencyUnit: 'test',
       },
     ] as const;
@@ -204,6 +206,7 @@ describe('resolvePrice (server payments)', () => {
         method: 'tools/call',
         name: 'add',
         amount: 1,
+        maxAmount: 123,
         currencyUnit: 'test',
       },
     ] as const;
@@ -361,6 +364,7 @@ describe('resolvePrice (server payments)', () => {
         method: 'tools/call',
         name: 'add',
         amount: 1,
+        maxAmount: 123,
         currencyUnit: 'test',
       },
     ] as const;

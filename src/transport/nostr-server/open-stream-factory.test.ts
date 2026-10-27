@@ -327,7 +327,11 @@ describe('ServerOpenStreamFactory.getOpenStreams', () => {
     const { factory } = createFactory();
 
     const first = factory.createWriterIfEnabled('evt-dup', 'pk-1', 'token-dup');
-    const second = factory.createWriterIfEnabled('evt-dup', 'pk-1', 'token-dup');
+    const second = factory.createWriterIfEnabled(
+      'evt-dup',
+      'pk-1',
+      'token-dup',
+    );
 
     // A duplicate delivery re-enters the inbound path for the same event id;
     // overwriting the reservation would orphan the writer already bound to
@@ -356,4 +360,24 @@ describe('ServerOpenStreamFactory.getOpenStreams', () => {
     await writer!.close();
     expect(factory.getWriter('evt-live')).toBeUndefined();
   });
+});
+
+test('a dropped duplicate cannot dispose a forwarded pre-write reservation', async () => {
+  const { factory, notifications } = createFactory();
+  const first = {};
+  const duplicate = {};
+  factory.reserveInvocation('paid', first);
+  const writer = factory.createWriterIfEnabled('paid', 'client', 'token');
+  expect(writer).toBeDefined();
+  factory.admitInvocation('paid');
+  factory.reserveInvocation('paid', duplicate);
+  expect(factory.ownsReservation('paid', duplicate)).toBe(false);
+  factory.releaseUnusedWriter('paid', true);
+  expect(writer?.hasStarted).toBe(false);
+  expect(writer?.isActive).toBe(true);
+  await writer?.write('paid data');
+  await writer?.close();
+  expect(notifications).toHaveLength(3);
+  expect(factory.getWriter('paid')).toBeUndefined();
+  factory.clear();
 });

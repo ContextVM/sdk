@@ -503,3 +503,42 @@ describe.serial('NostrServerTransport duplicate response prevention', () => {
     });
   });
 });
+
+it('close during signing prevents a late publication without mutating the response', async () => {
+  const counter = { publishCalls: 0 };
+  const signer = new PrivateKeySigner('1'.repeat(64));
+  let sign!: () => void;
+  let entered!: () => void;
+  const signing = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const paused = new Promise<void>((resolve) => {
+    sign = resolve;
+  });
+  const original = signer.signEvent.bind(signer);
+  signer.signEvent = async (event) => {
+    entered();
+    await paused;
+    return original(event);
+  };
+  const transport = new NostrServerTransport({
+    signer,
+    relayHandler: makeCountingRelayHandler(counter),
+    encryptionMode: EncryptionMode.DISABLED,
+  });
+  transport['sessionStore'].getOrCreateSession('client', false);
+  transport['correlationStore'].registerEventRoute('request', 'client', 7);
+  const response = {
+    jsonrpc: '2.0' as const,
+    id: 'request',
+    result: { ok: true },
+  };
+  const sending = transport.send(response).catch((error) => error);
+  await signing;
+  await transport.close();
+  sign();
+  expect(await sending).toBeInstanceOf(Error);
+  expect(counter.publishCalls).toBe(0);
+  expect(response.id).toBe('request');
+  expect(transport['correlationStore'].hasEventRoute('request')).toBe(false);
+});

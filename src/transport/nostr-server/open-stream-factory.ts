@@ -31,6 +31,7 @@ export interface ServerOpenStreamFactoryDeps {
   sendNotification: (
     clientPubkey: string,
     notification: JSONRPCMessage,
+    correlatedEventId?: string,
   ) => Promise<void>;
   handleResponse: (response: JSONRPCResponse) => Promise<void>;
   sessionStore: SessionStore;
@@ -65,6 +66,8 @@ export interface ServerOpenStreamInfo {
  * Manages the lifecycle of CEP-41 OpenStream instances for the server transport.
  */
 export class ServerOpenStreamFactory {
+  private readonly reservationOwners = new Map<string, object>();
+  private readonly admitted = new Set<string>();
   private readonly writers = new Map<string, OpenStreamWriter>();
   private readonly writerMeta = new Map<
     string,
@@ -267,7 +270,10 @@ export class ServerOpenStreamFactory {
   }
 
   /** Drops the client's token counter once no live sender remains for it. */
-  private pruneOutboundProgress(clientPubkey: string, progressToken: string): void {
+  private pruneOutboundProgress(
+    clientPubkey: string,
+    progressToken: string,
+  ): void {
     const key = ServerOpenStreamFactory.senderKey(clientPubkey, progressToken);
     if ((this.tokenEventIds.get(key)?.size ?? 0) > 0) return;
     const session = this.receiver.getSession(progressToken, clientPubkey);
@@ -379,6 +385,8 @@ export class ServerOpenStreamFactory {
     for (const writer of this.writers.values()) {
       writer.dispose();
     }
+    this.reservationOwners.clear();
+    this.admitted.clear();
     this.writers.clear();
     this.writerMeta.clear();
     this.tokenEventIds.clear();
@@ -435,6 +443,7 @@ export class ServerOpenStreamFactory {
     if (route?.progressToken) {
       this.evictInputStream(route.clientPubkey, String(route.progressToken));
     }
+    this.reservationOwners.delete(eventId);
     const existingWriter = this.writers.get(eventId);
     if (existingWriter && existingWriter.hasStarted) {
       this.pendingResponses.set(eventId, response);
@@ -454,18 +463,36 @@ export class ServerOpenStreamFactory {
    * reaper besides a routed response and full transport teardown, so every
    * drop path must call it or the entry leaks until close().
    */
-  public releaseUnusedWriter(eventId: string): void {
+  /** Marks a reservation as owned immediately before forwarding, independently of first write. */
+  public admitInvocation(eventId: string): void {
+    if (this.writers.has(eventId)) this.admitted.add(eventId);
+  }
+
+  /** Whether cleanup is attempting to remove resources owned by another delivery. */
+  public ownsInvocation(eventId: string): boolean {
+    return this.admitted.has(eventId);
+  }
+
+  /** Records the first delivery's reservation without transferring ownership to duplicates. */
+  public reserveInvocation(eventId: string, owner: object): void {
+    if (!this.reservationOwners.has(eventId))
+      this.reservationOwners.set(eventId, owner);
+  }
+
+  /** Whether this delivery may release the original reservation. */
+  public ownsReservation(eventId: string, owner: object): boolean {
+    const held = this.reservationOwners.get(eventId);
+    return held === undefined || held === owner;
+  }
+
+  public releaseUnusedWriter(eventId: string, dropping = false): void {
+    if (dropping && this.admitted.has(eventId)) return;
+    this.reservationOwners.delete(eventId);
     const writer = this.writers.get(eventId);
     if (!writer) {
       return;
     }
-    // A started writer is owned by a running invocation: a dropped duplicate
-    // of the same request event must not dispose the live stream. The
-    // writer's own lifecycle reaps it (close/abort → flushPendingResponse,
-    // probe timeout, or teardown clear()).
-    // ponytail: a duplicate dropped before the handler's first frame still
-    // disposes the reservation the forwarded handler holds — the request then
-    // completes stream-less; refcount reservations if that window matters.
+    // Once forwarded, even an unwritten reservation belongs to the invocation.
     if (writer.hasStarted) {
       return;
     }
@@ -505,11 +532,15 @@ export class ServerOpenStreamFactory {
       nextProgress: () =>
         this.nextOutboundProgress(clientPubkey, progressToken),
       publishFrame: async (frame) => {
-        await this.deps.sendNotification(clientPubkey, {
-          jsonrpc: '2.0',
-          method: 'notifications/progress',
-          params: frame,
-        });
+        await this.deps.sendNotification(
+          clientPubkey,
+          {
+            jsonrpc: '2.0',
+            method: 'notifications/progress',
+            params: frame,
+          },
+          eventId,
+        );
         return undefined;
       },
       onClose: async (): Promise<void> => {
@@ -550,6 +581,8 @@ export class ServerOpenStreamFactory {
   public async flushPendingResponse(eventId: string): Promise<void> {
     const pendingResponse = this.pendingResponses.get(eventId);
     this.pendingResponses.delete(eventId);
+    this.reservationOwners.delete(eventId);
+    this.admitted.delete(eventId);
     const token = this.writers.get(eventId)?.progressToken;
     const owner = this.writerMeta.get(eventId)?.clientPubkey;
     this.writers.delete(eventId);
@@ -570,6 +603,7 @@ export class ServerOpenStreamFactory {
 
   /** Removes a writer's map bookings and drops the client's counter if last. */
   private removeWriterBooking(eventId: string, progressToken: string): void {
+    this.admitted.delete(eventId);
     const owner = this.writerMeta.get(eventId)?.clientPubkey;
     this.writers.delete(eventId);
     this.writerMeta.delete(eventId);

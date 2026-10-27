@@ -3,6 +3,7 @@ import type {
   PaymentProcessor,
   PaymentProcessorCreateParams,
   PaymentProcessorVerifyParams,
+  PaymentRequired,
 } from '../types.js';
 import { PMI_BITCOIN_LIGHTNING_BOLT11 } from '../pmis.js';
 import { parseNwcConnectionString } from '../nip47/connection.js';
@@ -10,25 +11,31 @@ import { NwcClient } from '../nip47/nwc-client.js';
 import type {
   NwcConnection,
   NwcInvoiceResult,
-  NwcMakeInvoiceParams,
   NwcNotificationPayload,
   NwcResponse,
 } from '../nip47/types.js';
 import { ApplesauceRelayPool } from '../../relay/applesauce-relay-pool.js';
-import { createLogger, type Logger } from '../../core/utils/logger.js';
 import { satsToMsats } from '../nip47/utils.js';
 import { LruCache } from '../../core/utils/lru-cache.js';
-import { sleepWithAbort } from '../../core/utils/utils.js';
-
+import {
+  paymentOperation,
+  type PaymentOperationContext,
+} from '../payment-cancellation.js';
 export interface NwcClientLike {
   request<M extends string, P, R>(params: {
     method: M;
     request: { method: M; params: P };
     resultType: M;
+    abortSignal?: AbortSignal;
+    deadlineMs?: number;
   }): Promise<NwcResponse<M, R>>;
-  fetchInfoNotificationTypes(): Promise<ReadonlySet<string>>;
+  disconnect?(): Promise<void>;
+  fetchInfoNotificationTypes(
+    context?: PaymentOperationContext,
+  ): Promise<ReadonlySet<string>>;
   subscribeNotifications(params: {
     onNotification: (payload: NwcNotificationPayload) => void;
+    abortSignal?: AbortSignal;
   }): Promise<() => void>;
 }
 
@@ -55,7 +62,7 @@ export interface LnBolt11NwcPaymentProcessorOptions {
    * Controls whether payment verification uses NWC notifications.
    *
    * - `false`: always poll using `lookup_invoice`.
-   * - `true`: verify using `payment_received` notifications only.
+   * - `true`: verify using `payment_received` wakeups plus authenticated lookup fallback.
    * - `undefined` (default): best-effort auto-detect on first use via the wallet's info event.
    */
   enableNotificationVerification?: boolean;
@@ -77,345 +84,339 @@ export interface LnBolt11NwcPaymentProcessorOptions {
   invoiceHashCacheSize?: number;
 }
 
-/**
- * CEP-8 server payment processor for PMI `bitcoin-lightning-bolt11` backed by NIP-47 (NWC).
- */
+/** NWC settlement lookup with one shared notification subscription used as a wakeup hint. */
 export class LnBolt11NwcPaymentProcessor implements PaymentProcessor {
+  public readonly currencyUnit = 'sats';
   public readonly pmi = PMI_BITCOIN_LIGHTNING_BOLT11;
-
   private readonly nwc: NwcClientLike;
-  private readonly ttlSeconds: number;
-  private readonly invoiceExpirySeconds: number;
-  private readonly pollIntervalMs: number;
-  private readonly logger: Logger;
-
-  private notificationVerificationEnabled: boolean;
-  private initNotificationsPromise: Promise<void> | undefined;
-  private notificationsSubscribePromise: Promise<void> | undefined;
-
-  private notificationsUnsubscribe: (() => void) | undefined;
-  private readonly notificationWaiters = new Map<
-    string,
-    Array<(paymentHash: string) => void>
-  >();
-
-  // Dedupe concurrent verifyPayment() calls for the same pay_req to avoid amplifying
-  // relay + wallet load under duplicate delivery.
-  private readonly inFlightVerifications: LruCache<
-    Promise<{ _meta?: Record<string, unknown> }>
-  >;
-
-  // Cache invoice -> payment_hash when wallets provide it.
+  private readonly ownedClient: boolean;
+  private readonly shutdown = new AbortController();
   private readonly invoiceHashCache: LruCache<string>;
+  private readonly receipts: LruCache<boolean>;
+  private readonly waiters = new Map<string, Set<() => void>>();
+  private readonly active = new Map<
+    string,
+    {
+      promise: Promise<{ _meta?: Record<string, unknown> }>;
+      controller: AbortController;
+      users: number;
+    }
+  >();
+  private subscription?: Promise<void>;
+  private unsubscribe?: () => void;
+  private initialization?: Promise<void>;
+  private notificationEnabled: boolean;
+  private readonly ttlSeconds: number;
+  private readonly pollIntervalMs: number;
+  private readonly responseTimeoutMs: number;
+  private readonly invoiceExpirySeconds: number;
+  private readonly maxActive: number;
 
   public constructor(options: LnBolt11NwcPaymentProcessorOptions) {
     const connection =
       options.connection ??
       parseNwcConnectionString(options.nwcConnectionString);
-    const relayHandler =
-      options.relayHandler ?? new ApplesauceRelayPool([...connection.relays]);
-
+    this.ownedClient = !options.nwcClient;
     this.nwc =
       options.nwcClient ??
       new NwcClient({
-        relayHandler,
+        relayHandler:
+          options.relayHandler ??
+          new ApplesauceRelayPool([...connection.relays]),
+        ownsRelayHandler: !options.relayHandler,
         connection,
         responseTimeoutMs: options.responseTimeoutMs,
       });
-
     this.ttlSeconds = options.ttlSeconds ?? 300;
     this.invoiceExpirySeconds = options.invoiceExpirySeconds ?? this.ttlSeconds;
     this.pollIntervalMs = options.pollIntervalMs ?? 1500;
-    this.logger = createLogger('payments/nwc-processor');
-
-    this.notificationVerificationEnabled =
-      options.enableNotificationVerification ?? false;
-    if (options.enableNotificationVerification === undefined) {
-      this.notificationVerificationEnabled = false;
-      this.initNotificationsPromise = this.initNotificationsBestEffort();
-    }
-
-    this.inFlightVerifications = new LruCache<
-      Promise<{ _meta?: Record<string, unknown> }>
-    >(options.maxInFlightVerifications ?? 5000);
-    this.invoiceHashCache = new LruCache<string>(
+    this.responseTimeoutMs = options.responseTimeoutMs ?? 60_000;
+    this.maxActive = options.maxInFlightVerifications ?? 5000;
+    for (const value of [
+      this.ttlSeconds,
+      this.invoiceExpirySeconds,
+      this.pollIntervalMs,
+      this.responseTimeoutMs,
+      this.maxActive,
       options.invoiceHashCacheSize ?? 10000,
-    );
-  }
-
-  private async initNotificationsBestEffort(): Promise<void> {
-    try {
-      const types = await this.nwc.fetchInfoNotificationTypes();
-      this.notificationVerificationEnabled = types.has('payment_received');
-    } catch {
-      this.notificationVerificationEnabled = false;
+    ]) {
+      if (!Number.isFinite(value) || value <= 0)
+        throw new TypeError('NWC limits must be positive and finite');
+    }
+    this.invoiceHashCache = new LruCache(options.invoiceHashCacheSize ?? 10000);
+    this.receipts = new LruCache(options.invoiceHashCacheSize ?? 10000);
+    this.notificationEnabled = options.enableNotificationVerification ?? false;
+    if (options.enableNotificationVerification === undefined) {
+      const operation = paymentOperation(
+        {},
+        this.responseTimeoutMs,
+        this.shutdown.signal,
+      );
+      this.initialization = operation
+        .wait(
+          this.nwc.fetchInfoNotificationTypes({
+            abortSignal: operation.signal,
+          }),
+        )
+        .then((types) => {
+          this.notificationEnabled = types.has('payment_received');
+        })
+        .catch(() => {})
+        .finally(() => operation.dispose());
     }
   }
 
-  private async ensureInitResolved(): Promise<void> {
-    if (!this.initNotificationsPromise) return;
-    await this.initNotificationsPromise;
-    this.initNotificationsPromise = undefined;
-  }
-
-  private async ensureNotificationsSubscribed(): Promise<void> {
-    if (!this.notificationVerificationEnabled) return;
-    if (this.notificationsUnsubscribe) return;
-    // Memoize the in-flight subscribe: concurrent verifications racing here
-    // would each subscribe, and only the last unsubscribe handle is kept —
-    // the first subscription would leak for the process lifetime.
-    if (!this.notificationsSubscribePromise) {
-      this.notificationsSubscribePromise = this.nwc
-        .subscribeNotifications({
-          onNotification: (payload) => {
-            if (payload.notification_type !== 'payment_received') return;
-            const paymentHash = (
-              payload.notification as { payment_hash?: unknown }
-            )?.payment_hash;
-            if (typeof paymentHash !== 'string' || paymentHash.length === 0)
-              return;
-
-            const waiters = this.notificationWaiters.get(paymentHash);
-            if (!waiters || waiters.length === 0) return;
-            this.notificationWaiters.delete(paymentHash);
-            for (const w of waiters) w(paymentHash);
-          },
-        })
-        .then((unsubscribe) => {
-          this.notificationsUnsubscribe = unsubscribe;
+  private ensureSubscription(): Promise<void> {
+    if (
+      !this.notificationEnabled ||
+      this.unsubscribe ||
+      this.shutdown.signal.aborted
+    )
+      return Promise.resolve();
+    if (!this.subscription) {
+      const operation = paymentOperation(
+        {},
+        this.responseTimeoutMs,
+        this.shutdown.signal,
+      );
+      const pending = this.nwc.subscribeNotifications({
+        abortSignal: this.shutdown.signal,
+        onNotification: (payload) => {
+          if (
+            this.shutdown.signal.aborted ||
+            payload.notification_type !== 'payment_received'
+          )
+            return;
+          const hash = (payload.notification as { payment_hash?: unknown })
+            ?.payment_hash;
+          if (typeof hash !== 'string' || !hash) return;
+          this.receipts.set(hash, true);
+          for (const wake of this.waiters.get(hash) ?? []) wake();
+        },
+      });
+      let abandoned = false;
+      void pending.then(
+        (u) => {
+          if (abandoned || this.shutdown.signal.aborted) u();
+          else this.unsubscribe = u;
+        },
+        () => {},
+      );
+      this.subscription = operation
+        .wait(pending)
+        .then(() => {})
+        .catch(() => {
+          abandoned = true;
         })
         .finally(() => {
-          // Always clear: on success the unsubscribe handle gates re-entry, on
-          // failure the next call retries. Retaining a resolved promise would
-          // make a future re-entry (after the handle is released) silently
-          // skip resubscribing.
-          this.notificationsSubscribePromise = undefined;
+          operation.dispose();
+          this.subscription = undefined;
         });
     }
-    await this.notificationsSubscribePromise;
+    return this.subscription;
   }
 
-  private computeNextDelayMs(params: { attempt: number }): number {
-    // Prefer fast early checks (most invoices settle quickly), then back off.
-    // Keep a floor for legacy configs that rely on a predictable pollIntervalMs.
-    const scheduleMs = [500, 750, 1000, 1500, 2500, 4000, 6500, 10_000, 15_000];
-
-    const base = scheduleMs[Math.min(params.attempt, scheduleMs.length - 1)];
-    const flooredBase = Math.max(this.pollIntervalMs, base);
-
-    // Add small jitter to avoid stampeding on shared relay/wallet infra.
-    const jitter = Math.floor(Math.random() * 250);
-    return flooredBase + jitter;
-  }
-
-  private isSettledInvoice(result: NwcInvoiceResult | null): boolean {
-    if (!result) return false;
-    if (result.state === 'settled') return true;
-    if (typeof result.settled_at === 'number' && result.settled_at > 0)
-      return true;
-    return false;
-  }
-
-  private getReceiptFromInvoiceResult(params: {
-    result: NwcInvoiceResult | null;
-    requestEventId: string;
-  }): string {
-    const { result, requestEventId } = params;
-
-    // Prefer stable identifiers; avoid leaking preimage.
-    if (
-      typeof result?.payment_hash === 'string' &&
-      result.payment_hash.length > 0
-    ) {
-      return result.payment_hash;
-    }
-
-    // Some wallets do not provide `payment_hash` on lookup results. Still produce a stable
-    // settlement identifier string for correlation.
-    const settledAt =
-      typeof result?.settled_at === 'number' ? result.settled_at : undefined;
-    return `settled:${requestEventId}${settledAt ? `:${settledAt}` : ''}`;
-  }
-
+  /** Creates one invoice; a cancelled request can still have created it remotely. */
   public async createPaymentRequired(
     params: PaymentProcessorCreateParams,
-  ): Promise<{
-    amount: number;
-    pay_req: string;
-    description?: string;
-    pmi: string;
-    ttl?: number;
-  }> {
-    const request: NwcMakeInvoiceParams = {
-      amount: satsToMsats(params.amount),
-      description: params.description,
-      expiry: this.invoiceExpirySeconds,
-    };
-
-    const response = await this.nwc.request({
-      method: 'make_invoice',
-      resultType: 'make_invoice',
-      request: { method: 'make_invoice', params: request },
-    });
-
-    if (response.error) {
-      throw new Error(
-        `NWC make_invoice failed: ${response.error.code} (${response.error.message})`,
+  ): Promise<PaymentRequired> {
+    const operation = paymentOperation(
+      params,
+      this.responseTimeoutMs,
+      this.shutdown.signal,
+    );
+    try {
+      operation.signal.throwIfAborted();
+      const response = await operation.wait(
+        this.nwc.request({
+          method: 'make_invoice',
+          resultType: 'make_invoice',
+          abortSignal: operation.signal,
+          request: {
+            method: 'make_invoice',
+            params: {
+              amount: satsToMsats(params.amount),
+              description: params.description,
+              expiry: this.invoiceExpirySeconds,
+            },
+          },
+        }),
       );
+      if (response.error)
+        throw new Error(`NWC make_invoice failed: ${response.error.code}`);
+      const result = response.result as NwcInvoiceResult | null;
+      if (!result?.invoice)
+        throw new Error('NWC make_invoice returned no invoice');
+      if (result.payment_hash)
+        this.invoiceHashCache.set(result.invoice, result.payment_hash);
+      return {
+        amount: params.amount,
+        pay_req: result.invoice,
+        pmi: this.pmi,
+        description: params.description,
+        ttl: this.ttlSeconds,
+      };
+    } finally {
+      operation.dispose();
     }
-
-    const invoice = (response.result as NwcInvoiceResult | null)?.invoice;
-    if (!invoice) {
-      throw new Error('NWC make_invoice returned no invoice');
-    }
-
-    const paymentHash = (response.result as NwcInvoiceResult | null)
-      ?.payment_hash;
-    if (typeof paymentHash === 'string' && paymentHash.length > 0) {
-      this.invoiceHashCache.set(invoice, paymentHash);
-    }
-
-    // Keep TTL simple and predictable. Some providers return non-standard `expires_at`.
-    const ttl = this.ttlSeconds;
-
-    return {
-      amount: params.amount,
-      pay_req: invoice,
-      description: params.description,
-      pmi: this.pmi,
-      ttl,
-    };
   }
 
+  /** Shares provider work while each caller retains independent cancellation. */
   public async verifyPayment(
     params: PaymentProcessorVerifyParams,
   ): Promise<{ _meta?: Record<string, unknown> }> {
-    await this.ensureInitResolved();
-    const existing = this.inFlightVerifications.get(params.pay_req);
-    if (existing) {
-      return await existing;
-    }
-
-    const run = this.verifyPaymentInternal(params).finally(() => {
-      this.inFlightVerifications.delete(params.pay_req);
-    });
-    this.inFlightVerifications.set(params.pay_req, run);
-    return await run;
-  }
-
-  private async verifyPaymentInternal(
-    params: PaymentProcessorVerifyParams,
-  ): Promise<{ _meta?: Record<string, unknown> }> {
-    if (this.notificationVerificationEnabled) {
-      return await this.verifyPaymentWithNotifications(params);
-    }
-
-    // Note: server-payments middleware already bounds overall time by the `ttl` it emitted.
-    // We still keep this loop tight and predictable.
-    let attempt = 0;
-    while (true) {
-      if (params.abortSignal?.aborted) {
-        throw new Error('verifyPayment aborted');
-      }
-
-      const cachedPaymentHash = this.invoiceHashCache.get(params.pay_req);
-
-      const response = await this.nwc.request({
-        method: 'lookup_invoice',
-        resultType: 'lookup_invoice',
-        request: {
-          method: 'lookup_invoice',
-          params: cachedPaymentHash
-            ? { payment_hash: cachedPaymentHash }
-            : { invoice: params.pay_req },
-        },
-      });
-
-      if (response.error) {
-        // NOT_FOUND can happen if the wallet is lagging; treat as pending.
-        if (response.error.code !== 'NOT_FOUND') {
-          throw new Error(
-            `NWC lookup_invoice failed: ${response.error.code} (${response.error.message})`,
-          );
-        }
-      } else {
-        const result = response.result as NwcInvoiceResult | null;
-        this.logger.debug('lookup_invoice result', {
-          requestEventId: params.requestEventId,
-          state: result?.state,
-          hasPreimage: Boolean(result?.preimage),
-          hasSettledAt: typeof result?.settled_at === 'number',
-          hasPaymentHash: Boolean(result?.payment_hash),
+    const caller = paymentOperation(
+      params,
+      this.ttlSeconds * 1000,
+      this.shutdown.signal,
+    );
+    let entry = this.active.get(params.pay_req);
+    let joined = false;
+    try {
+      caller.signal.throwIfAborted();
+      if (!entry) {
+        if (this.active.size >= this.maxActive)
+          throw new Error('NWC verification capacity reached');
+        const controller = new AbortController();
+        const current = {
+          controller,
+          users: 0,
+          promise: Promise.resolve({}) as Promise<{
+            _meta?: Record<string, unknown>;
+          }>,
+        };
+        entry = current;
+        this.active.set(params.pay_req, current);
+        current.promise = this.verifyInternal({
+          ...params,
+          deadlineMs: undefined,
+          abortSignal: controller.signal,
+        }).finally(() => {
+          if (this.active.get(params.pay_req) === current)
+            this.active.delete(params.pay_req);
         });
-
-        if (
-          !cachedPaymentHash &&
-          typeof result?.payment_hash === 'string' &&
-          result.payment_hash.length > 0
-        ) {
-          this.invoiceHashCache.set(params.pay_req, result.payment_hash);
-        }
-
-        if (this.isSettledInvoice(result)) {
-          // Prefer payment_hash as a stable identifier (avoid exposing preimages).
-          const paymentHash = this.getReceiptFromInvoiceResult({
-            result,
-            requestEventId: params.requestEventId,
-          });
-          return { _meta: { payment_hash: paymentHash } };
-        }
-
-        const state = result?.state;
-        if (state === 'expired' || state === 'failed') {
-          throw new Error(`Invoice ${state}`);
-        }
       }
-
-      const delayMs = this.computeNextDelayMs({ attempt });
-      attempt += 1;
-      await sleepWithAbort({ ms: delayMs, abortSignal: params.abortSignal });
+      entry.users++;
+      joined = true;
+      return await caller.wait(entry.promise);
+    } finally {
+      caller.dispose();
+      if (joined && entry && --entry.users === 0) entry.controller.abort();
     }
   }
 
-  private async verifyPaymentWithNotifications(
+  private async verifyInternal(
     params: PaymentProcessorVerifyParams,
   ): Promise<{ _meta?: Record<string, unknown> }> {
-    await this.ensureNotificationsSubscribed();
-
-    if (params.abortSignal?.aborted) {
-      throw new Error('verifyPayment aborted');
-    }
-
-    const paymentHash = this.invoiceHashCache.get(params.pay_req);
-    if (!paymentHash) {
-      throw new Error('NWC notification verification requires payment_hash');
-    }
-
-    const got = await new Promise<string>((resolve, reject) => {
-      const existing = this.notificationWaiters.get(paymentHash);
-      const waiters = existing ?? [];
-      waiters.push(resolve);
-      this.notificationWaiters.set(paymentHash, waiters);
-
-      if (!params.abortSignal) return;
-      const abortSignal = params.abortSignal;
-
-      const onAbort = () => {
-        abortSignal.removeEventListener('abort', onAbort);
-
-        // Remove this waiter so future notifications don't leak memory.
-        const current = this.notificationWaiters.get(paymentHash);
-        if (current) {
-          const next = current.filter((w) => w !== resolve);
-          if (next.length === 0) this.notificationWaiters.delete(paymentHash);
-          else this.notificationWaiters.set(paymentHash, next);
+    const operation = paymentOperation(
+      params,
+      this.ttlSeconds * 1000,
+      this.shutdown.signal,
+    );
+    try {
+      // Lookup begins even if info/subscription setup stalls. Notifications only accelerate it.
+      void this.initialization?.then(() => this.ensureSubscription());
+      void this.ensureSubscription();
+      while (true) {
+        operation.signal.throwIfAborted();
+        const hash = this.invoiceHashCache.get(params.pay_req);
+        let wake!: () => void;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const hint = new Promise<void>((resolve) => {
+          wake = resolve;
+        });
+        if (hash) {
+          const set = this.waiters.get(hash) ?? new Set();
+          set.add(wake);
+          this.waiters.set(hash, set);
+          if (this.receipts.get(hash)) {
+            this.receipts.delete(hash);
+            wake();
+          }
         }
+        try {
+          let response:
+            NwcResponse<'lookup_invoice', NwcInvoiceResult> | undefined;
+          const request = paymentOperation(
+            { abortSignal: operation.signal },
+            this.responseTimeoutMs,
+          );
+          try {
+            response = await request.wait(
+              this.nwc.request({
+                method: 'lookup_invoice',
+                resultType: 'lookup_invoice',
+                abortSignal: request.signal,
+                request: {
+                  method: 'lookup_invoice',
+                  params: hash
+                    ? { payment_hash: hash }
+                    : { invoice: params.pay_req },
+                },
+              }),
+            );
+          } catch {
+            operation.signal.throwIfAborted();
+          } finally {
+            request.dispose();
+          }
+          if (
+            response?.error &&
+            ['UNAUTHORIZED', 'RESTRICTED', 'NOT_IMPLEMENTED'].includes(
+              response.error.code,
+            )
+          )
+            throw new Error(
+              `NWC lookup_invoice failed: ${response.error.code}`,
+            );
+          const result = response?.result;
+          if (result?.payment_hash && hash && result.payment_hash !== hash)
+            throw new Error('NWC lookup invoice hash mismatch');
+          if (result?.invoice && result.invoice !== params.pay_req)
+            throw new Error('NWC lookup invoice mismatch');
+          if (result?.type === 'outgoing')
+            throw new Error('NWC lookup is not a receiver invoice');
+          if (result?.payment_hash)
+            this.invoiceHashCache.set(params.pay_req, result.payment_hash);
+          if (
+            !response?.error &&
+            (result?.state === 'settled' ||
+              (typeof result?.settled_at === 'number' && result.settled_at > 0))
+          ) {
+            return {
+              _meta: {
+                payment_hash:
+                  result.payment_hash ?? `settled:${params.requestEventId}`,
+              },
+            };
+          }
+          // Even an expired invoice can settle late. Only authenticated settlement completes verification.
+          timer = setTimeout(wake, this.pollIntervalMs);
+          await operation.wait(hint);
+        } finally {
+          clearTimeout(timer);
+          if (hash) {
+            const set = this.waiters.get(hash);
+            set?.delete(wake);
+            if (!set?.size) this.waiters.delete(hash);
+          }
+        }
+      }
+    } finally {
+      operation.dispose();
+    }
+  }
 
-        reject(new Error('verifyPayment aborted'));
-      };
-      abortSignal.addEventListener('abort', onAbort, { once: true });
-    });
-
-    return { _meta: { payment_hash: got } };
+  /** Stops verifications/subscriptions; injected clients and relay pools stay usable. */
+  public async dispose(): Promise<void> {
+    if (this.shutdown.signal.aborted) return;
+    this.shutdown.abort();
+    this.unsubscribe?.();
+    this.unsubscribe = undefined;
+    for (const entry of this.active.values()) entry.controller.abort();
+    this.waiters.clear();
+    this.invoiceHashCache.clear();
+    this.receipts.clear();
+    if (this.ownedClient) await this.nwc.disconnect?.();
   }
 }

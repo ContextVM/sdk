@@ -86,7 +86,9 @@
     "format": "bun prettier --write src",
     "release": "bun run build && bun publish",
     "typecheck": "bun run tsc --noEmit",
-    "verify-exports": "bun run scripts/verify-exports.ts"
+    "verify-exports": "bun run scripts/verify-exports.ts",
+    "verify:payment-runtime": "node scripts/verify-payment-runtime.mjs",
+    "verify:browser": "bun build src/payments/index.ts src/transport/index.ts src/core/index.ts --target browser --outdir /tmp/contextvm-payment-browser"
   },
   "devDependencies": {
     "@changesets/cli": "^2.31.1",

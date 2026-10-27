@@ -29,14 +29,22 @@ export class LnBolt11NwcPaymentHandler implements PaymentHandler {
 
     this.nwc = new NwcClient({
       relayHandler,
+      ownsRelayHandler: !options.relayHandler,
       connection,
       responseTimeoutMs: options.responseTimeoutMs,
     });
   }
 
+  /** Stops owned NWC work without disconnecting a shared caller pool. */
+  public async dispose(): Promise<void> {
+    await this.nwc.disconnect();
+  }
+
   public async handle(req: PaymentHandlerRequest): Promise<void> {
     const response = await this.nwc.request({
       method: 'pay_invoice',
+      abortSignal: req.abortSignal,
+      deadlineMs: req.deadlineMs,
       resultType: 'pay_invoice',
       request: {
         method: 'pay_invoice',
@@ -47,9 +55,7 @@ export class LnBolt11NwcPaymentHandler implements PaymentHandler {
     });
 
     if (response.error) {
-      throw new Error(
-        `NWC pay_invoice failed: ${response.error.code} (${response.error.message})`,
-      );
+      throw new Error(`NWC pay_invoice failed: ${response.error.code}`);
     }
   }
 }

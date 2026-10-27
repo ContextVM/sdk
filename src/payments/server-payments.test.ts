@@ -138,14 +138,12 @@ describe('createServerPaymentsMiddleware pending-payment retention', () => {
     );
     expect(harness.invoiceCount('evt1')).toBe(1);
 
-    // Redelivery of the same request event while the entry is within its TTL:
-    // the duplicate awaits the (rejected) in-flight lifecycle instead of
-    // minting a second invoice. (After TTL expiry a retry re-invoices by
-    // design — idempotency is TTL-bounded.)
+    // The retained event record refuses another invoice even after the local run ends.
     await expect(harness.run('evt1')).rejects.toThrow(
       'payment rail unreachable',
     );
     expect(harness.invoiceCount('evt1')).toBe(1);
+    expect(harness.forwards()).toBe(0);
   });
 
   test('pre-invoice failure deletes the entry, so the retry mints exactly one invoice', async () => {
@@ -258,24 +256,12 @@ describe('createServerPaymentsMiddleware pending capacity', () => {
     expect(harness.forwards()).toBe(0);
   });
 
-  test('paymentTtlMs 0 falls back to the default so redelivery dedup survives', async () => {
-    // A zero TTL would birth-expire the pending entry while the invoice stays
-    // payable — disarming the duplicate-request dedup (CEP-8). It must fall
-    // back to the default window instead.
+  test('rejects paymentTtlMs 0 before creating payment work', () => {
     const spy = makeProcessor({ verify: 'throw' });
     const { sender } = makeSender();
-    const harness = buildHarness(spy, sender, { paymentTtlMs: 0 });
-
-    await expect(harness.run('evt-ttl0')).rejects.toThrow(
-      'payment rail unreachable',
+    expect(() => buildHarness(spy, sender, { paymentTtlMs: 0 })).toThrow(
+      'Invalid server payment options',
     );
-
-    // Redelivery while the (paid) invoice is still outstanding: deduped by
-    // the surviving pending entry, not re-invoiced.
-    await expect(harness.run('evt-ttl0')).rejects.toThrow(
-      'payment rail unreachable',
-    );
-    expect(harness.invoiceCount('evt-ttl0')).toBe(1);
   });
 });
 
@@ -490,13 +476,13 @@ describe('createServerPaymentsMiddleware transport shutdown', () => {
 
     const run = harness.run('evt1');
     await deferred.started;
-    expect(added).toEqual(['abort']);
-    expect(removed).toEqual([]);
+    expect(added).toEqual(['abort', 'abort']);
+    expect(removed).toEqual(['abort']);
 
     deferred.resolve();
     await run;
 
-    expect(removed).toEqual(['abort']);
+    expect(removed).toEqual(added);
     expect(harness.forwards()).toBe(1);
   });
 
