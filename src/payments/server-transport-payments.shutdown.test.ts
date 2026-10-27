@@ -10,7 +10,7 @@ import { waitFor } from '../core/utils/test.utils.js';
 import { PrivateKeySigner } from '../signer/private-key-signer.js';
 import { NostrClientTransport } from '../transport/nostr-client-transport.js';
 import { NostrServerTransport } from '../transport/nostr-server-transport.js';
-import { AuthorizationStore } from './authorization-store.js';
+import { InMemoryPaymentStateStore } from './in-memory-payment-state-store.js';
 import {
   PAYMENT_ACCEPTED_METHOD,
   PAYMENT_REQUIRED_ERROR_CODE,
@@ -21,7 +21,7 @@ import type {
   PaymentProcessorVerifyParams,
 } from './types.js';
 
-const PMI = 'pmi:controlled';
+const PMI = 'controlled';
 
 /**
  * Processor whose verification never settles on its own. The test decides
@@ -81,7 +81,10 @@ function createControlledProcessor(options: { rejectOnAbort: boolean }): {
   return { processor, verifyStarted, settle: () => settle(), outcomes };
 }
 
-async function startPaidServer(processor: PaymentProcessor): Promise<{
+async function startPaidServer(
+  processor: PaymentProcessor,
+  stateStore?: InMemoryPaymentStateStore,
+): Promise<{
   hub: MockRelayHub;
   serverPubkey: string;
   serverTransport: NostrServerTransport;
@@ -110,6 +113,7 @@ async function startPaidServer(processor: PaymentProcessor): Promise<{
     encryptionMode: EncryptionMode.DISABLED,
   });
   withServerPayments(serverTransport, {
+    stateStore,
     processors: [processor],
     pricedCapabilities: [
       { method: 'tools/call', name: 'add', amount: 21, currencyUnit: 'sats' },
@@ -237,13 +241,13 @@ describe('withServerPayments shutdown cancels in-flight verification', () => {
   }, 20_000);
 
   test('explicit gating: close() aborts the verify signal and a late settle clears pending instead of granting', async () => {
-    const grantSpy = spyOn(AuthorizationStore.prototype, 'grant');
-    const clearPendingSpy = spyOn(AuthorizationStore.prototype, 'clearPending');
+    const stateStore = new InMemoryPaymentStateStore();
+    const transitionSpy = spyOn(stateStore, 'transition');
     const { processor, verifyStarted, settle } = createControlledProcessor({
       rejectOnAbort: false,
     });
     const { hub, serverPubkey, serverTransport, toolCalls } =
-      await startPaidServer(processor);
+      await startPaidServer(processor, stateStore);
     const client = await connectClient({
       hub,
       serverPubkey,
@@ -257,7 +261,9 @@ describe('withServerPayments shutdown cancels in-flight verification', () => {
 
       const verifyParams = await verifyStarted;
       expect(verifyParams.abortSignal?.aborted).toBe(false);
-      expect(grantSpy).not.toHaveBeenCalled();
+      expect(
+        transitionSpy.mock.calls.filter(([change]) => change.type === 'grant'),
+      ).toHaveLength(0);
 
       await serverTransport.close();
 
@@ -266,12 +272,15 @@ describe('withServerPayments shutdown cancels in-flight verification', () => {
       settle();
       await Bun.sleep(100);
 
-      expect(grantSpy).not.toHaveBeenCalled();
-      expect(clearPendingSpy).toHaveBeenCalled();
+      expect(
+        transitionSpy.mock.calls.filter(([change]) => change.type === 'grant'),
+      ).toHaveLength(0);
+      expect(
+        transitionSpy.mock.calls.some(([change]) => change.type === 'expire'),
+      ).toBe(true);
       expect(toolCalls).toHaveLength(0);
     } finally {
-      grantSpy.mockRestore();
-      clearPendingSpy.mockRestore();
+      transitionSpy.mockRestore();
       await client.close();
     }
   }, 20_000);

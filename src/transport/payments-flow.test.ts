@@ -90,13 +90,8 @@ async function captureNextCtxvmEvent(params: {
 }
 
 /**
- * Nostr event ids are derived from (content, author, created_at, tags) at
- * second granularity. An explicit-gating retry republishes the same JSON-RPC
- * request; if it lands in the same second as the original, the identical event
- * id is deduplicated by relay subscriptions and the server never sees the
- * retry. Sleep past the current second boundary so the retry's event id
- * differs. Real-world payment flows naturally take >1s (wallet interaction,
- * settlement); this only affects instant-pay tests.
+ * Separates intentional test invocations at Nostr second granularity.
+ * Automatic payment retries are delayed by the client payment lifecycle.
  */
 async function sleepPastSecondBoundary(): Promise<void> {
   const waitMs = 1000 - (Date.now() % 1000) + 10;
@@ -217,11 +212,11 @@ describe.serial('payments fake flow (transport-level)', () => {
     );
 
     const processorB = new FakePaymentProcessor({
-      pmi: 'pmi:B',
+      pmi: 'pmi-b',
       verifyDelayMs: 1,
     });
     const processorC = new FakePaymentProcessor({
-      pmi: 'pmi:C',
+      pmi: 'pmi-c',
       verifyDelayMs: 1,
     });
     const pricedCapabilities = [
@@ -252,8 +247,8 @@ describe.serial('payments fake flow (transport-level)', () => {
     const clientPrivateKey = bytesToHex(clientSK);
     const clientPubkey = getPublicKey(clientSK);
     const handlers = [
-      new FakePaymentHandler({ pmi: 'pmi:A', delayMs: 1 }),
-      new FakePaymentHandler({ pmi: 'pmi:B', delayMs: 1 }),
+      new FakePaymentHandler({ pmi: 'pmi-a', delayMs: 1 }),
+      new FakePaymentHandler({ pmi: 'pmi-b', delayMs: 1 }),
     ];
 
     const clientTransport = new NostrClientTransport({
@@ -271,7 +266,7 @@ describe.serial('payments fake flow (transport-level)', () => {
         if (!event.content.includes('"method":"initialize"')) {
           return false;
         }
-        return event.tags.some((t) => t[0] === 'pmi' && t[1] === 'pmi:A');
+        return event.tags.some((t) => t[0] === 'pmi' && t[1] === 'pmi-a');
       },
     });
 
@@ -285,8 +280,8 @@ describe.serial('payments fake flow (transport-level)', () => {
     const initializeEvent = await initializeEventPromise;
     const pmiTags = initializeEvent.tags.filter((t) => t[0] === 'pmi');
     expect(pmiTags).toEqual([
-      ['pmi', 'pmi:A'],
-      ['pmi', 'pmi:B'],
+      ['pmi', 'pmi-a'],
+      ['pmi', 'pmi-b'],
     ]);
 
     const originalOnMessage = paidClientTransport.onmessage;
@@ -300,7 +295,7 @@ describe.serial('payments fake flow (transport-level)', () => {
       arguments: { a: 1, b: 2 },
     });
 
-    expect(observedPaymentPmi).toBe('pmi:B');
+    expect(observedPaymentPmi).toBe('pmi-b');
 
     await client.close();
     await mcpServer.close();
@@ -324,7 +319,10 @@ describe.serial('payments fake flow (transport-level)', () => {
       }),
     );
 
-    const processor = new FakePaymentProcessor({ verifyDelayMs: 1 });
+    const processor = new FakePaymentProcessor({
+      verifyDelayMs: 1,
+      pmi: 'pmi-a',
+    });
     const pricedCapabilities = [
       {
         method: 'tools/call',
@@ -352,7 +350,7 @@ describe.serial('payments fake flow (transport-level)', () => {
     const clientSK = generateSecretKey();
     const clientPrivateKey = bytesToHex(clientSK);
     const clientPubkey = getPublicKey(clientSK);
-    const handlers = [new FakePaymentHandler({ pmi: 'pmi:A', delayMs: 1 })];
+    const handlers = [new FakePaymentHandler({ pmi: 'pmi-a', delayMs: 1 })];
 
     const clientTransport = new NostrClientTransport({
       signer: new PrivateKeySigner(clientPrivateKey),
@@ -374,7 +372,7 @@ describe.serial('payments fake flow (transport-level)', () => {
         if (!event.content.includes('"method":"tools/call"')) {
           return false;
         }
-        return event.tags.some((t) => t[0] === 'pmi' && t[1] === 'pmi:A');
+        return event.tags.some((t) => t[0] === 'pmi' && t[1] === 'pmi-a');
       },
       timeoutMs: 4000,
     });
@@ -388,13 +386,13 @@ describe.serial('payments fake flow (transport-level)', () => {
 
     const callEvent = await callEventPromise;
     const pmiTags = callEvent.tags.filter((t) => t[0] === 'pmi');
-    expect(pmiTags).toEqual([['pmi', 'pmi:A']]);
+    expect(pmiTags).toEqual([['pmi', 'pmi-a']]);
 
     await client.close();
     await mcpServer.close();
   }, 20000);
 
-  test('PMI selection: falls back to server order when no intersection', async () => {
+  test('PMI selection: disjoint sets refuse before invoice creation or wallet work', async () => {
     const serverSK = generateSecretKey();
     const serverPrivateKey = bytesToHex(serverSK);
     const serverPublicKey = getPublicKey(serverSK);
@@ -413,13 +411,15 @@ describe.serial('payments fake flow (transport-level)', () => {
     );
 
     const processorB = new FakePaymentProcessor({
-      pmi: 'pmi:B',
+      pmi: 'pmi-b',
       verifyDelayMs: 1,
     });
     const processorC = new FakePaymentProcessor({
-      pmi: 'pmi:C',
+      pmi: 'pmi-c',
       verifyDelayMs: 1,
     });
+    const createB = spyOn(processorB, 'createPaymentRequired');
+    const createC = spyOn(processorC, 'createPaymentRequired');
     const pricedCapabilities = [
       {
         method: 'tools/call',
@@ -445,7 +445,8 @@ describe.serial('payments fake flow (transport-level)', () => {
     await mcpServer.connect(serverTransport);
 
     const clientPrivateKey = bytesToHex(generateSecretKey());
-    const handlers = [new FakePaymentHandler({ pmi: 'pmi:A', delayMs: 1 })];
+    const handlers = [new FakePaymentHandler({ pmi: 'pmi-a', delayMs: 1 })];
+    const wallet = spyOn(handlers[0], 'handle');
 
     const clientTransport = new NostrClientTransport({
       signer: new PrivateKeySigner(clientPrivateKey),
@@ -467,15 +468,21 @@ describe.serial('payments fake flow (transport-level)', () => {
       originalOnMessage?.(msg);
     };
 
-    await client.callTool({
-      name: 'add',
-      arguments: { a: 1, b: 2 },
-    });
-
-    expect(observedPaymentPmi).toBe('pmi:B');
-
-    await client.close();
-    await mcpServer.close();
+    try {
+      await expect(
+        client.callTool({ name: 'add', arguments: { a: 1, b: 2 } }),
+      ).rejects.toThrow('mutually supported');
+      expect(observedPaymentPmi).toBeUndefined();
+      expect(createB).not.toHaveBeenCalled();
+      expect(createC).not.toHaveBeenCalled();
+      expect(wallet).not.toHaveBeenCalled();
+    } finally {
+      createB.mockRestore();
+      createC.mockRestore();
+      wallet.mockRestore();
+      await client.close();
+      await mcpServer.close();
+    }
   }, 20000);
 
   test('PMI selection: when client advertises none, uses server order', async () => {
@@ -497,11 +504,11 @@ describe.serial('payments fake flow (transport-level)', () => {
     );
 
     const processorB = new FakePaymentProcessor({
-      pmi: 'pmi:B',
+      pmi: 'pmi-b',
       verifyDelayMs: 1,
     });
     const processorC = new FakePaymentProcessor({
-      pmi: 'pmi:C',
+      pmi: 'pmi-c',
       verifyDelayMs: 1,
     });
     const pricedCapabilities = [
@@ -553,7 +560,7 @@ describe.serial('payments fake flow (transport-level)', () => {
       arguments: { a: 1, b: 2 },
     });
 
-    expect(observedPaymentPmi).toBe('pmi:B');
+    expect(observedPaymentPmi).toBe('pmi-b');
 
     await client.close();
     await mcpServer.close();
@@ -837,10 +844,12 @@ describe.serial('payments fake flow (transport-level)', () => {
     expect(acceptedSent).toBe(0);
   });
 
-  test('verification timeout clears pending state (ttl-based)', async () => {
+  test('verification timeout preserves invoice identity for event replay', async () => {
+    let invoices = 0;
     const processor: PaymentProcessor = {
       pmi: 'fake',
       async createPaymentRequired(params) {
+        invoices++;
         return {
           amount: params.amount,
           pay_req: `fake:${params.requestEventId}:${params.clientPubkey}:${params.amount}`,
@@ -904,10 +913,10 @@ describe.serial('payments fake flow (transport-level)', () => {
     expect(elapsed).toBeLessThan(3000);
     expect(forwarded).toBe(0);
 
-    // Retry should not be black-holed: it should attempt again and time out again.
-    await expect(mw(message, ctx, forward)).rejects.toThrow(
-      /verifyPayment timed out/,
-    );
+    // The same admitted event cannot create a second payment after its lease expires.
+    await mw(message, ctx, forward);
+    expect(invoices).toBe(1);
+    expect(forwarded).toBe(0);
   }, 20000);
 
   test('client respects payment TTL without timing out even when TTL > MCP timeout (immediate-heartbeat regression)', async () => {
@@ -1091,7 +1100,6 @@ describe.serial('payments fake flow (transport-level)', () => {
       handlers: [],
       paymentInteraction: 'explicit_gating',
       onPaymentRequired: async () => {
-        await sleepPastSecondBoundary();
         explicitPaymentHandled = true;
         return { paid: true };
       },
@@ -1196,8 +1204,7 @@ describe.serial('payments fake flow (transport-level)', () => {
 
     const event = await capturePromise;
     const piTag = event.tags.find((t) => t[0] === 'payment_interaction') as
-      | readonly string[]
-      | undefined;
+      readonly string[] | undefined;
     expect(piTag?.[1]).toBe('explicit_gating');
 
     await client.close();
@@ -1268,7 +1275,6 @@ describe.serial('payments fake flow (transport-level)', () => {
       handlers: [],
       paymentInteraction: 'explicit_gating',
       onPaymentRequired: async () => {
-        await sleepPastSecondBoundary();
         return { paid: true };
       },
     });
@@ -1548,7 +1554,6 @@ describe.serial('payments fake flow (transport-level)', () => {
       handlers: [],
       paymentInteraction: 'explicit_gating',
       onPaymentRequired: async () => {
-        await sleepPastSecondBoundary();
         return { paid: true };
       },
     });
@@ -1620,7 +1625,8 @@ describe.serial('payments fake flow (transport-level)', () => {
           {
             method: 'tools/call',
             name: 'add',
-            amount: 1, // static fallback; resolvePrice overrides this
+            amount: 1,
+            maxAmount: 42, // Inclusive advertised range for dynamic quotes.
             currencyUnit: 'test',
           },
         ],
@@ -1646,7 +1652,6 @@ describe.serial('payments fake flow (transport-level)', () => {
       handlers: [],
       paymentInteraction: 'explicit_gating',
       onPaymentRequired: async () => {
-        await sleepPastSecondBoundary();
         return { paid: true };
       },
     });
@@ -1976,7 +1981,6 @@ describe.serial('payments fake flow (transport-level)', () => {
       handlers: [],
       paymentInteraction: 'explicit_gating',
       onPaymentRequired: async () => {
-        await sleepPastSecondBoundary();
         explicitHandled = true;
         return { paid: true };
       },
@@ -2082,7 +2086,6 @@ describe.serial('payments fake flow (transport-level)', () => {
       handlers: [],
       paymentInteraction: 'explicit_gating',
       onPaymentRequired: async () => {
-        await sleepPastSecondBoundary();
         explicitHandled = true;
         return { paid: true };
       },
@@ -2273,7 +2276,6 @@ describe.serial('payments fake flow (transport-level)', () => {
       handlers: [],
       paymentInteraction: 'explicit_gating',
       onPaymentRequired: async () => {
-        await sleepPastSecondBoundary();
         return { paid: true };
       },
     });
@@ -2413,7 +2415,6 @@ describe.serial('payments fake flow (transport-level)', () => {
       handlers: [],
       paymentInteraction: 'explicit_gating',
       onPaymentRequired: async () => {
-        await sleepPastSecondBoundary();
         explicitHandled = true;
         return { paid: true };
       },

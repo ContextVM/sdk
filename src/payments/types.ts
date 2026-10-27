@@ -3,6 +3,7 @@ import type {
   JSONRPCNotification,
   JSONRPCRequest,
 } from '@contextvm/mcp-sdk/types.js';
+import type { VerifiedPaymentEvent } from './payment-state-store.js';
 
 /**
  * A priced capability pattern, consistent with server-side authorization exclusions.
@@ -158,6 +159,8 @@ export interface PaymentHandlerRequest {
   /** Transparency metadata from the server's `payment_required._meta`. */
   _meta?: Record<string, unknown>;
   requestEventId: string;
+  /** Aborted when the invocation ends; check before starting an awaited wallet action. */
+  abortSignal?: AbortSignal;
 }
 
 /**
@@ -195,6 +198,8 @@ export interface PaymentProcessorVerifyParams {
 export type ResolvePriceQuote = {
   /** Final amount to charge for this specific invocation. */
   amount: number;
+  /** When supplied, must match the advertised capability unit; no implicit conversion. */
+  currencyUnit?: string;
   /** Optional override for the payment request description. */
   description?: string;
   /** Optional transparency metadata attached to `payment_required.params._meta`. */
@@ -244,10 +249,17 @@ export function waivePrice(meta?: Record<string, unknown>): ResolvePriceWaiver {
  */
 export function quotePrice(
   amount: number,
-  options?: { description?: string; meta?: Record<string, unknown> },
+  options?: {
+    description?: string;
+    meta?: Record<string, unknown>;
+    currencyUnit?: string;
+  },
 ): ResolvePriceQuote {
   return {
     amount,
+    ...(options?.currencyUnit !== undefined && {
+      currencyUnit: options.currencyUnit,
+    }),
     ...(options?.description !== undefined && {
       description: options.description,
     }),
@@ -262,9 +274,7 @@ export function quotePrice(
  * - Return a rejection object to emit `payment_rejected` without asking for payment.
  */
 export type ResolvePriceResult =
-  | ResolvePriceQuote
-  | ResolvePriceRejection
-  | ResolvePriceWaiver;
+  ResolvePriceQuote | ResolvePriceRejection | ResolvePriceWaiver;
 
 /**
  * Server-side callback for dynamic pricing.
@@ -298,6 +308,8 @@ export interface PaymentRequired {
 export interface PaymentProcessor {
   /** The PMI this processor can issue/verify */
   readonly pmi: string;
+  /** Native amount unit. Legacy processors without this field inherit the capability unit. */
+  readonly currencyUnit?: string;
 
   /** Create a payment request for a specific capability invocation */
   createPaymentRequired(
@@ -313,6 +325,8 @@ export interface PaymentProcessor {
 export interface ServerPaymentsContext {
   /** The client pubkey associated with the inbound request. */
   clientPubkey: string;
+  /** Immutable identity of the verified event, independent of mutable JSON-RPC IDs. */
+  requestEvent?: VerifiedPaymentEvent;
 
   /**
    * Optional list of client-advertised PMIs (ordered by client preference).

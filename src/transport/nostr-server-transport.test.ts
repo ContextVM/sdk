@@ -197,8 +197,8 @@ describe.serial('NostrServerTransport', () => {
 
       withServerPayments(transport, {
         processors: [
-          new FakePaymentProcessor({ pmi: 'pmi:B', verifyDelayMs: 1 }),
-          new FakePaymentProcessor({ pmi: 'pmi:C', verifyDelayMs: 1 }),
+          new FakePaymentProcessor({ pmi: 'pmi-b', verifyDelayMs: 1 }),
+          new FakePaymentProcessor({ pmi: 'pmi-c', verifyDelayMs: 1 }),
         ],
         pricedCapabilities: [
           {
@@ -250,8 +250,8 @@ describe.serial('NostrServerTransport', () => {
       expect(announcement).toBeDefined();
       expect(announcement!.tags).toEqual(
         expect.arrayContaining([
-          ['pmi', 'pmi:B'],
-          ['pmi', 'pmi:C'],
+          ['pmi', 'pmi-b'],
+          ['pmi', 'pmi-c'],
           ['cap', 'tool:add', '123', 'sats'],
         ]),
       );

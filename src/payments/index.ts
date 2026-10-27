@@ -18,3 +18,7 @@ export * from './processors/ln-bolt11-nwc-payment-processor.js';
 export * from './processors/ln-bolt11-lnbits-payment-processor.js';
 export * from './processors/ln-bolt11-zap-payment-processor.js';
 export * from './constants.js';
+export * from './payment-state-store.js';
+export * from './in-memory-payment-state-store.js';
+export * from './authorization-store.js';
+export * from './canonical-identity.js';

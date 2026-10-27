@@ -31,6 +31,8 @@ export interface LnBolt11LnbitsPaymentProcessorOptions {
  * for settlement using the same API.
  */
 export class LnBolt11LnbitsPaymentProcessor implements PaymentProcessor {
+  /** Native amount unit; conversion to millisatoshis happens inside the adapter. */
+  public readonly currencyUnit = 'sats';
   public readonly pmi = PMI_BITCOIN_LIGHTNING_BOLT11;
 
   private readonly lnbitsUrl: string;

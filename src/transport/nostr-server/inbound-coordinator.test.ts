@@ -185,3 +185,36 @@ describe('ServerInboundCoordinator resource subscriptions', () => {
     expect(subscriptions.getSubscribers(resourceUri)).toEqual(new Set());
   });
 });
+
+test('payment event context is frozen before asynchronous authorization or middleware mutation', async () => {
+  const event = requestEvent('verified-event');
+  const original = {
+    id: event.id,
+    author: event.pubkey,
+    createdAt: event.created_at,
+  };
+  let observed: unknown;
+  const { coordinator } = createCoordinator({
+    authorizationPolicy: new AuthorizationPolicy({
+      isPubkeyAllowed: async () => {
+        event.created_at = 0;
+        return true;
+      },
+    }),
+    inboundMiddlewares: [
+      async (message, ctx, forward) => {
+        observed = ctx.requestEvent;
+        expect(Object.isFrozen(ctx.requestEvent)).toBe(true);
+        if ('id' in message) message.id = 'application-mutated-id';
+        await forward(message);
+      },
+    ],
+  });
+  await coordinator.authorizeAndProcessEvent(
+    event,
+    false,
+    subscriptionRequest('rpc-id', 'resources/read', resourceUri),
+  );
+  await sleep(0);
+  expect(observed).toEqual(original);
+});

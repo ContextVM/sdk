@@ -104,6 +104,11 @@ export class ServerInboundCoordinator {
   ): Promise<void> {
     try {
       const inboundMessage: JSONRPCMessage = mcpMessage;
+      const requestEvent = Object.freeze({
+        id: event.id,
+        author: event.pubkey,
+        createdAt: event.created_at,
+      });
 
       const authDecision = await this.deps.authorizationPolicy.authorize(
         event.pubkey,
@@ -281,6 +286,7 @@ export class ServerInboundCoordinator {
 
       const ctx = {
         clientPubkey: event.pubkey,
+        requestEvent,
         clientPmis: clientPmis.length > 0 ? clientPmis : undefined,
         paymentInteraction:
           session.effectivePaymentInteraction ?? 'transparent',
