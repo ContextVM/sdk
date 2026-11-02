@@ -1,3 +1,9 @@
+import {
+  seedGrant,
+  seedPending,
+  hasGrant,
+  pendingRemainingMs,
+} from '../__mocks__/payment-state.js';
 import { describe, expect, test } from 'bun:test';
 import type {
   JSONRPCErrorResponse,
@@ -165,7 +171,7 @@ describe('Explicit Gating Middleware', () => {
       message.method,
       message.params,
     );
-    store.grant(identity, 10000);
+    await seedGrant(store, identity, 10000);
 
     let forwarded = false;
     await mw(message, ctx, async () => {
@@ -175,9 +181,9 @@ describe('Explicit Gating Middleware', () => {
     expect(sentResponses.length).toBe(0);
     expect(forwarded).toBe(true);
 
-    // Auth should be consumed, second call should trigger payment required
+    // A distinct invocation needs a fresh payment; replaying the claimed event stays consumed.
     let forwarded2 = false;
-    await mw(message, ctx, async () => {
+    await mw({ ...message, id: 'independent-invocation' }, ctx, async () => {
       forwarded2 = true;
     });
 
@@ -315,7 +321,7 @@ describe('Explicit Gating Middleware', () => {
 
     // (5) Authorization is single-use: next call needs a fresh payment.
     let forwarded4 = false;
-    await mw(message, ctx, async () => {
+    await mw({ ...message, id: 'next-invocation' }, ctx, async () => {
       forwarded4 = true;
     });
     expect(forwarded4).toBe(false);
@@ -446,7 +452,8 @@ describe('Explicit Gating Middleware', () => {
     });
 
     // Grant authorization for add({ a: 1, b: 2 }).
-    store.grant(
+    await seedGrant(
+      store,
       computeCanonicalInvocationIdentity(
         ctx.clientPubkey,
         message.method,
@@ -455,10 +462,10 @@ describe('Explicit Gating Middleware', () => {
       10000,
     );
 
-    // Different params: add({ a: 9, b: 9 }).
+    // Different params arrive as a distinct signed event.
     const otherMessage: JSONRPCRequest = {
       jsonrpc: '2.0',
-      id: 'event-id',
+      id: 'different-params-event',
       method: 'tools/call',
       params: { name: 'add', arguments: { a: 9, b: 9 } },
     };
@@ -498,7 +505,8 @@ describe('Explicit Gating Middleware', () => {
     });
 
     // Grant authorization scoped to 'test-client'.
-    store.grant(
+    await seedGrant(
+      store,
       computeCanonicalInvocationIdentity(
         ctx.clientPubkey,
         message.method,
@@ -549,7 +557,8 @@ describe('Explicit Gating Middleware', () => {
 
     // Identity is computed from method + params only; the original request's
     // id ('event-id') is intentionally excluded from the canonical form.
-    store.grant(
+    await seedGrant(
+      store,
       computeCanonicalInvocationIdentity(
         ctx.clientPubkey,
         message.method,
@@ -603,7 +612,8 @@ describe('Explicit Gating Middleware', () => {
     });
 
     // Grant authorization for the invocation carrying progressToken 1.
-    store.grant(
+    await seedGrant(
+      store,
       computeCanonicalInvocationIdentity(
         ctx.clientPubkey,
         message.method,
@@ -639,7 +649,8 @@ describe('Explicit Gating Middleware', () => {
     });
 
     // A single grant is available for this invocation.
-    store.grant(
+    await seedGrant(
+      store,
       computeCanonicalInvocationIdentity(
         ctx.clientPubkey,
         message.method,
@@ -654,17 +665,19 @@ describe('Explicit Gating Middleware', () => {
     };
 
     // Fire two concurrent middleware calls for the same invocation.
-    await Promise.all([mw(message, ctx, forward), mw(message, ctx, forward)]);
+    await Promise.all([
+      mw(message, ctx, forward),
+      mw({ ...message, id: 'independent-concurrent-event' }, ctx, forward),
+    ]);
 
     // Exactly one consumes the single-use grant and forwards; the other is
-    // gated with a fresh -32042. claim() is synchronous, so the first call
-    // to reach it always wins deterministically.
+    // gated with a fresh -32042. Claim and reservation share one atomic store operation.
     expect(forwards).toBe(1);
     expect(sentResponses).toHaveLength(1);
     expect(sentResponses[0].error.code).toBe(PAYMENT_REQUIRED_ERROR_CODE);
   });
 
-  test('expired grant yields a fresh -32042 instead of forwarding', async () => {
+  test('expired paid grant requires recovery instead of another payment', async () => {
     const store = new AuthorizationStore();
     const sentResponses: JSONRPCErrorResponse[] = [];
 
@@ -680,7 +693,8 @@ describe('Explicit Gating Middleware', () => {
     });
 
     // Grant authorization with a very short TTL.
-    store.grant(
+    await seedGrant(
+      store,
       computeCanonicalInvocationIdentity(
         ctx.clientPubkey,
         message.method,
@@ -692,8 +706,7 @@ describe('Explicit Gating Middleware', () => {
     // Wait past the grant TTL so it expires before the retry arrives.
     await new Promise((r) => setTimeout(r, 75));
 
-    // The stale grant must NOT authorize the request: the middleware should
-    // treat it as unpaid and emit a fresh -32042 rather than forwarding.
+    // An expired paid right remains observable; do not silently ask the client to pay again.
     let forwarded = false;
     await mw(message, ctx, async () => {
       forwarded = true;
@@ -701,7 +714,11 @@ describe('Explicit Gating Middleware', () => {
 
     expect(forwarded).toBe(false);
     expect(sentResponses).toHaveLength(1);
-    expect(sentResponses[0].error.code).toBe(PAYMENT_REQUIRED_ERROR_CODE);
+    expect(sentResponses[0].error.code).toBe(-32000);
+    expect(sentResponses[0].error.data).toEqual({ reason: 'payment_expired' });
+    expect(sentResponses[0].error.message).toContain(
+      'contact the server operator',
+    );
   });
 
   test('non-priced capability passes through ungated in explicit gating mode', async () => {
@@ -736,13 +753,11 @@ describe('Explicit Gating Middleware', () => {
     expect(sentResponses).toHaveLength(0);
   });
 
-  test('falls back to the default grant TTL when the invoice carries ttl 0', async () => {
+  test('rejects processor output with ttl 0 before advertising it', async () => {
     const store = new AuthorizationStore();
     const sentResponses: JSONRPCErrorResponse[] = [];
 
-    // ttl: 0 must not birth-expire the pending grant while the invoice stays
-    // payable. Verification hangs so the pending entry keeps the TTL the
-    // middleware applied via updatePendingTtl.
+    // Invalid processor TTLs never reach the client or verifier.
     const ttlZeroProcessor = {
       ...processor,
       async createPaymentRequired(params: { amount: number }) {
@@ -769,22 +784,15 @@ describe('Explicit Gating Middleware', () => {
       },
     });
 
-    await mw(message, ctx, async () => {});
-
-    expect(sentResponses[0]?.error.code).toBe(PAYMENT_REQUIRED_ERROR_CODE);
-    const identity = computeCanonicalInvocationIdentity(
-      ctx.clientPubkey,
-      message.method,
-      message.params,
-    );
-    // Falls back to the 5-minute default window, not 0.
-    expect(store.getPendingRemainingMs(identity)).toBeGreaterThan(60_000);
+    await expect(mw(message, ctx, async () => {})).rejects.toThrow();
+    expect(sentResponses).toHaveLength(0);
   });
 
   test('refuses with -32000 without minting an invoice at pending capacity', async () => {
     // Capacity 1, already occupied by a live pending entry for another identity.
-    const store = new AuthorizationStore({ maxEntries: 1 });
-    store.trySetPending(
+    const store = new AuthorizationStore({ maxPendingPayments: 1 });
+    await seedPending(
+      store,
       { clientPubkey: 'other-client', invocationHash: 'other' },
       10000,
     );
@@ -793,14 +801,12 @@ describe('Explicit Gating Middleware', () => {
     let invoicesMinted = 0;
     const countingProcessor = {
       ...processor,
-      async createPaymentRequired(
-        params: {
-          amount: number;
-          description?: string;
-          requestEventId: string;
-          clientPubkey: string;
-        },
-      ) {
+      async createPaymentRequired(params: {
+        amount: number;
+        description?: string;
+        requestEventId: string;
+        clientPubkey: string;
+      }) {
         invoicesMinted += 1;
         return processor.createPaymentRequired(params);
       },
@@ -831,7 +837,7 @@ describe('Explicit Gating Middleware', () => {
     );
     // The other client's live pending entry must not have been evicted.
     expect(
-      store.getPendingRemainingMs({
+      await pendingRemainingMs(store, {
         clientPubkey: 'other-client',
         invocationHash: 'other',
       }),
@@ -847,7 +853,7 @@ describe('Explicit Gating Middleware', () => {
         return new Promise(() => {});
       },
     };
-    const store = new AuthorizationStore({ maxEntries: 1 });
+    const store = new AuthorizationStore({ maxPendingPayments: 1 });
     const sentResponses: JSONRPCErrorResponse[] = [];
 
     const mw = createExplicitGatingMiddleware({
@@ -975,7 +981,7 @@ describe('Explicit Gating Middleware transport shutdown', () => {
     };
   }
 
-  test('a verify that settles after abort does not grant; the retry mints a fresh -32042', async () => {
+  test('a verify that settles after abort cannot grant or restart payment work', async () => {
     const unhandled = captureUnhandledRejections();
     const store = new AuthorizationStore();
     const sentResponses: JSONRPCErrorResponse[] = [];
@@ -1010,15 +1016,14 @@ describe('Explicit Gating Middleware transport shutdown', () => {
     deferred.resolve();
     await new Promise((r) => setTimeout(r, 5));
 
-    expect(store.claim(identity)).toBe(false);
+    expect(await hasGrant(store, identity)).toBe(false);
 
-    // Same cleanup as a failed verify: pending is cleared, retry re-invoices.
+    // The closed middleware cannot create another invoice even when called again.
     await mw(message, ctx, async () => {
       forwards += 1;
     });
-    expect(sentResponses).toHaveLength(2);
-    expect(sentResponses[1].error.code).toBe(PAYMENT_REQUIRED_ERROR_CODE);
-    expect(deferred.createCount()).toBe(2);
+    expect(sentResponses).toHaveLength(1);
+    expect(deferred.createCount()).toBe(1);
     expect(forwards).toBe(0);
     expect(unhandled()).toEqual([]);
   });
@@ -1048,8 +1053,8 @@ describe('Explicit Gating Middleware transport shutdown', () => {
     shutdown.abort();
     await new Promise((r) => setTimeout(r, 5));
 
-    expect(store.claim(identity)).toBe(false);
-    expect(store.getPendingRemainingMs(identity)).toBe(0);
+    expect(await hasGrant(store, identity)).toBe(false);
+    expect(await pendingRemainingMs(store, identity)).toBe(0);
     expect(unhandled()).toEqual([]);
   });
 

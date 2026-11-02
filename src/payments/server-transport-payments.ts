@@ -5,13 +5,16 @@ import { createCapTagsFromPricedCapabilities } from './cap-tags.js';
 import { createPmiTagsFromProcessors } from './pmi-tags.js';
 import { createServerPaymentsMiddleware } from './server-payments.js';
 import { createExplicitGatingMiddleware } from './server-explicit-gating.js';
-import { AuthorizationStore } from './authorization-store.js';
+import { serverPaymentStore } from './server-payment-state.js';
+import { validateServerPaymentOptions } from './server-payment-validation.js';
 import { buildProcessorsByPmi } from './server-payments-utils.js';
 import { createLogger } from '../core/utils/logger.js';
 import { NOSTR_TAGS } from '../core/constants.js';
 
 /**
  * Attaches CEP-8 payments gating to a NostrServerTransport.
+ * One paying server identity must run in one process with the default in-memory
+ * store. It cannot coordinate payments across processes or retain state after restart.
  *
  * By default the server uses the `optional` policy: it advertises
  * `explicit_gating` support and mirrors each client's requested lifecycle, so a
@@ -35,6 +38,9 @@ export function withServerPayments(
       'withServerPayments already called on this transport; registering the payments lifecycle twice double-charges priced requests',
     );
   }
+  validateServerPaymentOptions(options);
+  const stateStore = serverPaymentStore(options);
+  options = { ...options, stateStore };
   paymentsRegistered.add(transport);
 
   // Build the PMI → processor map once and share it across both middlewares.
@@ -87,7 +93,7 @@ export function withServerPayments(
   // it is safe to register the explicit-gating middleware alongside it. Each
   // request is routed to exactly one lifecycle based on the negotiated mode.
   if (supportsExplicitGating) {
-    const authorizationStore = new AuthorizationStore({});
+    const authorizationStore = stateStore;
     transport.addInboundMiddleware(
       createExplicitGatingMiddleware({
         options,

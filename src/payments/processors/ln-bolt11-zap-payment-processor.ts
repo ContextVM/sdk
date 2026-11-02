@@ -47,6 +47,8 @@ type PendingInvoiceMeta = {
  * subscribing for zap receipts (kind 9735).
  */
 export class LnBolt11ZapPaymentProcessor implements PaymentProcessor {
+  /** Native amount unit; conversion to millisatoshis happens inside the adapter. */
+  public readonly currencyUnit = 'sats';
   public readonly pmi = PMI_BITCOIN_LIGHTNING_BOLT11;
 
   // Defaults for the minimal constructor (lnAddress-only). These are public relays;

@@ -81,6 +81,8 @@ export interface LnBolt11NwcPaymentProcessorOptions {
  * CEP-8 server payment processor for PMI `bitcoin-lightning-bolt11` backed by NIP-47 (NWC).
  */
 export class LnBolt11NwcPaymentProcessor implements PaymentProcessor {
+  /** Native amount unit; conversion to millisatoshis happens inside the adapter. */
+  public readonly currencyUnit = 'sats';
   public readonly pmi = PMI_BITCOIN_LIGHTNING_BOLT11;
 
   private readonly nwc: NwcClientLike;
