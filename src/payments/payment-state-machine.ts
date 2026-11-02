@@ -43,6 +43,7 @@ export function canCollectPaymentRecord(
   now: number,
 ): boolean {
   return (
+    (record.phase !== 'granted' || record.grantResolvedAtMs !== undefined) &&
     record.retainUntilMs !== null &&
     record.retainUntilMs <= now &&
     !isLivePaymentLease(record, now)
@@ -310,6 +311,33 @@ export function transitionPaymentState(
       record.grantExpiresAtMs = now + Math.floor(input.ttlMs);
       record.retainUntilMs = null;
       break;
+    case 'resolve_expired_grant': {
+      if (
+        record.phase !== 'granted' ||
+        record.mode !== 'explicit_gating' ||
+        record.grantExpiresAtMs === undefined ||
+        record.grantExpiresAtMs > now ||
+        record.grantResolvedAtMs !== undefined
+      )
+        return none;
+      const retentionDeadline = record.grantExpiresAtMs + input.retentionMs;
+      if (
+        !Number.isSafeInteger(input.retentionMs) ||
+        input.retentionMs < 0 ||
+        !Number.isSafeInteger(retentionDeadline)
+      )
+        throw new TypeError('Invalid expired-grant retention');
+      record.grantResolvedAtMs = now;
+      record.retainUntilMs =
+        record.replayExpiresAtMs === null
+          ? null
+          : Math.max(
+              retentionDeadline,
+              record.replayExpiresAtMs,
+              record.invoiceExpiresAtMs ?? 0,
+            );
+      break;
+    }
     case 'consume':
       if (!['pending', 'reserved'].includes(record.phase) || !live) return none;
       record.phase = 'consumed';

@@ -47,12 +47,14 @@ export interface PaymentStateRecord {
   replayExpiresAtMs: number | null;
   invocationHash: string;
   leaseExpiresAtMs: number;
-  /** Null means retain until explicit recovery; never evict a paid grant. */
+  /** Null means retain indefinitely; unresolved paid grants must not be evicted. */
   retainUntilMs: number | null;
   invoice?: PaymentOption;
   /** Known invoice expiry, retained independently of the worker's verification lease. */
   invoiceExpiresAtMs?: number;
   grantExpiresAtMs?: number;
+  /** Trusted operator confirmation that an expired, unclaimed payment was resolved. */
+  grantResolvedAtMs?: number;
   reason?: string;
 }
 
@@ -87,6 +89,12 @@ export type PaymentStateTransition = {
     }
   | { type: 'bind'; invoice: PaymentOption; leaseMs: number }
   | { type: 'grant'; ttlMs: number }
+  /** Trusted application operation after external resolution; never refunds or restores execution rights. */
+  | {
+      type: 'resolve_expired_grant';
+      /** Required application policy in milliseconds after grant expiry; no default. Replay deadlines still apply. */
+      retentionMs: number;
+    }
   | { type: 'uncertain'; reason: string }
 );
 
