@@ -27,12 +27,13 @@ export class ClientPaymentError extends Error {
   }
 }
 
+const MAX_PAYMENT_OPTIONS = 100;
 const requiredSchema = z.object({
   instructions: z.string().optional(),
   payment_options: z
     .array(paymentOptionSchema)
     .min(1)
-    .max(100)
+    .max(MAX_PAYMENT_OPTIONS)
     .refine((options) => {
       const amounts = new Map<string, number>();
       for (const option of options) {
@@ -71,6 +72,11 @@ export function parseClientPaymentOption(input: unknown): PaymentOption {
 export function parseClientPaymentRequired(
   input: unknown,
 ): PaymentRequiredErrorData {
+  // Size before content: the schema may otherwise visit every element first.
+  const options = (input as { payment_options?: unknown } | null)
+    ?.payment_options;
+  if (Array.isArray(options) && options.length > MAX_PAYMENT_OPTIONS)
+    throw new ClientPaymentError('invalid_payment', 'Invalid payment message');
   return parse(requiredSchema, input);
 }
 
