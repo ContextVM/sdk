@@ -6,6 +6,13 @@ import {
   LnBolt11NwcPaymentProcessor,
   type NwcClientLike,
 } from './ln-bolt11-nwc-payment-processor.js';
+import { testBolt11 } from '../../__mocks__/bolt11-fixtures.js';
+
+const CACHED_INVOICE = testBolt11({ sats: 1, expirySeconds: 600, hashSeed: 1 });
+const NOTIFY_INVOICE = testBolt11({ sats: 1, expirySeconds: 600, hashSeed: 2 });
+const RACE_INVOICES = [3, 4].map((hashSeed) =>
+  testBolt11({ sats: 1, expirySeconds: 600, hashSeed }),
+);
 
 type NwcRequestCall = {
   method: string;
@@ -149,7 +156,7 @@ describe('LnBolt11NwcPaymentProcessor', () => {
       result_type: 'make_invoice',
       error: null,
       result: {
-        invoice: 'lnbc1cached',
+        invoice: CACHED_INVOICE,
         payment_hash: 'b'.repeat(64),
       },
     });
@@ -171,7 +178,10 @@ describe('LnBolt11NwcPaymentProcessor', () => {
     });
 
     await processor.verifyPayment(
-      makeVerifyParams({ payReq: 'lnbc1cached', requestEventId: 'req_verify' }),
+      makeVerifyParams({
+        payReq: CACHED_INVOICE,
+        requestEventId: 'req_verify',
+      }),
     );
 
     // Calls: make_invoice, lookup_invoice
@@ -214,7 +224,7 @@ describe('LnBolt11NwcPaymentProcessor', () => {
       result_type: 'make_invoice',
       error: null,
       result: {
-        invoice: 'lnbc1notify',
+        invoice: NOTIFY_INVOICE,
         payment_hash: 'd'.repeat(64),
       },
     });
@@ -264,15 +274,15 @@ describe('LnBolt11NwcPaymentProcessor', () => {
     client.subscribeDelayMs = 30;
 
     // Two distinct invoices, both with cached payment hashes.
-    for (const invoice of ['lnbc1race1', 'lnbc1race2']) {
+    for (const [index, invoice] of RACE_INVOICES.entries()) {
       client.responses.push({
         result_type: 'make_invoice',
         error: null,
-        result: { invoice, payment_hash: invoice.padEnd(64, '0').slice(0, 64) },
+        result: { invoice, payment_hash: String(index).repeat(64) },
       });
       await processor.createPaymentRequired({
         amount: 1,
-        requestEventId: 'req_' + invoice,
+        requestEventId: `req_race${index}`,
         clientPubkey: 'c'.repeat(64),
         description: 'x',
       });
@@ -290,8 +300,8 @@ describe('LnBolt11NwcPaymentProcessor', () => {
     });
 
     const verifies = Promise.allSettled([
-      processor.verifyPayment(mkVerify('lnbc1race1', 'v1')),
-      processor.verifyPayment(mkVerify('lnbc1race2', 'v2')),
+      processor.verifyPayment(mkVerify(RACE_INVOICES[0]!, 'v1')),
+      processor.verifyPayment(mkVerify(RACE_INVOICES[1]!, 'v2')),
     ]);
 
     // Abort while both verifies still await the (delayed) subscription, so

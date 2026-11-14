@@ -16,6 +16,7 @@ import type {
 } from '../nip47/types.js';
 import { ApplesauceRelayPool } from '../../relay/applesauce-relay-pool.js';
 import { satsToMsats } from '../nip47/utils.js';
+import { assertBolt11Amount } from '../bolt11.js';
 import { LruCache } from '../../core/utils/lru-cache.js';
 import {
   paymentOperation,
@@ -247,6 +248,7 @@ export class LnBolt11NwcPaymentProcessor implements PaymentProcessor {
       const result = response.result as NwcInvoiceResult | null;
       if (!result?.invoice)
         throw new Error('NWC make_invoice returned no invoice');
+      assertBolt11Amount(result.invoice, { amountSats: params.amount });
       if (result.payment_hash)
         this.invoiceHashCache.set(result.invoice, result.payment_hash);
       return {

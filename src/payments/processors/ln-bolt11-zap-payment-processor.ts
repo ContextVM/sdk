@@ -14,6 +14,7 @@ import { ApplesauceRelayPool } from '../../relay/applesauce-relay-pool.js';
 import { createLogger, type Logger } from '../../core/utils/logger.js';
 import { LruCache } from '../../core/utils/lru-cache.js';
 import { PMI_BITCOIN_LIGHTNING_BOLT11 } from '../pmis.js';
+import { assertBolt11Amount } from '../bolt11.js';
 import { fetchLnurlPayParams, requestZapInvoice } from '../nip57/lnurl.js';
 import {
   createZapRequest,
@@ -182,6 +183,8 @@ export class LnBolt11ZapPaymentProcessor implements PaymentProcessor {
       amountMsats,
       zapRequestJson: JSON.stringify(zapRequest),
     });
+    // The LNURL service is remote: never advertise an invoice for another amount.
+    assertBolt11Amount(pr, { amountSats: params.amount });
 
     const since = Math.floor(Date.now() / 1000) - 10;
     this.pendingInvoices.set(pr, {

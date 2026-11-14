@@ -9,6 +9,7 @@ import type {
   PaymentProcessorVerifyParams,
 } from '../types.js';
 import { PMI_BITCOIN_LIGHTNING_BOLT11 } from '../pmis.js';
+import { assertBolt11Amount } from '../bolt11.js';
 import { createLogger, type Logger } from '../../core/utils/logger.js';
 import { sleepWithAbort } from '../../core/utils/utils.js';
 import { encodeBase64 } from '../../core/utils/base64.js';
@@ -123,6 +124,7 @@ export class LnBolt11LnbitsPaymentProcessor implements PaymentProcessor {
     if (!result.payment_request) {
       throw new Error('LNbits returned no payment_request');
     }
+    assertBolt11Amount(result.payment_request, { amountSats: params.amount });
 
     this.logger.debug('Invoice created', {
       requestEventId: params.requestEventId,

@@ -6,6 +6,7 @@ import {
 import { LnBolt11LnbitsPaymentProcessor } from './ln-bolt11-lnbits-payment-processor.js';
 import { LnBolt11LnbitsPaymentHandler } from '../handlers/ln-bolt11-lnbits-payment-handler.js';
 import type { NwcNotificationPayload, NwcResponse } from '../nip47/types.js';
+import { testBolt11 } from '../../__mocks__/bolt11-fixtures.js';
 
 const identity = { requestEventId: 'event', clientPubkey: 'client' };
 function nwcFixture(
@@ -44,7 +45,11 @@ function nwcFixture(
         result:
           params.method === 'make_invoice'
             ? {
-                invoice: 'invoice',
+                invoice: testBolt11({
+                  sats:
+                    (params.request.params as { amount: number }).amount / 1000,
+                  expirySeconds: 600,
+                }),
                 ...(options.missing ? {} : { payment_hash: 'hash' }),
               }
             : {
@@ -186,7 +191,7 @@ describe('settlement recognition and cancellation', () => {
                 ...identity,
                 amount: 1,
                 pmi: processor.pmi,
-                pay_req: 'invoice',
+                pay_req: testBolt11({ sats: 1, expirySeconds: 600 }),
                 abortSignal: controller.signal,
               })
             : processor.verifyPayment({

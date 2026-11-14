@@ -5,6 +5,7 @@ import {
 import type { PaymentHandler, PaymentHandlerRequest } from '../types.js';
 import { PMI_BITCOIN_LIGHTNING_BOLT11 } from '../pmis.js';
 import { encodeBase64 } from '../../core/utils/base64.js';
+import { assertBolt11Amount, type Bolt11Network } from '../bolt11.js';
 
 export interface LnBolt11LnbitsPaymentHandlerOptions {
   /** LNbits instance base URL (e.g. `https://lnbits.example.com`). */
@@ -15,6 +16,8 @@ export interface LnBolt11LnbitsPaymentHandlerOptions {
   lnbitsAdminKey: string;
   /** Optional HTTP Basic Auth credentials (`user:password`) for proxied instances. */
   lnbitsBasicAuth?: string;
+  /** Refuse invoices for any other network before wallet submission. */
+  network?: Bolt11Network;
 }
 
 /**
@@ -30,8 +33,10 @@ export class LnBolt11LnbitsPaymentHandler implements PaymentHandler {
   private readonly lnbitsUrl: string;
   private readonly lnbitsAdminKey: string;
   private readonly lnbitsBasicAuth?: string;
+  private readonly network?: Bolt11Network;
 
   public constructor(options: LnBolt11LnbitsPaymentHandlerOptions) {
+    this.network = options.network;
     this.fetch = options.fetch ?? globalThis.fetch;
     this.lnbitsUrl = options.lnbitsUrl.replace(/\/+$/, '');
     this.lnbitsAdminKey = options.lnbitsAdminKey;
@@ -55,10 +60,28 @@ export class LnBolt11LnbitsPaymentHandler implements PaymentHandler {
     this.shutdown.abort();
   }
 
+  /** Declines, before any wallet action, invoices that do not encode the offered amount. */
+  public canHandle(req: PaymentHandlerRequest): boolean {
+    try {
+      this.assertPayable(req);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   public async handle(req: PaymentHandlerRequest): Promise<void> {
+    this.assertPayable(req);
     return runPaymentOperation(req, 60_000, this.shutdown.signal, (signal) =>
       this.pay({ ...req, abortSignal: signal }),
     );
+  }
+
+  private assertPayable(req: PaymentHandlerRequest): void {
+    assertBolt11Amount(req.pay_req, {
+      amountSats: req.amount,
+      network: this.network,
+    });
   }
 
   private async pay(req: PaymentHandlerRequest): Promise<void> {
