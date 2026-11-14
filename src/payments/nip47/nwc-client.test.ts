@@ -45,7 +45,9 @@ class MockRelayHandler implements RelayHandler {
   ): Promise<() => void> {
     this.subscribedFilters = filters;
     if (this.subscribeDelayMs > 0) {
-      await new Promise((resolve) => setTimeout(resolve, this.subscribeDelayMs));
+      await new Promise((resolve) =>
+        setTimeout(resolve, this.subscribeDelayMs),
+      );
     }
     this.onEvent = onEvent;
     return () => {
@@ -181,15 +183,17 @@ describe('NwcClient', () => {
       JSON.stringify(payload),
     );
 
-    relayHandler.emit({
-      kind: NWC_NOTIFICATION_KIND,
-      created_at: Math.floor(Date.now() / 1000),
-      content: encryptedContent,
-      tags: [['p', clientPubkey]],
-      pubkey: walletPubkey,
-      id: 'e'.repeat(64),
-      sig: 'f'.repeat(128),
-    });
+    relayHandler.emit(
+      finalizeEvent(
+        {
+          kind: NWC_NOTIFICATION_KIND,
+          created_at: Math.floor(Date.now() / 1000),
+          content: encryptedContent,
+          tags: [['p', clientPubkey]],
+        },
+        walletSecretKey,
+      ),
+    );
 
     await new Promise<void>((r) => setTimeout(r, 0));
     expect(received).toEqual([payload]);
@@ -220,10 +224,46 @@ describe('NwcClient', () => {
         resultType: 'pay_invoice',
         request: { method: 'pay_invoice', params: { invoice: 'lnbc1...' } },
       }),
-    ).rejects.toThrow(/NWC response timed out/);
+    ).rejects.toThrow(/timed out/);
 
     // Give the late-resolving subscribe().then() a chance to run.
     await new Promise<void>((r) => setTimeout(r, 150));
     expect(relayHandler.unsubscribeCount).toBe(1);
   });
+});
+
+test('close cancels a stalled connection without closing a shared caller pool', async () => {
+  let connected!: () => void;
+  let disconnects = 0;
+  const relay = new MockRelayHandler();
+  relay.connect = () =>
+    new Promise<void>((resolve) => {
+      connected = resolve;
+    });
+  relay.disconnect = async () => {
+    disconnects++;
+  };
+  const client = new NwcClient({
+    relayHandler: relay,
+    connection: {
+      walletPubkey: getPublicKey(generateSecretKey()),
+      clientSecretKeyHex: bytesToHex(generateSecretKey()),
+      relays: [],
+    },
+    responseTimeoutMs: 100,
+  });
+  const work = client
+    .request({
+      method: 'pay_invoice',
+      resultType: 'pay_invoice',
+      request: { method: 'pay_invoice', params: { invoice: 'invoice' } },
+    })
+    .catch((error) => error);
+  await Bun.sleep(0);
+  await client.disconnect();
+  expect(await work).toBeInstanceOf(Error);
+  expect(disconnects).toBe(0);
+  connected();
+  await Bun.sleep(0);
+  expect(relay.published).toHaveLength(0);
 });

@@ -1,304 +1,290 @@
+import { reconcilePaymentAttempt } from './payment-recovery.js';
 import type { JSONRPCErrorResponse } from '@contextvm/mcp-sdk/types.js';
 import type { ServerMiddlewareFn, PaymentProcessor } from './types.js';
 import { isJsonRpcRequest } from './types.js';
 import type { ServerPaymentsOptions } from './server-payments.js';
-import type { AuthorizationStore } from './authorization-store.js';
-import { computeCanonicalInvocationIdentity } from './canonical-identity.js';
+import type {
+  PaymentStateStore,
+  PaymentStateRecord,
+} from './payment-state-store.js';
+import { paymentEventKey } from './payment-state-store.js';
 import {
   buildProcessorsByPmi,
   matchPricedCapability,
+  PaymentMethodUnavailableError,
   resolveAndInitiatePayment,
   verifyPaymentUnlessShutdown,
 } from './server-payments-utils.js';
 import { createLogger } from '../core/utils/logger.js';
 import {
+  DEFAULT_PAYMENT_TTL_MS,
   PAYMENT_CAPACITY_ERROR_CODE,
   PAYMENT_PENDING_ERROR_CODE,
   PAYMENT_REQUIRED_ERROR_CODE,
 } from './constants.js';
+import {
+  abandonServerPayment,
+  serverPaymentAdmission,
+} from './server-payment-state.js';
+import { validateServerPaymentOptions } from './server-payment-validation.js';
 
+/** Explicit-gating dependencies; share this store with the transparent middleware. */
 export interface ExplicitGatingMiddlewareParams {
   options: ServerPaymentsOptions;
-  authorizationStore: AuthorizationStore;
+  authorizationStore: PaymentStateStore;
   sendResponse: (
     clientPubkey: string,
     response: JSONRPCErrorResponse,
     requestEventId: string,
   ) => Promise<void>;
-  /** Pre-built PMI → processor map. Built locally when omitted (standalone use). */
   processorsByPmi?: Map<string, PaymentProcessor>;
-  /**
-   * Transport shutdown signal (see `withServerPayments`). Once aborted,
-   * in-flight verification is cancelled and a verify that still settles is
-   * not granted; the pending entry is cleared instead.
-   */
+  onPaidDuplicate?: (record: PaymentStateRecord) => Promise<void>;
+  onPaymentPending?: (requestEventId: string) => void;
+  onInvoiceIssued?: (params: { requestEventId: string }) => void;
   abortSignal?: AbortSignal;
 }
 
+/** Atomically claims one paid execution or reserves a generation-fenced invoice. */
 export function createExplicitGatingMiddleware(
   params: ExplicitGatingMiddlewareParams,
 ): ServerMiddlewareFn {
-  const { options, authorizationStore, sendResponse, abortSignal } = params;
+  const {
+    options,
+    authorizationStore: store,
+    sendResponse,
+    abortSignal,
+  } = params;
+  validateServerPaymentOptions({ ...options, stateStore: store });
   const logger = createLogger('server-explicit-gating');
   const processorsByPmi =
     params.processorsByPmi ?? buildProcessorsByPmi(options.processors, logger);
+  const leaseMs = options.paymentTtlMs ?? DEFAULT_PAYMENT_TTL_MS;
 
   return async (message, ctx, forward) => {
-    // Only gate requests.
-    if (!isJsonRpcRequest(message)) {
+    if (
+      !isJsonRpcRequest(message) ||
+      ctx.paymentInteraction !== 'explicit_gating'
+    ) {
       await forward(message);
       return;
     }
-
-    if (ctx.paymentInteraction !== 'explicit_gating') {
-      await forward(message);
-      return;
-    }
-
     const priced = matchPricedCapability(message, options.pricedCapabilities);
-    if (!priced) {
-      await forward(message);
+    if (!priced || abortSignal?.aborted) {
+      if (!priced) await forward(message);
       return;
     }
-
-    const requestEventId = String(message.id);
-    const identity = computeCanonicalInvocationIdentity(
-      ctx.clientPubkey,
-      message.method,
-      message.params,
+    const admission = serverPaymentAdmission(
+      message,
+      ctx,
+      'explicit_gating',
+      leaseMs,
     );
-
-    // 1. Try to claim an existing authorization
-    if (authorizationStore.claim(identity)) {
-      logger.debug('authorization claimed, forwarding request', {
-        requestEventId,
-        method: message.method,
-      });
-      await forward(message);
-      return;
-    }
-
-    // Non-positive TTLs would birth-expire the pending grant while the
-    // invoice stays payable; fall back to the configured/default TTL.
-    const paymentTtlMs =
-      options.paymentTtlMs && options.paymentTtlMs > 0
-        ? options.paymentTtlMs
-        : 300_000;
-
-    // 2. Try to set pending state atomically.
-    // Refusal means either "already pending" (-32043, keep retrying — the
-    // payment is still verifying) or "store at capacity" (-32000, terminal):
-    // live entries are never evicted, so a same-identity retry must never
-    // observe the capacity answer even when the store is full.
-    if (!authorizationStore.trySetPending(identity, paymentTtlMs)) {
-      const pendingRemainingMs =
-        authorizationStore.getPendingRemainingMs(identity);
-
-      if (pendingRemainingMs <= 0) {
-        logger.warn(
-          'pending payment capacity reached, refusing priced request',
-          {
-            requestEventId,
-            method: message.method,
-          },
-        );
-        const capacityResponse: JSONRPCErrorResponse = {
+    const respond = async (
+      code: number,
+      text: string,
+      data?: Record<string, unknown>,
+    ): Promise<void> => {
+      await sendResponse(
+        ctx.clientPubkey,
+        {
           jsonrpc: '2.0',
           id: message.id,
-          error: {
-            code: PAYMENT_CAPACITY_ERROR_CODE,
-            message: 'Payment capacity reached, retry later',
-          },
-        };
-        await sendResponse(ctx.clientPubkey, capacityResponse, requestEventId);
-        return;
-      }
-
-      logger.debug('payment already pending, returning -32043', {
-        requestEventId,
-      });
-      const errorResponse: JSONRPCErrorResponse = {
-        jsonrpc: '2.0',
-        id: message.id,
-        error: {
-          code: PAYMENT_PENDING_ERROR_CODE,
-          message: 'Payment Pending',
-          data: {
-            instructions:
-              'A payment is already pending for this invocation. Retry the same request later with exactly the same method and params.',
-            // Suggest a short polling interval (e.g. 2 seconds) rather than the full TTL
-            retry_after: Math.min(
-              2,
-              Math.max(1, Math.ceil(pendingRemainingMs / 1000)),
-            ),
-          },
+          error: { code, message: text, ...(data && { data }) },
         },
-      };
-      await sendResponse(ctx.clientPubkey, errorResponse, requestEventId);
+        admission.requestEventId,
+      );
+    };
+    params.onPaymentPending?.(admission.requestEventId);
+    const admitted = await store.admit(admission);
+    if (admitted.status === 'claimed') {
+      params.onInvoiceIssued?.({ requestEventId: admission.requestEventId });
+      if (!abortSignal?.aborted) {
+        await forward(message);
+        await store.transition({
+          key: admitted.record.key,
+          generation: admitted.record.generation,
+          type: 'dispatch',
+        });
+      }
       return;
     }
-
-    // 3. Resolve price and initiate new payment
+    if (admitted.status === 'duplicate') {
+      if (admitted.record?.delivery)
+        await params.onPaidDuplicate?.(admitted.record);
+      return;
+    }
+    if (
+      (admitted.status === 'unknown' ||
+        (admitted.status === 'pending' &&
+          admitted.record?.offerStatus !== 'published')) &&
+      admitted.record?.invoice
+    ) {
+      const record = admitted.record;
+      if (
+        record.offerStatus !== 'published' &&
+        (record.invoiceExpiresAtMs ?? 0) > Date.now()
+      ) {
+        await respond(PAYMENT_REQUIRED_ERROR_CODE, 'Payment Required', {
+          payment_options: [
+            {
+              ...record.invoice,
+              ttl: Math.min(
+                record.invoice?.ttl ?? Infinity,
+                ((record.invoiceExpiresAtMs ?? Date.now()) - Date.now()) / 1000,
+              ),
+            },
+          ],
+          instructions: 'Resume the existing payment; do not pay it again.',
+        });
+      } else {
+        await respond(
+          PAYMENT_PENDING_ERROR_CODE,
+          'Settlement reconciliation required',
+          { retry_after: 2, reason: 'payment_reconciliation_required' },
+        );
+      }
+      void reconcilePaymentAttempt({
+        store,
+        key: record.key,
+        generation: record.generation,
+        processors: options.processors,
+        authorizationTtlMs: options.authorizationTtlMs ?? leaseMs,
+        abortSignal,
+        deadlineMs: Date.now() + leaseMs,
+        outcomes: options,
+      }).catch(() => {});
+      return;
+    }
+    if (admitted.status === 'pending') {
+      await respond(PAYMENT_PENDING_ERROR_CODE, 'Payment Pending', {
+        retry_after: 2,
+      });
+      return;
+    }
+    if (admitted.status !== 'reserved') {
+      await respond(
+        PAYMENT_CAPACITY_ERROR_CODE,
+        admitted.status === 'capacity'
+          ? 'Payment capacity reached, retry later'
+          : admitted.status === 'expired'
+            ? 'Paid authorization expired; contact the server operator to reconcile the payment before paying again'
+            : `Payment admission refused: ${admitted.status}`,
+        { reason: `payment_${admitted.status}` },
+      );
+      return;
+    }
+    const record = admitted.record;
+    const fence = { key: record.key, generation: record.generation };
     try {
-      const initResult = await resolveAndInitiatePayment({
+      if (abortSignal?.aborted) {
+        await store.transition({ ...fence, type: 'release' });
+        return;
+      }
+      const initiated = await resolveAndInitiatePayment({
         message,
         priced,
-        requestEventId,
+        requestEventId: admission.requestEventId,
         clientPubkey: ctx.clientPubkey,
         clientPmis: ctx.clientPmis,
         options,
         processorsByPmi,
-      });
-
-      if (initResult.kind === 'rejected') {
-        logger.info('payment rejected', {
-          requestEventId,
-          pmi: initResult.pmi,
-          amount: priced.amount,
-          reason: initResult.message,
-        });
-
-        authorizationStore.clearPending(identity);
-
-        // Spec: When a capability is rejected by policy, return a standard error.
-        // We'll use -32000 (Internal error or application-defined error) since CEP-8 doesn't specify a special rejection code.
-        const errorResponse: JSONRPCErrorResponse = {
-          jsonrpc: '2.0',
-          id: message.id,
-          error: {
-            code: -32000,
-            message: initResult.message || 'Payment rejected by policy',
-          },
-        };
-        await sendResponse(ctx.clientPubkey, errorResponse, requestEventId);
-        return;
-      }
-
-      if (initResult.kind === 'waived') {
-        logger.debug('payment waived, forwarding priced request', {
-          requestEventId,
-          method: message.method,
-        });
-
-        authorizationStore.clearPending(identity);
-        await forward(message);
-        return;
-      }
-
-      const { paymentRequired, mergedMeta, processor, verifyTimeoutMs } =
-        initResult;
-
-      // Use the strict verification timeout bound for polling
-      const pollingTimeoutMs = Math.min(verifyTimeoutMs, paymentTtlMs);
-
-      // Note: use the original payment request's TTL as the limit for the grant, not the verify timeout.
-      // verifyTimeoutMs includes standard bounds, but for grants we want to honor the
-      // payment option's TTL explicitly if it is smaller, or the fallback paymentTtlMs.
-      const grantTtlMs =
-        paymentRequired.ttl !== undefined &&
-        Number.isFinite(paymentRequired.ttl) &&
-        paymentRequired.ttl > 0
-          ? paymentRequired.ttl * 1000
-          : paymentTtlMs;
-
-      // Update pending with the precise TTL
-      authorizationStore.updatePendingTtl(identity, grantTtlMs);
-
-      const errorResponse: JSONRPCErrorResponse = {
-        jsonrpc: '2.0',
-        id: message.id,
-        error: {
-          code: PAYMENT_REQUIRED_ERROR_CODE,
-          message: 'Payment Required',
-          data: {
-            instructions:
-              'Payment is required to process this request. Pay one of the offered options, then retry the same request with exactly the same method and params.',
-            payment_options: [
-              {
-                amount: paymentRequired.amount,
-                pmi: paymentRequired.pmi,
-                pay_req: paymentRequired.pay_req,
-                description: paymentRequired.description,
-                ttl: paymentRequired.ttl,
-                _meta: mergedMeta,
-              },
-            ],
-          },
+        context: { abortSignal, deadlineMs: record.leaseExpiresAtMs },
+        beforeInvoice: async () => {
+          if (abortSignal?.aborted) return false;
+          const owned = await store.transition({ ...fence, type: 'issuing' });
+          return owned && !abortSignal?.aborted;
         },
-      };
-
-      logger.info('payment required error sent', {
-        requestEventId,
-        pmi: paymentRequired.pmi,
-        amount: paymentRequired.amount,
-        ttl: paymentRequired.ttl,
       });
-
-      await sendResponse(ctx.clientPubkey, errorResponse, requestEventId);
-
-      // Start async verification
-      // Do not await this, we must let the middleware chain return the error response.
-      (async () => {
-        try {
-          logger.debug('verifying explicit payment', {
-            requestEventId,
-            pmi: paymentRequired.pmi,
-            timeoutMs: pollingTimeoutMs,
+      if (initiated.kind === 'superseded') {
+        await store.transition({ ...fence, type: 'release' });
+        return;
+      }
+      if (initiated.kind === 'rejected') {
+        if (await store.transition({ ...fence, type: 'release' }))
+          await respond(
+            -32000,
+            initiated.message ?? 'Payment rejected by policy',
+          );
+        return;
+      }
+      if (initiated.kind === 'waived') {
+        if (
+          !abortSignal?.aborted &&
+          (await store.transition({ ...fence, type: 'consume' }))
+        ) {
+          if (abortSignal?.aborted) return;
+          await forward(message);
+          await store.transition({
+            ...fence,
+            key: paymentEventKey(ctx.clientPubkey, admission.requestEventId),
+            type: 'dispatch',
           });
-
-          const verified = await verifyPaymentUnlessShutdown({
-            processor,
-            verifyParams: {
-              pay_req: paymentRequired.pay_req,
-              requestEventId,
-              clientPubkey: ctx.clientPubkey,
-            },
-            timeoutMs: pollingTimeoutMs,
-            shutdownSignal: abortSignal,
-          });
-
-          // Transport closed mid-verification: nobody will read a grant, so
-          // clear the pending entry like any other failed verification.
-          if (verified === undefined) {
-            logger.info(
-              'transport closed during explicit payment verification',
-              {
-                requestEventId,
-                pmi: paymentRequired.pmi,
-              },
-            );
-            authorizationStore.clearPending(identity);
-            return;
-          }
-
-          logger.info('explicit payment accepted, granting authorization', {
-            requestEventId,
-            pmi: paymentRequired.pmi,
-            amount: paymentRequired.amount,
-          });
-
-          authorizationStore.grant(identity, grantTtlMs);
-        } catch (err) {
-          logger.info('explicit payment verification failed or timed out', {
-            requestEventId,
-            error: err instanceof Error ? err.message : String(err),
-          });
-          authorizationStore.clearPending(identity);
         }
-      })().catch((err) => {
-        // Belt-and-suspenders: if clearPending/grant itself threw inside the
-        // inner catch, pending would otherwise stick until TTL answering every
-        // retry with -32043. Idempotent on the normal path.
-        authorizationStore.clearPending(identity);
-        logger.error('unhandled exception in async payment verification', {
-          requestEventId,
-          pmi: paymentRequired.pmi,
-          error: err instanceof Error ? err.message : String(err),
-        });
+        return;
+      }
+      const { paymentRequired, mergedMeta, processor, verifyTimeoutMs } =
+        initiated;
+      const timeoutMs = Math.min(verifyTimeoutMs, leaseMs);
+      if (
+        !(await store.transition({
+          ...fence,
+          type: 'bind',
+          invoice: { ...paymentRequired, _meta: mergedMeta },
+          leaseMs: timeoutMs,
+        }))
+      )
+        return;
+      if (abortSignal?.aborted) return;
+      await respond(PAYMENT_REQUIRED_ERROR_CODE, 'Payment Required', {
+        instructions:
+          'Pay one option, then retry with the same method and semantic params.',
+        payment_options: [{ ...paymentRequired, _meta: mergedMeta }],
       });
-    } catch (err) {
-      authorizationStore.clearPending(identity);
-      throw err;
+      await store.transition({ ...fence, type: 'offer_published' });
+      void (async (): Promise<void> => {
+        const verified = await verifyPaymentUnlessShutdown({
+          processor,
+          verifyParams: {
+            pay_req: paymentRequired.pay_req,
+            requestEventId: admission.requestEventId,
+            clientPubkey: ctx.clientPubkey,
+          },
+          timeoutMs,
+          shutdownSignal: abortSignal,
+        });
+        if (!verified || abortSignal?.aborted) {
+          await store.transition({
+            ...fence,
+            type: 'uncertain',
+            reason: 'verification_incomplete',
+          });
+          return;
+        }
+        await store.transition({
+          ...fence,
+          type: 'settled',
+          ttlMs: options.authorizationTtlMs ?? leaseMs,
+        });
+      })().catch(async () => {
+        try {
+          await store.transition({
+            ...fence,
+            type: 'uncertain',
+            reason: 'verification_incomplete',
+          });
+        } catch {
+          logger.error('Payment verification state could not be persisted', {
+            requestEventId: admission.requestEventId,
+          });
+        }
+      });
+    } catch (error) {
+      await abandonServerPayment(store, record);
+      if (error instanceof PaymentMethodUnavailableError) {
+        await respond(-32000, error.message);
+        return;
+      }
+      throw error;
     }
   };
 }

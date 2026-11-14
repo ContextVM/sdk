@@ -6,6 +6,13 @@ import {
   LnBolt11NwcPaymentProcessor,
   type NwcClientLike,
 } from './ln-bolt11-nwc-payment-processor.js';
+import { testBolt11 } from '../../__mocks__/bolt11-fixtures.js';
+
+const CACHED_INVOICE = testBolt11({ sats: 1, expirySeconds: 600, hashSeed: 1 });
+const NOTIFY_INVOICE = testBolt11({ sats: 1, expirySeconds: 600, hashSeed: 2 });
+const RACE_INVOICES = [3, 4].map((hashSeed) =>
+  testBolt11({ sats: 1, expirySeconds: 600, hashSeed }),
+);
 
 type NwcRequestCall = {
   method: string;
@@ -58,7 +65,9 @@ class MockNwcClient implements NwcClientLike {
   }): Promise<() => void> {
     this.subscribeCalls += 1;
     if (this.subscribeDelayMs > 0) {
-      await new Promise((resolve) => setTimeout(resolve, this.subscribeDelayMs));
+      await new Promise((resolve) =>
+        setTimeout(resolve, this.subscribeDelayMs),
+      );
     }
     this.onNotification = params.onNotification;
     return () => {
@@ -147,7 +156,7 @@ describe('LnBolt11NwcPaymentProcessor', () => {
       result_type: 'make_invoice',
       error: null,
       result: {
-        invoice: 'lnbc1cached',
+        invoice: CACHED_INVOICE,
         payment_hash: 'b'.repeat(64),
       },
     });
@@ -169,7 +178,10 @@ describe('LnBolt11NwcPaymentProcessor', () => {
     });
 
     await processor.verifyPayment(
-      makeVerifyParams({ payReq: 'lnbc1cached', requestEventId: 'req_verify' }),
+      makeVerifyParams({
+        payReq: CACHED_INVOICE,
+        requestEventId: 'req_verify',
+      }),
     );
 
     // Calls: make_invoice, lookup_invoice
@@ -202,7 +214,7 @@ describe('LnBolt11NwcPaymentProcessor', () => {
     expect(client.calls[0]!.method).toBe('lookup_invoice');
   });
 
-  test('notification mode resolves verifyPayment from payment_received notification', async () => {
+  test('notification mode confirms a receipt using authenticated lookup', async () => {
     const client = mockClient;
     const processor = createProcessor({
       enableNotificationVerification: true,
@@ -212,7 +224,7 @@ describe('LnBolt11NwcPaymentProcessor', () => {
       result_type: 'make_invoice',
       error: null,
       result: {
-        invoice: 'lnbc1notify',
+        invoice: NOTIFY_INVOICE,
         payment_hash: 'd'.repeat(64),
       },
     });
@@ -224,6 +236,11 @@ describe('LnBolt11NwcPaymentProcessor', () => {
       description: 'x',
     });
 
+    client.responses.push({
+      result_type: 'lookup_invoice',
+      error: null,
+      result: { state: 'pending', payment_hash: 'd'.repeat(64) },
+    });
     const verifyPromise = processor.verifyPayment(
       makeVerifyParams({
         payReq: pr.pay_req,
@@ -232,7 +249,12 @@ describe('LnBolt11NwcPaymentProcessor', () => {
     );
 
     await new Promise<void>((r) => setTimeout(r, 0));
-    expect(client.calls).toHaveLength(1); // only make_invoice
+    expect(client.calls).toHaveLength(2);
+    client.responses.push({
+      result_type: 'lookup_invoice',
+      error: null,
+      result: { state: 'settled', payment_hash: 'd'.repeat(64) },
+    });
 
     client.onNotification?.({
       notification_type: 'payment_received',
@@ -252,15 +274,15 @@ describe('LnBolt11NwcPaymentProcessor', () => {
     client.subscribeDelayMs = 30;
 
     // Two distinct invoices, both with cached payment hashes.
-    for (const invoice of ['lnbc1race1', 'lnbc1race2']) {
+    for (const [index, invoice] of RACE_INVOICES.entries()) {
       client.responses.push({
         result_type: 'make_invoice',
         error: null,
-        result: { invoice, payment_hash: invoice.padEnd(64, '0').slice(0, 64) },
+        result: { invoice, payment_hash: String(index).repeat(64) },
       });
       await processor.createPaymentRequired({
         amount: 1,
-        requestEventId: 'req_' + invoice,
+        requestEventId: `req_race${index}`,
         clientPubkey: 'c'.repeat(64),
         description: 'x',
       });
@@ -278,8 +300,8 @@ describe('LnBolt11NwcPaymentProcessor', () => {
     });
 
     const verifies = Promise.allSettled([
-      processor.verifyPayment(mkVerify('lnbc1race1', 'v1')),
-      processor.verifyPayment(mkVerify('lnbc1race2', 'v2')),
+      processor.verifyPayment(mkVerify(RACE_INVOICES[0]!, 'v1')),
+      processor.verifyPayment(mkVerify(RACE_INVOICES[1]!, 'v2')),
     ]);
 
     // Abort while both verifies still await the (delayed) subscription, so
@@ -287,9 +309,7 @@ describe('LnBolt11NwcPaymentProcessor', () => {
     setTimeout(() => controller.abort(), 10);
     const results = await verifies;
 
-    expect(
-      results.every((r) => r.status === 'rejected'),
-    ).toBe(true);
+    expect(results.every((r) => r.status === 'rejected')).toBe(true);
     // The concurrent subscribe window must produce exactly one subscription;
     // a second would leak its unsubscribe handle forever.
     expect(client.subscribeCalls).toBe(1);

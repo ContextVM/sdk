@@ -1,3 +1,5 @@
+import { InMemoryPaymentStateStore } from '../payments/in-memory-payment-state-store.js';
+import type { PaymentOutcome } from '../payments/payment-outcomes.js';
 import {
   afterAll,
   afterEach,
@@ -74,6 +76,8 @@ describe.serial('NostrMCPGateway payments wiring', () => {
       InMemoryTransport.createLinkedPair();
     await mcpServer.connect(mcpTransport);
 
+    const outcomes: PaymentOutcome[] = [];
+    const stateStore = new InMemoryPaymentStateStore();
     const gatewaySK = generateSecretKey();
     const gateway = new NostrMCPGateway({
       mcpClientTransport: gatewayMcpTransport,
@@ -84,6 +88,10 @@ describe.serial('NostrMCPGateway payments wiring', () => {
         publishRelayList: false,
       },
       paymentOptions: {
+        stateStore,
+        onPaymentOutcome: (outcome) => {
+          outcomes.push(outcome);
+        },
         processors: [new FakePaymentProcessor()],
         pricedCapabilities: [
           {
@@ -122,6 +130,10 @@ describe.serial('NostrMCPGateway payments wiring', () => {
       data: { payment_options: expect.any(Array) },
     });
 
+    expect(outcomes.map((outcome) => outcome.kind)).toContain('offer');
+    expect(
+      outcomes.every((outcome) => !JSON.stringify(outcome).includes('pay_req')),
+    ).toBe(true);
     await client.close();
     await gateway.stop();
     await mcpServer.close();

@@ -109,6 +109,14 @@ export class ClientCorrelationStore {
     return this.pendingRequests.delete(eventId);
   }
 
+  /** Removes all wire retries of a terminal or cancelled caller request. */
+  removeRequestsForRequestId(requestId: string | number): void {
+    for (const [eventId, request] of this.pendingRequests.entries()) {
+      if (request.originalRequestId === requestId)
+        this.pendingRequests.delete(eventId);
+    }
+  }
+
   /** Gets the current number of pending requests */
   get pendingRequestCount(): number {
     return this.pendingRequests.size;

@@ -1,10 +1,28 @@
 import { describe, expect, test } from 'bun:test';
+import vectors from './fixtures/canonical-invocations.json';
 import {
   computeCanonicalInvocationHash,
   computeCanonicalInvocationIdentity,
 } from './canonical-identity.js';
 
 describe('Canonical Invocation Identity', () => {
+  for (const vector of vectors) {
+    test(`published JCS vector: ${vector.name}`, () => {
+      expect(computeCanonicalInvocationHash(vector.method, vector.params)).toBe(
+        vector.sha256,
+      );
+      expect(
+        computeCanonicalInvocationIdentity(
+          vector.clientPubkey,
+          vector.method,
+          vector.params,
+        ),
+      ).toEqual({
+        clientPubkey: vector.clientPubkey,
+        invocationHash: vector.sha256,
+      });
+    });
+  }
   describe('computeCanonicalInvocationHash', () => {
     test('is deterministic regardless of object key order', () => {
       const hash1 = computeCanonicalInvocationHash('tools/call', {

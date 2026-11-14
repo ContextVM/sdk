@@ -1,6 +1,7 @@
 import type { JSONRPCMessage } from '@contextvm/mcp-sdk/types.js';
 
 import type { PaymentInteractionMode } from '../payments/types.js';
+import type { VerifiedPaymentEvent } from '../payments/payment-state-store.js';
 
 /**
  * Inbound middleware hook for server transports.
@@ -15,6 +16,7 @@ export type InboundMiddlewareFn = (
   message: JSONRPCMessage,
   ctx: {
     clientPubkey: string;
+    requestEvent?: VerifiedPaymentEvent;
     clientPmis?: readonly string[];
     paymentInteraction?: PaymentInteractionMode;
   },

@@ -1,0 +1,150 @@
+[
+  {
+    "name": "omitted params",
+    "clientPubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "method": "tools/call",
+    "canonical": "{\"method\":\"tools/call\"}",
+    "sha256": "8cd110067dc76f633f8f32c07f220feb0170ac161b319a7ba13310841149291c"
+  },
+  {
+    "name": "empty params",
+    "clientPubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "method": "tools/call",
+    "canonical": "{\"method\":\"tools/call\",\"params\":{}}",
+    "sha256": "fee95a27604e96d5011447647a735b90de7d370d5bd60a75aa114d8d9dccdedb",
+    "params": {}
+  },
+  {
+    "name": "null params",
+    "clientPubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "method": "tools/call",
+    "canonical": "{\"method\":\"tools/call\",\"params\":null}",
+    "sha256": "0d42502f6ed2dab6f9ae9c3c6131a56816f0f195824f7899a2566e81fc979003",
+    "params": null
+  },
+  {
+    "name": "nested key order",
+    "clientPubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "method": "tools/call",
+    "canonical": "{\"method\":\"tools/call\",\"params\":{\"arguments\":{\"a\":1,\"b\":2},\"name\":\"add\"}}",
+    "sha256": "3d51151b6b6d37c9dbbfa39532bb68d51bf3d9a8a6763437ab179648a6f565ff",
+    "params": {
+      "name": "add",
+      "arguments": {
+        "b": 2,
+        "a": 1
+      }
+    }
+  },
+  {
+    "name": "transport metadata excluded",
+    "clientPubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "method": "tools/call",
+    "canonical": "{\"method\":\"tools/call\",\"params\":{\"arguments\":{\"a\":1,\"b\":2},\"name\":\"add\"}}",
+    "sha256": "3d51151b6b6d37c9dbbfa39532bb68d51bf3d9a8a6763437ab179648a6f565ff",
+    "params": {
+      "_meta": {
+        "progressToken": 42,
+        "unrecognized": {
+          "nested": true
+        }
+      },
+      "arguments": {
+        "a": 1,
+        "b": 2
+      },
+      "name": "add"
+    }
+  },
+  {
+    "name": "another client same invocation hash",
+    "clientPubkey": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "method": "tools/call",
+    "canonical": "{\"method\":\"tools/call\",\"params\":{\"arguments\":{\"a\":1,\"b\":2},\"name\":\"add\"}}",
+    "sha256": "3d51151b6b6d37c9dbbfa39532bb68d51bf3d9a8a6763437ab179648a6f565ff",
+    "params": {
+      "name": "add",
+      "arguments": {
+        "b": 2,
+        "a": 1
+      }
+    }
+  },
+  {
+    "name": "changed semantic argument",
+    "clientPubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "method": "tools/call",
+    "canonical": "{\"method\":\"tools/call\",\"params\":{\"arguments\":{\"a\":2,\"b\":2},\"name\":\"add\"}}",
+    "sha256": "658de74e9b3235696bc41195377b366c6a051d1fa9a019fe0b8885f1cf337396",
+    "params": {
+      "name": "add",
+      "arguments": {
+        "b": 2,
+        "a": 2
+      }
+    }
+  },
+  {
+    "name": "unicode composed",
+    "clientPubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "method": "tools/call",
+    "canonical": "{\"method\":\"tools/call\",\"params\":{\"text\":\"é 🌍\"}}",
+    "sha256": "04129d21e74bd5e67eb3b018f6daf35309e16226a574312e097d542741fcdfdd",
+    "params": {
+      "text": "é 🌍"
+    }
+  },
+  {
+    "name": "unicode decomposed",
+    "clientPubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "method": "tools/call",
+    "canonical": "{\"method\":\"tools/call\",\"params\":{\"text\":\"é 🌍\"}}",
+    "sha256": "5fa930fb9634dfb2022cf4711766e9385269397e54e43f73befb3a78177254ff",
+    "params": {
+      "text": "é 🌍"
+    }
+  },
+  {
+    "name": "ECMAScript number serialization",
+    "clientPubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "method": "tools/call",
+    "canonical": "{\"method\":\"tools/call\",\"params\":{\"numbers\":[0,1e-7,1e+21,0.000001,333333333.3333333]}}",
+    "sha256": "2abb616ec4a2c3756617c08e3f2f2eb519faad2360ad1c4d7120f55edc96941d",
+    "params": {
+      "numbers": [-0.0, 1e-7, 1e21, 1e-6, 333333333.3333333]
+    }
+  },
+  {
+    "name": "positional params",
+    "clientPubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "method": "tools/call",
+    "canonical": "{\"method\":\"tools/call\",\"params\":[true,null,\"text\",{\"a\":1,\"z\":0}]}",
+    "sha256": "fa4d5aca8059f0825e90b7e4945a54b320a9ef855c0e5faf8bd080297c84e28b",
+    "params": [
+      true,
+      null,
+      "text",
+      {
+        "z": 0,
+        "a": 1
+      }
+    ]
+  },
+  {
+    "name": "nested _meta remains semantic",
+    "clientPubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "method": "tools/call",
+    "canonical": "{\"method\":\"tools/call\",\"params\":{\"arguments\":{\"_meta\":{\"v\":1}}}}",
+    "sha256": "1e528551273124dd8b83dd7841fec364921c77b9c239bc7b5c3f15e62a47a1ce",
+    "params": {
+      "arguments": {
+        "_meta": {
+          "v": 1
+        }
+      },
+      "_meta": {
+        "progressToken": 1
+      }
+    }
+  }
+]

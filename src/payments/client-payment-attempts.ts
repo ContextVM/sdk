@@ -1,0 +1,134 @@
+import {
+  emitPaymentOutcome,
+  paymentInvoiceDigest,
+  type PaymentOutcomeOptions,
+} from './payment-outcomes.js';
+import type { PaymentOption } from './types.js';
+import { LruCache } from '../core/utils/lru-cache.js';
+import { ClientPaymentError } from './client-payment-validation.js';
+
+type AttemptOutcome = 'in_flight' | 'handled' | 'declined' | 'unknown';
+
+/** A local payment action; handled means wallet callback returned, not settlement. */
+export interface ClientPaymentAttempt {
+  outcome: AttemptOutcome;
+  completion: Promise<void>;
+  complete: (outcome: Exclude<AttemptOutcome, 'in_flight'>) => void;
+}
+
+/**
+ * Wrapper-scoped attempt history. A Nostr wrapper is bound to one authenticated
+ * server; generic wrappers use their transport instance as the peer boundary.
+ * In-flight and unknown attempts stay pinned; handled and declined identities
+ * may be evicted least recently used first under capacity pressure.
+ */
+export class ClientPaymentAttempts {
+  private readonly entries: LruCache<{
+    amount: number;
+    attempt: ClientPaymentAttempt;
+  }>;
+
+  public constructor(
+    private readonly maxEntries: number,
+    private readonly outcomes: PaymentOutcomeOptions = {},
+  ) {
+    this.entries = new LruCache(maxEntries);
+  }
+
+  private key(option: PaymentOption): string {
+    return JSON.stringify([option.pmi, option.pay_req]);
+  }
+
+  /** Finds a prior action without reserving or paying any new option. */
+  public find(
+    options: readonly PaymentOption[],
+  ): ClientPaymentAttempt | undefined {
+    let found: ClientPaymentAttempt | undefined;
+    for (const option of options) {
+      const prior = this.entries.get(this.key(option));
+      if (prior) {
+        if (prior.amount !== option.amount) {
+          throw new ClientPaymentError(
+            'payment_offer_changed',
+            'Payment amount changed for an existing payment identity',
+          );
+        }
+        if (
+          !found ||
+          (found.outcome !== 'unknown' &&
+            (prior.attempt.outcome === 'unknown' ||
+              prior.attempt.outcome === 'in_flight'))
+        )
+          found = prior.attempt;
+      }
+    }
+    return found;
+  }
+
+  /** Atomically reserves all selectable options before external approval work. */
+  public reserve(
+    options: readonly PaymentOption[],
+    signal: AbortSignal,
+  ): ClientPaymentAttempt {
+    const unique = new Map(options.map((option) => [this.key(option), option]));
+    const needed = this.entries.size + unique.size - this.maxEntries;
+    const evictable: string[] = [];
+    for (const [key, { attempt }] of this.entries.entries()) {
+      if (evictable.length >= needed) break;
+      if (attempt.outcome === 'handled' || attempt.outcome === 'declined')
+        evictable.push(key);
+    }
+    if (evictable.length < needed) {
+      emitPaymentOutcome(this.outcomes, {
+        kind: 'exhausted',
+        atMs: Date.now(),
+        identity: 'client_payment_attempts',
+      });
+      throw new ClientPaymentError(
+        'payment_attempt_capacity',
+        'Client payment attempt capacity exceeded by unresolved payments or offered options',
+      );
+    }
+    for (const key of evictable) this.entries.delete(key);
+    let resolve!: () => void;
+    const attempt: ClientPaymentAttempt = {
+      outcome: 'in_flight',
+      completion: new Promise<void>((done) => {
+        resolve = done;
+      }),
+      complete: (outcome): void => {
+        if (attempt.outcome !== 'in_flight') return;
+        attempt.outcome = outcome;
+        for (const option of unique.values())
+          emitPaymentOutcome(this.outcomes, {
+            kind:
+              outcome === 'handled'
+                ? 'attempt_handled'
+                : outcome === 'declined'
+                  ? 'attempt_declined'
+                  : 'unknown',
+            atMs: Date.now(),
+            identity: paymentInvoiceDigest(this.key(option)),
+            invoiceDigest: paymentInvoiceDigest(option.pay_req),
+            ...(outcome === 'unknown' && { remedy: 'reconcile_settlement' }),
+          });
+        signal.removeEventListener('abort', onAbort);
+        resolve();
+      },
+    };
+    const onAbort = (): void => attempt.complete('unknown');
+    for (const [key, option] of unique) {
+      this.entries.set(key, { amount: option.amount, attempt });
+    }
+    for (const option of unique.values())
+      emitPaymentOutcome(this.outcomes, {
+        kind: 'attempt',
+        atMs: Date.now(),
+        identity: paymentInvoiceDigest(this.key(option)),
+        invoiceDigest: paymentInvoiceDigest(option.pay_req),
+      });
+    signal.addEventListener('abort', onAbort, { once: true });
+    if (signal.aborted) onAbort();
+    return attempt;
+  }
+}

@@ -641,3 +641,30 @@ describe('OversizedTransferReceiver', () => {
     ).rejects.toBeInstanceOf(OversizedTransferDigestError);
   });
 });
+
+test('an identical start retry preserves partial oversized reassembly', async () => {
+  const receiver = new OversizedTransferReceiver({}, testLogger);
+  const frames = await buildOversizedTransferFrames(
+    JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      result: { text: 'a'.repeat(100) },
+    }),
+    { progressToken: 'resume', chunkSizeBytes: 32 },
+  );
+  await receiver.processFrame(toNotification(frames.startFrame));
+  await receiver.processFrame(toNotification(frames.chunkFrames[0]!));
+  await receiver.processFrame(toNotification(frames.startFrame));
+  for (const frame of frames.chunkFrames)
+    await receiver.processFrame(toNotification(frame));
+  const result = await receiver.processFrame(toNotification(frames.endFrame));
+  expect(result).toEqual({
+    jsonrpc: '2.0',
+    id: 1,
+    result: { text: 'a'.repeat(100) },
+  });
+  expect(
+    await receiver.processFrame(toNotification(frames.endFrame)),
+  ).toBeNull();
+  receiver.clear();
+});

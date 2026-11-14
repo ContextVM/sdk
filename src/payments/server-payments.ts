@@ -1,16 +1,18 @@
+import type { PaymentOutcomeOptions } from './payment-outcomes.js';
 import { isJsonRpcRequest } from './types.js';
 import type {
   CorrelatedNotificationSender,
-  PaymentAcceptedNotification,
   PaymentInteractionPolicy,
   PaymentProcessor,
-  PaymentRejectedNotification,
-  PaymentRequiredNotification,
   PricedCapability,
   ResolvePriceFn,
   ServerMiddlewareFn,
 } from './types.js';
-import { LruCache } from '../core/utils/lru-cache.js';
+import type {
+  PaymentStateRecord,
+  PaymentStatePolicy,
+  PaymentStateStore,
+} from './payment-state-store.js';
 import { createLogger } from '../core/utils/logger.js';
 import {
   DEFAULT_PAYMENT_TTL_MS,
@@ -21,414 +23,293 @@ import {
 import {
   buildProcessorsByPmi,
   matchPricedCapability,
+  PaymentMethodUnavailableError,
   resolveAndInitiatePayment,
-  resolvePaymentProcessor,
   verifyPaymentUnlessShutdown,
 } from './server-payments-utils.js';
+import {
+  abandonServerPayment,
+  serverPaymentAdmission,
+  serverPaymentStore,
+} from './server-payment-state.js';
+import { validateServerPaymentOptions } from './server-payment-validation.js';
+import { isLivePaymentLease } from './payment-state-machine.js';
 
-export interface ServerPaymentsOptions {
+/** Server-side payment policy; both lifecycles share one atomic state store. */
+export interface ServerPaymentsOptions
+  extends Partial<PaymentStatePolicy>, PaymentOutcomeOptions {
   processors: readonly PaymentProcessor[];
+  /** Dispose configured processors on transport close only when they are exclusively owned. @default false */
+  disposeProcessorsOnClose?: boolean;
   pricedCapabilities: readonly PricedCapability[];
-
-  /** Optional dynamic pricing callback used to compute a per-request quote. */
+  /** Optional per-request quote, constrained by the advertised inclusive range. */
   resolvePrice?: ResolvePriceFn;
-  /**
-   * Maximum time to keep a request in pending-payment state.
-   *
-   * Note: if the payment request includes a CEP-8 `ttl` (seconds), the effective
-   * verification timeout will be derived from that TTL. This option is primarily
-   * a memory/DoS guardrail.
-   *
-   * @default 300_000
-   */
+  /** Invoice creation/verification lease in milliseconds. @default 300_000 */
   paymentTtlMs?: number;
-
-  /**
-   * Maximum number of concurrent pending-payment request ids to track.
-   *
-   * This is a DoS/memory-safety guardrail. Once reached, new priced requests
-   * are refused (best-effort `payment_rejected`, no invoice minted) rather than
-   * evicting a live entry — an evicted live payment loses its dedup and a
-   * redelivery would mint a second invoice (CEP-8: MUST NOT charge twice).
-   * `0` refuses all priced requests.
-   *
-   * @default 1000
-   */
-  maxPendingPayments?: number;
-
-  /**
-   * Server-side policy for which payment interaction lifecycles this server
-   * accepts. `optional` mirrors the client's requested mode (the default);
-   * `transparent` makes the server transparent-only.
-   * @default 'optional'
-   */
+  /** Lifetime of a verified execution grant, measured from settlement. @default paymentTtlMs */
+  authorizationTtlMs?: number;
+  /** Application-owned atomic backend; defaults to process-local memory. The SDK does not initialize or close custom backends. */
+  stateStore?: PaymentStateStore;
+  /** Accepted interaction modes. @default 'optional' */
   paymentInteraction?: PaymentInteractionPolicy;
 }
 
-function purgeExpiredPending<T extends { expiresAtMs: number }>(params: {
-  pending: LruCache<T>;
-  nowMs: number;
-  maxToCheck: number;
-}): void {
-  let checked = 0;
-  for (const [key, value] of params.pending.entries()) {
-    if (checked >= params.maxToCheck) {
-      break;
-    }
-    checked += 1;
-    if (value.expiresAtMs <= params.nowMs) {
-      params.pending.delete(key);
-    }
-  }
-}
-
-type PendingPaymentState = {
-  expiresAtMs: number;
-  inFlight: Promise<void>;
-};
-
 /**
- * Extra lifetime granted to a transport route snapshot beyond the payment TTL,
- * so a settled response can still be routed after a slow handler finishes.
- */
-const ROUTE_SNAPSHOT_GRACE_MS = 60_000;
-
-function createPaymentRequiredNotification(params: {
-  amount: number;
-  pay_req: string;
-  pmi: string;
-  description?: string;
-  ttl?: number;
-  _meta?: Record<string, unknown>;
-}): PaymentRequiredNotification {
-  return {
-    jsonrpc: '2.0',
-    method: PAYMENT_REQUIRED_METHOD,
-    params,
-  };
-}
-
-function createPaymentAcceptedNotification(params: {
-  amount: number;
-  pmi: string;
-  _meta?: Record<string, unknown>;
-}): PaymentAcceptedNotification {
-  return {
-    jsonrpc: '2.0',
-    method: PAYMENT_ACCEPTED_METHOD,
-    params,
-  };
-}
-
-function createPaymentRejectedNotification(params: {
-  pmi: string;
-  amount?: number;
-  message?: string;
-}): PaymentRejectedNotification {
-  return {
-    jsonrpc: '2.0',
-    method: PAYMENT_REJECTED_METHOD,
-    params,
-  };
-}
-
-/**
- * Creates a server-side middleware that gates priced requests until payment is verified.
+ * Gates transparent requests using a retained event ledger. Verified event IDs
+ * are admitted only within the store's replay window; invoice expiry never
+ * releases their tombstones. Custom transports without event timestamps retain
+ * their records indefinitely and fail closed when record capacity is reached.
+ * Verified grants (including expired ones) and uncertain invoice creation are
+ * retained for reconciliation. Expired known invoices can be replaced only by
+ * a new admitted event; consumed rights never trigger automatic re-execution.
  */
 export function createServerPaymentsMiddleware(params: {
   sender: CorrelatedNotificationSender;
   options: ServerPaymentsOptions;
-  /** Pre-built PMI → processor map. Built locally when omitted (standalone use). */
   processorsByPmi?: Map<string, PaymentProcessor>;
-  /**
-   * Fired once an invoice has been issued for a request, before verification
-   * begins. Lets the transport snapshot the correlation route/session a paid
-   * response may need after its route is popped (duplicate-delivery cleanup)
-   * or its idle session is LRU-evicted mid-payment (CEP-8).
-   */
   onInvoiceIssued?: (params: {
     requestEventId: string;
     snapshotTtlMs: number;
   }) => void;
-  /**
-   * Transport shutdown signal (see `withServerPayments`). Once aborted,
-   * in-flight verification is cancelled and a verify that still settles is
-   * not acted on: no `payment_accepted`, no forward.
-   */
   abortSignal?: AbortSignal;
+  onPaymentPending?: (requestEventId: string) => void;
+  onPaidDuplicate?: (record: PaymentStateRecord) => Promise<void>;
 }): ServerMiddlewareFn {
   const { sender, options, abortSignal } = params;
+  validateServerPaymentOptions(options);
   const logger = createLogger('server-payments');
   const processorsByPmi =
     params.processorsByPmi ?? buildProcessorsByPmi(options.processors, logger);
-
-  // Non-positive TTLs would birth-expire every pending entry (disarming the
-  // redelivery dedup while invoices stay payable); fall back to the default,
-  // mirroring getVerificationTimeoutMs's guard.
-  const paymentTtlMs =
-    options.paymentTtlMs && options.paymentTtlMs > 0
-      ? options.paymentTtlMs
-      : DEFAULT_PAYMENT_TTL_MS;
-  const maxPendingPayments = options.maxPendingPayments ?? 1000;
-  const pending = new LruCache<PendingPaymentState>(
-    Math.max(1, maxPendingPayments),
-  );
+  const store = serverPaymentStore(options);
+  const leaseMs = options.paymentTtlMs ?? DEFAULT_PAYMENT_TTL_MS;
+  const running = new Map<string, Promise<void>>();
 
   return async (message, ctx, forward) => {
-    // Only gate requests. Never interfere with notifications.
-    if (!isJsonRpcRequest(message)) {
-      await forward(message);
-      return;
-    }
-
     if (
-      ctx.paymentInteraction !== undefined &&
-      ctx.paymentInteraction !== 'transparent'
+      !isJsonRpcRequest(message) ||
+      (ctx.paymentInteraction !== undefined &&
+        ctx.paymentInteraction !== 'transparent')
     ) {
       await forward(message);
       return;
     }
-
     const priced = matchPricedCapability(message, options.pricedCapabilities);
-    if (!priced) {
-      await forward(message);
+    if (!priced || abortSignal?.aborted) {
+      if (!priced) await forward(message);
       return;
     }
-
-    logger.debug('priced capability matched', {
-      method: message.method,
-      requestEventId: String(message.id),
-      pricedMethod: priced.method,
-      pricedName: priced.name,
-    });
-
-    const requestEventId = String(message.id);
-    const now = Date.now();
-
-    // Opportunistic cleanup so one-shot spam doesn't accumulate until reuse.
-    purgeExpiredPending({ pending, nowMs: now, maxToCheck: 25 });
-
-    const existing = pending.get(requestEventId);
-    if (existing && existing.expiresAtMs > now) {
-      // Duplicate request event id: await the in-flight work deterministically.
-      // This avoids double-charge races and avoids black-holing duplicates.
-      logger.debug('duplicate request event detected, awaiting in-flight', {
-        requestEventId,
-      });
-      await existing.inFlight;
+    const admission = serverPaymentAdmission(
+      message,
+      ctx,
+      'transparent',
+      leaseMs,
+    );
+    params.onPaymentPending?.(admission.requestEventId);
+    const existing = running.get(admission.key);
+    if (existing) {
+      await existing;
       return;
     }
-
-    // Capacity guard, before any invoice is minted: silently evicting a live
-    // entry here would disarm its dedup, and a redelivery of the evicted
-    // request would be charged twice (CEP-8: MUST NOT charge twice).
-    if (pending.size >= maxPendingPayments) {
-      purgeExpiredPending({
-        pending,
-        nowMs: now,
-        maxToCheck: Number.POSITIVE_INFINITY,
-      });
-    }
-    if (pending.size >= maxPendingPayments) {
-      logger.warn('pending payment capacity reached, refusing priced request', {
-        requestEventId,
-        method: message.method,
-        maxPendingPayments,
-      });
-      // Refuse without charging: best-effort payment_rejected so the client
-      // stops waiting instead of hanging until its own TTL.
-      try {
-        const processor = resolvePaymentProcessor(
-          ctx.clientPmis,
-          processorsByPmi,
-          options.processors,
-        );
-        await sender.sendNotification(
-          ctx.clientPubkey,
-          createPaymentRejectedNotification({
-            pmi: processor.pmi,
-            amount: priced.amount,
-            message: 'payment capacity reached, retry later',
-          }),
-          requestEventId,
-        );
-      } catch (err) {
-        logger.warn('failed to send payment capacity rejection', {
-          requestEventId,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-      return;
-    }
-
-    // IMPORTANT: set pending state synchronously before any await to make idempotency atomic.
-    let invoiceIssued = false;
-    const inFlight = (async (): Promise<void> => {
-      const initResult = await resolveAndInitiatePayment({
-        message,
-        priced,
-        requestEventId,
-        clientPubkey: ctx.clientPubkey,
-        clientPmis: ctx.clientPmis,
-        options,
-        processorsByPmi,
-      });
-
-      // Handle rejection: emit payment_rejected and do not forward.
-      if (initResult.kind === 'rejected') {
-        logger.info('payment rejected', {
-          requestEventId,
-          pmi: initResult.pmi,
-          amount: priced.amount,
-          reason: initResult.message,
-        });
-
-        const rejectedNotification = createPaymentRejectedNotification({
-          pmi: initResult.pmi,
-          amount: priced.amount,
-          message: initResult.message,
-        });
-
-        await sender.sendNotification(
-          ctx.clientPubkey,
-          rejectedNotification,
-          requestEventId,
-        );
-        return;
-      }
-
-      if (initResult.kind === 'waived') {
-        logger.debug('payment waived, forwarding priced request', {
-          requestEventId,
-          method: message.method,
-        });
-
-        await forward(message);
-        return;
-      }
-
-      const { paymentRequired, mergedMeta, processor, verifyTimeoutMs } =
-        initResult;
-
-      // An invoice now exists on the payment rail — from here on, every
-      // outcome keeps the pending entry until TTL: the client's money may
-      // already be gone, and a redelivery MUST NOT mint a second invoice.
-      invoiceIssued = true;
-      params.onInvoiceIssued?.({
-        requestEventId,
-        snapshotTtlMs: paymentTtlMs + ROUTE_SNAPSHOT_GRACE_MS,
-      });
-
-      const requiredNotification = createPaymentRequiredNotification({
-        amount: paymentRequired.amount,
-        pay_req: paymentRequired.pay_req,
-        pmi: paymentRequired.pmi,
-        description: paymentRequired.description,
-        ttl: paymentRequired.ttl,
-        _meta: mergedMeta,
-      });
-
-      logger.info('payment required notification sent', {
-        requestEventId,
-        pmi: paymentRequired.pmi,
-        amount: paymentRequired.amount,
-        ttl: paymentRequired.ttl,
-      });
-
+    const reject = async (reason?: string): Promise<void> => {
       await sender.sendNotification(
         ctx.clientPubkey,
-        requiredNotification,
-        requestEventId,
-      );
-
-      // Use the strict verification timeout bound for polling
-      const pollingTimeoutMs = Math.min(verifyTimeoutMs, paymentTtlMs);
-
-      logger.debug('verifying payment', {
-        requestEventId,
-        pmi: paymentRequired.pmi,
-        timeoutMs: pollingTimeoutMs,
-      });
-
-      const verified = await verifyPaymentUnlessShutdown({
-        processor,
-        verifyParams: {
-          pay_req: paymentRequired.pay_req,
-          requestEventId,
-          clientPubkey: ctx.clientPubkey,
+        {
+          jsonrpc: '2.0',
+          method: PAYMENT_REJECTED_METHOD,
+          params: {
+            pmi: options.processors[0]?.pmi ?? 'unspecified',
+            amount: priced.amount,
+            message: reason,
+          },
         },
-        timeoutMs: pollingTimeoutMs,
-        shutdownSignal: abortSignal,
-      });
-
-      // Transport closed mid-verification: the invoice stays pending until
-      // TTL (same as any post-invoice outcome), but nothing is forwarded.
-      if (verified === undefined) {
-        logger.info('transport closed during payment verification', {
-          requestEventId,
-          pmi: paymentRequired.pmi,
-        });
+        admission.requestEventId,
+      );
+    };
+    const work = (async (): Promise<void> => {
+      const admitted = await store.admit(admission);
+      const recovering =
+        admitted.status === 'duplicate' &&
+        admitted.record?.invoice &&
+        ['pending', 'unknown', 'expired'].includes(admitted.record.phase) &&
+        (!isLivePaymentLease(admitted.record, Date.now()) ||
+          admitted.record.settlement !== undefined);
+      if (admitted.status !== 'reserved' && !recovering) {
+        if (admitted.status === 'duplicate' && admitted.record?.delivery)
+          await params.onPaidDuplicate?.(admitted.record);
+        else if (admitted.status !== 'duplicate')
+          await reject(`Payment admission refused: ${admitted.status}`);
         return;
       }
-
-      logger.info('payment accepted', {
-        requestEventId,
-        pmi: paymentRequired.pmi,
-        amount: paymentRequired.amount,
-      });
-
-      const acceptedNotification = createPaymentAcceptedNotification({
-        amount: paymentRequired.amount,
-        pmi: paymentRequired.pmi,
-        _meta: verified._meta,
-      });
-
-      // payment_accepted is a SHOULD (CEP-8); the capability result is the
-      // point. A publish failure here (relay error, or the idle paying
-      // client's session LRU-evicted mid-payment) MUST NOT abort the forward —
-      // that would be paid-but-undelivered. Do not turn this back into an
-      // early return.
+      const record = admitted.record;
+      if (!record) throw new Error('Payment admission record missing');
+      const fence = { key: record.key, generation: record.generation };
       try {
-        await sender.sendNotification(
-          ctx.clientPubkey,
-          acceptedNotification,
-          requestEventId,
-        );
-      } catch (err) {
-        logger.warn('failed to publish payment_accepted, forwarding anyway', {
-          requestEventId,
-          error: err instanceof Error ? err.message : String(err),
+        if (abortSignal?.aborted) {
+          await store.transition({ ...fence, type: 'release' });
+          return;
+        }
+        const recoveredInvoice = recovering ? record.invoice : undefined;
+        const recoveredProcessor = recoveredInvoice
+          ? processorsByPmi.get(recoveredInvoice.pmi)
+          : undefined;
+        if (recoveredInvoice && !recoveredProcessor)
+          throw new Error('Recorded payment processor is unavailable');
+        const initiated =
+          recoveredInvoice && recoveredProcessor
+            ? {
+                kind: 'payment_required' as const,
+                paymentRequired: recoveredInvoice,
+                mergedMeta: recoveredInvoice._meta,
+                processor: recoveredProcessor,
+                verifyTimeoutMs: Math.min(
+                  leaseMs,
+                  (recoveredInvoice.ttl ?? leaseMs / 1000) * 1000,
+                ),
+              }
+            : await resolveAndInitiatePayment({
+                message,
+                priced,
+                requestEventId: admission.requestEventId,
+                clientPubkey: ctx.clientPubkey,
+                clientPmis: ctx.clientPmis,
+                options,
+                processorsByPmi,
+                context: { abortSignal, deadlineMs: record.leaseExpiresAtMs },
+                beforeInvoice: async () => {
+                  if (abortSignal?.aborted) return false;
+                  const owned = await store.transition({
+                    ...fence,
+                    type: 'issuing',
+                  });
+                  return owned && !abortSignal?.aborted;
+                },
+              });
+        if (initiated.kind === 'superseded') {
+          await store.transition({ ...fence, type: 'release' });
+          return;
+        }
+        if (initiated.kind === 'rejected') {
+          if (await store.transition({ ...fence, type: 'reject' }))
+            await reject(initiated.message);
+          return;
+        }
+        if (initiated.kind === 'waived') {
+          if (
+            !abortSignal?.aborted &&
+            (await store.transition({ ...fence, type: 'consume' }))
+          ) {
+            if (abortSignal?.aborted) return;
+            await forward(message);
+            await store.transition({ ...fence, type: 'dispatch' });
+          }
+          return;
+        }
+        const { paymentRequired, mergedMeta, processor, verifyTimeoutMs } =
+          initiated;
+        const pollingTimeoutMs = Math.min(verifyTimeoutMs, leaseMs);
+        if (
+          !recovering &&
+          !(await store.transition({
+            ...fence,
+            type: 'bind',
+            invoice: { ...paymentRequired, _meta: mergedMeta },
+            leaseMs: pollingTimeoutMs,
+          }))
+        )
+          return;
+        if (abortSignal?.aborted) return;
+        params.onInvoiceIssued?.({
+          requestEventId: admission.requestEventId,
+          snapshotTtlMs: leaseMs + 60_000,
         });
+        if (abortSignal?.aborted) return;
+        if (
+          !record.settlement &&
+          (record.invoiceExpiresAtMs === undefined ||
+            record.invoiceExpiresAtMs > Date.now())
+        )
+          await sender.sendNotification(
+            ctx.clientPubkey,
+            {
+              jsonrpc: '2.0',
+              method: PAYMENT_REQUIRED_METHOD,
+              params: {
+                ...paymentRequired,
+                ...(recovering &&
+                  record.invoiceExpiresAtMs !== undefined && {
+                    ttl: Math.max(
+                      0.001,
+                      (record.invoiceExpiresAtMs - Date.now()) / 1000,
+                    ),
+                  }),
+                _meta: mergedMeta,
+              },
+            },
+            admission.requestEventId,
+          );
+        if (!record.settlement)
+          await store.transition({ ...fence, type: 'offer_published' });
+        const verified = record.settlement
+          ? {}
+          : await verifyPaymentUnlessShutdown({
+              processor,
+              verifyParams: {
+                pay_req: paymentRequired.pay_req,
+                requestEventId: admission.requestEventId,
+                clientPubkey: ctx.clientPubkey,
+              },
+              timeoutMs: pollingTimeoutMs,
+              shutdownSignal: abortSignal,
+            });
+        if (
+          !verified ||
+          abortSignal?.aborted ||
+          !(await store.transition({
+            ...fence,
+            type: 'settled',
+            ttlMs: leaseMs,
+          })) ||
+          !(await store.transition({ ...fence, type: 'consume' }))
+        )
+          return;
+        if (abortSignal?.aborted) return;
+        try {
+          await sender.sendNotification(
+            ctx.clientPubkey,
+            {
+              jsonrpc: '2.0',
+              method: PAYMENT_ACCEPTED_METHOD,
+              params: {
+                amount: paymentRequired.amount,
+                pmi: paymentRequired.pmi,
+                _meta: verified._meta,
+              },
+            },
+            admission.requestEventId,
+          );
+        } catch {
+          logger.warn(
+            'payment_accepted publication failed; execution right remains consumed',
+            { requestEventId: admission.requestEventId },
+          );
+        }
+        if (abortSignal?.aborted) return;
+        await forward(message);
+        await store.transition({ ...fence, type: 'dispatch' });
+      } catch (error) {
+        await abandonServerPayment(store, record);
+        if (error instanceof PaymentMethodUnavailableError) {
+          await reject(error.message);
+          return;
+        }
+        throw error;
       }
-
-      logger.debug('forwarding priced request after payment', {
-        requestEventId,
-        method: message.method,
-      });
-
-      await forward(message);
     })();
-
-    const state: PendingPaymentState = {
-      expiresAtMs: now + paymentTtlMs,
-      inFlight,
-    };
-    pending.set(requestEventId, state);
-
+    running.set(admission.key, work);
     try {
-      await inFlight;
-      // On success, keep the entry in `pending` until TTL expiry.
-      // This guards against relay redelivery triggering a second charge.
-      // purgeExpiredPending handles eventual cleanup.
-    } catch (err) {
-      // Pre-invoice failures never billed anyone — delete so the retry is free.
-      // Post-invoice failures keep the entry until TTL for the same reason as
-      // success: the client may already have paid, and a redelivery of the
-      // same request event MUST NOT mint a second invoice (CEP-8).
-      if (!invoiceIssued) {
-        pending.delete(requestEventId);
-      }
-      throw err;
+      await work;
+    } finally {
+      if (running.get(admission.key) === work) running.delete(admission.key);
     }
   };
 }

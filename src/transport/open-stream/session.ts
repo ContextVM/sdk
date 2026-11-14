@@ -1,3 +1,6 @@
+import { canonicalJson } from '../../core/utils/canonical-json.js';
+import { sha256 } from '@noble/hashes/sha2.js';
+import { bytesToHex } from '@noble/hashes/utils.js';
 import {
   DEFAULT_OPEN_STREAM_CLOSE_GRACE_PERIOD_MS,
   DEFAULT_OPEN_STREAM_IDLE_TIMEOUT_MS,
@@ -93,6 +96,7 @@ export class OpenStreamSession implements OpenStreamSessionLike<string> {
   private closeState: CloseState | undefined;
   private nextExpectedChunkIndex = 0;
   private lastProgress = -1;
+  private lastFrameDigest?: string;
   private terminalError: Error | undefined;
   private controlNonce = 0;
   private pendingProbeNonce: string | undefined;
@@ -230,8 +234,10 @@ export class OpenStreamSession implements OpenStreamSessionLike<string> {
     progress: number,
     frame: OpenStreamFrame,
   ): Promise<void> {
+    if (this.isDuplicateFrame(progress, frame)) return;
     this.assertActive();
     this.assertProgress(progress);
+    this.lastFrameDigest = this.frameDigest(frame);
 
     switch (frame.frameType) {
       case 'start':
@@ -341,6 +347,18 @@ export class OpenStreamSession implements OpenStreamSessionLike<string> {
         `Received non-start frame before start for ${this.progressToken}`,
       );
     }
+  }
+
+  /** Exact retransmission of the last accepted frame is safe; conflicting progress remains an error. */
+  public isDuplicateFrame(progress: number, frame: OpenStreamFrame): boolean {
+    return (
+      progress === this.lastProgress &&
+      this.lastFrameDigest === this.frameDigest(frame)
+    );
+  }
+
+  private frameDigest(frame: OpenStreamFrame): string {
+    return bytesToHex(sha256(new TextEncoder().encode(canonicalJson(frame))));
   }
 
   private assertProgress(progress: number): void {

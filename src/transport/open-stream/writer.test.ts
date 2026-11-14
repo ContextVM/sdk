@@ -237,7 +237,7 @@ describe('OpenStreamWriter', () => {
     ]);
   });
 
-  test('runs close lifecycle cleanup when close publish fails', async () => {
+  test('retains the failed close frame while local resources stop', async () => {
     const lifecycle: string[] = [];
     const writer = new OpenStreamWriter({
       progressToken: 'token-close-failure-cleanup',
@@ -256,7 +256,8 @@ describe('OpenStreamWriter', () => {
     await expect(writer.close()).rejects.toThrow('close publish failed');
 
     expect(writer.isActive).toBe(false);
-    expect(lifecycle).toEqual(['close']);
+    expect(lifecycle).toEqual([]);
+    writer.dispose();
   });
 
   test('runs abort lifecycle cleanup when abort publish fails', async () => {
@@ -688,4 +689,84 @@ describe('OpenStreamWriter signal', () => {
 
     expect(writer.signal.aborted).toBe(true);
   });
+});
+
+describe('OpenStreamWriter frame recovery', () => {
+  for (const failingFrame of ['start', 'chunk', 'close'] as const)
+    test(`retries an identical failed ${failingFrame} frame without restarting production`, async () => {
+      const attempted: OpenStreamProgress[] = [];
+      let fail = true;
+      let closed = 0;
+      const writer = new OpenStreamWriter({
+        progressToken: 'paid-stream',
+        publishFrame: async (frame) => {
+          attempted.push(structuredClone(frame));
+          if (fail && frame.cvm.frameType === failingFrame)
+            throw new Error('offline');
+          return 'sent';
+        },
+        onClose: async () => {
+          closed++;
+        },
+      });
+      if (failingFrame !== 'start') await writer.start();
+      const operation =
+        failingFrame === 'close' ? writer.close() : writer.write('paid data');
+      await expect(operation).rejects.toThrow('offline');
+      const failed = attempted[attempted.length - 1];
+      fail = false;
+      await writer.retryPendingFrame();
+      expect(attempted[attempted.length - 1]).toEqual(failed);
+      if (failingFrame === 'start') await writer.write('paid data');
+      if (failingFrame !== 'close') await writer.close();
+      const count = attempted.length;
+      await writer.close();
+      await writer.retryPendingFrame();
+      expect(closed).toBe(1);
+      expect(attempted).toHaveLength(count);
+      writer.dispose();
+    });
+});
+
+test('lost frame acknowledgements resume without duplicating chunks or terminal delivery', async () => {
+  const { OpenStreamRegistry } = await import('./registry.js');
+  const registry = new OpenStreamRegistry({
+    logger: {
+      debug() {},
+      info() {},
+      warn() {},
+      error() {},
+      withModule() {
+        return this;
+      },
+    },
+  });
+  const failed = new Set<string>();
+  const writer = new OpenStreamWriter({
+    progressToken: 'lost-ack',
+    publishFrame: async (frame) => {
+      await registry.processFrame(frame);
+      if (!failed.has(frame.cvm.frameType)) {
+        failed.add(frame.cvm.frameType);
+        throw new Error('lost acknowledgement');
+      }
+      return 'sent';
+    },
+  });
+  await expect(writer.start()).rejects.toThrow('lost acknowledgement');
+  await writer.retryPendingFrame();
+  const receiver = registry.getSession('lost-ack')!;
+  await expect(writer.write('paid data')).rejects.toThrow(
+    'lost acknowledgement',
+  );
+  await writer.retryPendingFrame();
+  await expect(writer.close()).rejects.toThrow('lost acknowledgement');
+  await writer.retryPendingFrame();
+  const values: string[] = [];
+  for await (const chunk of receiver) values.push(chunk.value);
+  expect(values).toEqual(['paid data']);
+  expect(registry.size).toBe(0);
+  await writer.retryPendingFrame();
+  registry.clear();
+  writer.dispose();
 });

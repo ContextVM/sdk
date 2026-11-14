@@ -206,7 +206,16 @@ export class OversizedTransferReceiver {
     progress: number,
     frame: StartFrame,
   ): null {
-    if (this.transfers.has(token)) {
+    const active = this.transfers.get(token);
+    if (
+      active &&
+      active.digest === frame.digest &&
+      active.totalBytes === frame.totalBytes &&
+      active.totalChunks === frame.totalChunks &&
+      active.startProgress === progress
+    )
+      return null;
+    if (active) {
       throw new OversizedTransferSequenceError(
         `Duplicate start frame for active transfer (token: ${token})`,
       );

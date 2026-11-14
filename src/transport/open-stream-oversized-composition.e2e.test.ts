@@ -1,3 +1,5 @@
+import { withServerPayments, withClientPayments } from '../payments/index.js';
+import type { PaymentProcessor } from '../payments/types.js';
 import { describe, expect, test } from 'bun:test';
 import { Client } from '@contextvm/mcp-sdk/client';
 import { McpServer } from '@contextvm/mcp-sdk/server/mcp';
@@ -48,9 +50,17 @@ interface Fixture {
   serverTransport: NostrServerTransport;
   clientTransport: NostrClientTransport;
   serverPubkey: string;
+  connectClient: () => Promise<void>;
+  paymentCounts: () => { invoices: number; approvals: number };
 }
 
-function createFixture(): Fixture {
+function createFixture(paid = false): Fixture {
+  let invoices = 0;
+  let approvals = 0;
+  const settlements = new Map<
+    string,
+    { promise: Promise<void>; settle: () => void }
+  >();
   const relayHub = new MockRelayHub();
   const serverPrivateKey = bytesToHex(generateSecretKey());
   const serverPublicKey = getPublicKey(hexToBytes(serverPrivateKey));
@@ -87,6 +97,29 @@ function createFixture(): Fixture {
   });
 
   const client = new Client({ name: 'composition-client', version: '1.0.0' });
+  const processor: PaymentProcessor = {
+    pmi: 'fake',
+    async createPaymentRequired(params) {
+      const pay_req = `invoice-${++invoices}`;
+      let settle!: () => void;
+      const promise = new Promise<void>((resolve) => {
+        settle = resolve;
+      });
+      settlements.set(pay_req, { promise, settle });
+      return { pmi: 'fake', amount: params.amount, pay_req, ttl: 10 };
+    },
+    async verifyPayment(params) {
+      await settlements.get(params.pay_req)?.promise;
+      return {};
+    },
+  };
+  if (paid)
+    withServerPayments(serverTransport, {
+      processors: [processor],
+      pricedCapabilities: [
+        { method: 'tools/call', amount: 1, currencyUnit: 'test' },
+      ],
+    });
 
   return {
     relayHub,
@@ -95,6 +128,24 @@ function createFixture(): Fixture {
     serverTransport,
     clientTransport,
     serverPubkey: serverPublicKey,
+    connectClient: async () => {
+      await client.connect(
+        paid
+          ? withClientPayments(clientTransport, {
+              handlers: [
+                {
+                  pmi: 'fake',
+                  async handle(req) {
+                    approvals++;
+                    settlements.get(req.pay_req)?.settle();
+                  },
+                },
+              ],
+            })
+          : clientTransport,
+      );
+    },
+    paymentCounts: () => ({ invoices, approvals }),
   };
 }
 
@@ -105,7 +156,7 @@ async function cleanup(fixture: Fixture): Promise<void> {
 }
 
 describe('open-stream + oversized transfer composition', () => {
-  test('an oversized tool response completes while a separate tool is streaming', async () => {
+  test('paid oversized results complete while a separate paid invocation owns a stream', async () => {
     // Validates that CEP-22 oversized transfers and CEP-41 open streams coexist
     // in one session: a streaming tool holds an active session while a plain
     // (non-streaming) tool returns a payload large enough to fragment as an
@@ -114,7 +165,7 @@ describe('open-stream + oversized transfer composition', () => {
     //     (Fix 1) and is instead fragmented/reassembled by the oversized path.
     //   - The big tool's progress token does not steal the stream's session
     //     placeholder (Fix 2), so the live stream keeps delivering.
-    const fixture = createFixture();
+    const fixture = createFixture(true);
     let releaseStream: (() => void) | undefined;
     const bigPayload = makeLargeText('big-response', BIG_PAYLOAD_REPEAT);
 
@@ -158,7 +209,7 @@ describe('open-stream + oversized transfer composition', () => {
     );
 
     await fixture.server.connect(fixture.serverTransport);
-    await fixture.client.connect(fixture.clientTransport);
+    await fixture.connectClient();
 
     // (1) Start the long-lived streaming subscription and read its first chunk.
     const call = await callToolStream({
@@ -221,6 +272,7 @@ describe('open-stream + oversized transfer composition', () => {
       content: [{ type: 'text', text: 'done:orders' }],
     });
 
+    expect(fixture.paymentCounts()).toEqual({ invoices: 2, approvals: 2 });
     await cleanup(fixture);
   }, 15_000);
 });

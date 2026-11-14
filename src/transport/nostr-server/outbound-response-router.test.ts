@@ -401,3 +401,96 @@ describe('OutboundResponseRouter.route payment route snapshot fallback', () => {
     expect(errors[0].message).toContain('No pending request found');
   });
 });
+
+// Each failure stage must be recoverable through the same response object after session eviction.
+describe('transactional paid result publication', () => {
+  for (const failure of ['ordinary', 'start', 'chunk', 'end'] as const) {
+    test(`restores correlation and disclosure after ${failure} publication failure`, async () => {
+      const correlationStore = new CorrelationStore();
+      correlationStore.registerEventRoute(
+        'paid',
+        CLIENT_PUBKEY,
+        7,
+        'stream',
+        EPHEMERAL_GIFT_WRAP_KIND,
+      );
+      const session = createSession({
+        supportsOversizedTransfer: failure !== 'ordinary',
+        hasSentCommonTags: false,
+        requestedPaymentInteraction: 'explicit_gating',
+        effectivePaymentInteraction: 'transparent',
+        hasDisclosedPaymentInteraction: false,
+      });
+      correlationStore.captureRouteSnapshot('paid', session, 10000);
+      correlationStore.popEventRoute('paid');
+      const { deps } = createRouterWithCapturedDeps(correlationStore, session);
+      deps.sessionStore.getSession = () => undefined;
+      deps.oversizedConfig = {
+        enabled: failure !== 'ordinary',
+        threshold: 100,
+        chunkSize: 32,
+      };
+      deps.measurePublishedMcpMessageSize = async () => 1000;
+      deps.resolveSafeOversizedChunkSize = async () => 32;
+      const published: JSONRPCMessage[] = [];
+      const tags: string[][][] = [];
+      let failing = true;
+      deps.buildOutboundTags = ({ baseTags, session: current }) => {
+        current.hasSentCommonTags = true;
+        return [...baseTags];
+      };
+      deps.sendMcpMessage = async (
+        message,
+        target,
+        _kind,
+        frameTags,
+        encrypted,
+        _created,
+        wrap,
+      ) => {
+        expect(target).toBe(CLIENT_PUBKEY);
+        expect(encrypted).toBe(true);
+        expect(wrap).toBe(EPHEMERAL_GIFT_WRAP_KIND);
+        const stage =
+          'method' in message
+            ? (message.params?.cvm as { frameType?: string })?.frameType
+            : 'ordinary';
+        if (failing && stage === failure) throw new Error(`failed-${failure}`);
+        published.push(message);
+        tags.push(frameTags ?? []);
+        return 'sent';
+      };
+      const router = new OutboundResponseRouter(deps);
+      const response = {
+        jsonrpc: '2.0' as const,
+        id: 'paid',
+        result: { text: 'x'.repeat(500) },
+      };
+      await expect(router.route(response)).rejects.toThrow(`failed-${failure}`);
+      expect(response.id).toBe('paid');
+      failing = false;
+      await router.route(response);
+      expect(response.id).toBe('paid');
+      if (failure === 'ordinary') expect(published).toHaveLength(1);
+      else
+        expect(
+          published.filter(
+            (message) =>
+              'method' in message &&
+              (message.params?.cvm as { frameType?: string })?.frameType ===
+                'end',
+          ),
+        ).toHaveLength(1);
+      const firstOfRetry =
+        failure === 'ordinary'
+          ? tags[0]
+          : tags.find((value) =>
+              value.some((tag) => tag[0] === 'payment_interaction'),
+            );
+      expect(firstOfRetry).toContainEqual([
+        'payment_interaction',
+        'transparent',
+      ]);
+    });
+  }
+});

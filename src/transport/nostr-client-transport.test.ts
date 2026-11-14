@@ -739,7 +739,7 @@ describe.serial('NostrClientTransport', () => {
 
     withServerPayments(paidServerTransport, {
       processors: [
-        new FakePaymentProcessor({ pmi: 'pmi:test', verifyDelayMs: 1 }),
+        new FakePaymentProcessor({ pmi: 'pmi-test', verifyDelayMs: 1 }),
       ],
       pricedCapabilities: [
         {
@@ -818,7 +818,7 @@ describe.serial('NostrClientTransport', () => {
 
     withServerPayments(paidServerTransport, {
       processors: [
-        new FakePaymentProcessor({ pmi: 'pmi:test', verifyDelayMs: 1 }),
+        new FakePaymentProcessor({ pmi: 'pmi-test', verifyDelayMs: 1 }),
       ],
       pricedCapabilities: [
         {
@@ -907,7 +907,7 @@ describe.serial('NostrClientTransport', () => {
 
     withServerPayments(paidServerTransport, {
       processors: [
-        new FakePaymentProcessor({ pmi: 'pmi:test', verifyDelayMs: 1 }),
+        new FakePaymentProcessor({ pmi: 'pmi-test', verifyDelayMs: 1 }),
       ],
       pricedCapabilities: [
         {

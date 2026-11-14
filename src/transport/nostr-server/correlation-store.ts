@@ -180,6 +180,14 @@ export class CorrelationStore {
    * @param eventId The Nostr event ID
    * @returns The snapshot, or undefined when absent or expired
    */
+  /** Returns a defensive snapshot without consuming its delivery fallback. */
+  peekRouteSnapshot(eventId: string): RouteSnapshot | undefined {
+    const snapshot = this.routeSnapshots.get(eventId);
+    return snapshot && snapshot.expiresAtMs > Date.now()
+      ? structuredClone(snapshot)
+      : undefined;
+  }
+
   takeRouteSnapshot(eventId: string): RouteSnapshot | undefined {
     const snapshot = this.routeSnapshots.get(eventId);
     if (!snapshot) {
