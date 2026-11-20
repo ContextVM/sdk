@@ -154,7 +154,16 @@ dbLogger.debug('Query executed', { query: 'SELECT * FROM users' });
 
 ## Development
 
-This project requires [Bun](https://bun.sh/) (version 1.2.0 or higher).
+This project requires [Bun](https://bun.sh/) (version 1.4.4 or higher).
+Use maintained, patched Node releases when running the SDK under Node: at least
+22.23.4 on Node 22, or 24.22.1 on Node 24.
+
+Inbound relay event content is limited to 1 MiB before decryption and parsing.
+The transport processes at most five event tasks concurrently and queues up to
+100 more; excess events are dropped. CEP-22 transfers use separate chunk events.
+Explicit payment responses with more than 100 options are rejected before the
+payment callback runs. Keep the runtime and host operating system patched as
+well as the npm dependencies.
 
 1. Clone the repository:
 

@@ -16,7 +16,7 @@ function resolveNodeWebSocket(): WebSocketConstructor | undefined {
 
     const moduleBuiltin = nodeProcess?.getBuiltinModule?.('module') as
       | {
-          createRequire?: (filename: string) => NodeJS.Require;
+          createRequire?: (filename: string) => (id: string) => unknown;
         }
       | undefined;
 

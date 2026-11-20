@@ -17,10 +17,11 @@ export class TaskQueue {
 
   /**
    * Adds a task to the queue. It will start immediately if the concurrency limit hasn't been reached.
+   * Drops new work when 100 tasks are already waiting.
    * @param task - A function that returns a Promise
    */
   add(task: () => Promise<void>): void {
-    if (this.isShutdown) {
+    if (this.isShutdown || this.queue.length >= 100) {
       return;
     }
     this.queue.push(task);
