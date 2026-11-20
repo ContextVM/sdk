@@ -212,6 +212,15 @@ export abstract class BaseNostrTransport {
       const unsubscribe = await this.relayHandler.subscribe(
         filters,
         (event) => {
+          // Bound queued payloads before decryption and JSON/schema parsing.
+          // CEP-22 transfers arrive as separate, bounded chunk events.
+          const maxContentBytes = 1024 * 1024;
+          if (
+            event.content.length > maxContentBytes ||
+            new TextEncoder().encode(event.content).byteLength > maxContentBytes
+          ) {
+            return;
+          }
           this.taskQueue.add(async () => {
             try {
               await onEvent(event);

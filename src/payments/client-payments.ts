@@ -393,6 +393,16 @@ export function withClientPayments(
       const errorMsg = message;
       const data = errorMsg.error.data as PaymentRequiredErrorData;
 
+      if (data.payment_options.length > 100) {
+        synthesizePaymentError({
+          id: errorMsg.id,
+          code: PAYMENT_REQUIRED_ERROR_CODE,
+          message: 'Payment Required',
+          data: { reason: 'invalid_payment_options' },
+        });
+        return;
+      }
+
       if (!options.onPaymentRequired) {
         onmessage?.(message);
         return;
